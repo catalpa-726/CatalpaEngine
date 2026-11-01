@@ -14,8 +14,8 @@
 	#define CAT_ASSERT(x,  ...) { if(!(x)) { CAT_CRITICAL("Assertion Failed: {0}", __VA_ARGS__); __debugbreak(); } }
 	#define CAT_CORE_ASSERT(x, ...) { if(!(x)) { CAT_CORE_CRITICAL("Assertion Failed: {0}", __VA_ARGS__); __debugbreak(); }}
 #else
-	#define HZ_ASSERT(x, ...)
-	#define HZ_CORE_ASSERT(x, ...)
+	#define CAT_ASSERT(x, ...)
+	#define CAT_CORE_ASSERT(x, ...)
 #endif
 
 #define BIT(x) (1 << x)

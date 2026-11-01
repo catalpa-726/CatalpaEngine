@@ -12,10 +12,16 @@ namespace Catalpa {
 		WindowsWindow(const WindowProps& props);
 		virtual ~WindowsWindow();
 
+		WindowsWindow(const WindowsWindow&) = delete;
+		WindowsWindow & operator=(const WindowsWindow&) = delete;
+
 		void OnUpdate() override;
 
 		inline unsigned int GetWidth() const override { return m_Data.Width; }
 		inline unsigned int GetHeight() const override { return m_Data.Height; }
+
+		std::pair<uint32_t, uint32_t> GetFramebufferSize() const override;
+		bool IsMinimized() const override;
 
 		inline void SetEventCallback(const EventCallbackFn& callback) override { m_Data.EventCallback = callback; }
 		void SetVSync(bool enabled) override;
@@ -26,7 +32,7 @@ namespace Catalpa {
 		virtual void Init(const WindowProps& props);
 		virtual void Shutdown();
 	private:
-		GLFWwindow* m_Window;
+		GLFWwindow* m_Window = nullptr;
 
 		struct WindowData {
 			std::string Title;
@@ -36,7 +42,7 @@ namespace Catalpa {
 			EventCallbackFn EventCallback;
 		};
 
-		WindowData m_Data;
+		WindowData m_Data{};
 	};
 
 }

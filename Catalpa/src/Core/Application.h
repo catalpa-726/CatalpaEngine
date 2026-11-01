@@ -8,6 +8,8 @@
 
 namespace Catalpa {
 
+	class EngineRuntime;
+
 	class CATALPA_API Application {
 	public:
 		Application();
@@ -26,6 +28,7 @@ namespace Catalpa {
 	private:
 		static Application* s_Instance;
 		std::unique_ptr<Window> m_Window;
+		std::unique_ptr<EngineRuntime> m_Runtime;
 
 		bool m_Running = true;
 	};

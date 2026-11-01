@@ -15,3 +15,10 @@
 #include <unordered_map>
 #include <set>
 #include <unordered_set>
+
+#include <cstdio>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <cstdlib>
+#include <string_view>

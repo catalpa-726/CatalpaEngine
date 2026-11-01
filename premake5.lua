@@ -4,7 +4,7 @@ IncludeDir = {}
 IncludeDir["GLFW"] = "Catalpa/third_party/glfw/include"
 IncludeDir["GLAD"] = "Catalpa/third_party/glad/include"
 IncludeDir["imgui"] = "Catalpa/third_party/imgui"
--- IncludeDir["VulkanSDK"] = path.join(vulkanSDK, "Include")
+IncludeDir["VulkanSDK"] = path.join(vulkanSDK, "Include")
 
 -- Submodules and generated GLAD files must be available before project generation.
 local requiredDependencies = {
@@ -87,7 +87,7 @@ project "Catalpa"
         "%{IncludeDir.GLFW}",
         "%{IncludeDir.GLAD}",
         "%{IncludeDir.imgui}",
-        -- "%{IncludeDir.VulkanSDK}"
+        "%{IncludeDir.VulkanSDK}"
     }
 
     links { 
@@ -102,8 +102,8 @@ project "Catalpa"
             "CATALPA_PLATFORM_WINDOW",
             "GLFW_INCLUDE_NONE",
             "CATALPA_ENABLE_ASSERTS",
-            -- "VK_NO_PROTOTYPES",
-            -- "IMGUI_IMPL_VULKAN_NO_PROTOTYPES"
+            "VK_NO_PROTOTYPES",
+            "IMGUI_IMPL_VULKAN_NO_PROTOTYPES"
 		}
 
 		postbuildcommands {

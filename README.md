@@ -2,6 +2,17 @@
 
 CatalpaEngine 是一个使用 **C++20** 开发的引擎项目，当前主要面向 **Windows / Visual Studio 2022**，采用 **Premake** 管理工程生成。
 
+## 当前进度
+
+当前处于 **窗口与 Vulkan 设备初始化** 阶段，已接通以下流程：
+
+- GLFW 窗口创建、事件处理、framebuffer 像素尺寸查询与窗口关闭。
+- GLAD 分阶段加载 Vulkan 函数，创建 instance 与 window surface，选择物理设备并创建逻辑设备及队列。
+- 最小 RHI 设备接口、后端标识、错误状态和显式注册的后端工厂。
+- `Application → EngineRuntime → RHIBackendFactory → Vulkan` 的初始化调用与所有权清理；设备及 surface 先于窗口释放。
+
+目前已能运行到 Vulkan 设备创建成功。
+
 ## 当前目录概览
 
 以下展示当前主要入口，完整引擎架构仍在逐步实现。
@@ -15,6 +26,10 @@ CatalpaEngine/
 │   │   ├── Layer/
 │   │   ├── Log/
 │   │   ├── Platform/
+│   │   │   ├── Vulkan/            # Vulkan 后端与统一 VulkanHeaders.h
+│   │   │   └── WindowsWindow/     # 现有 GLFW 窗口适配
+│   │   ├── RHI/                  # API 无关的设备接口、错误与后端工厂
+│   │   ├── Runtime/              # 引擎服务初始化与生命周期编排
 │   │   ├── Renderer/
 │   │   └── Catalpa.h、catpch.h、catpch.cpp
 │   └── third_party/
@@ -48,7 +63,16 @@ CatalpaEngine/
 
 ### 准备依赖
 
-需要 Git、Visual Studio 2022 的 C++ 桌面开发工具（MSVC v143、Windows SDK）。首次获取仓库时使用：
+需要以下环境：
+
+- Git。
+- Visual Studio 2022 的 C++ 桌面开发工具（MSVC v143、Windows SDK）。
+- Vulkan SDK，以及指向 SDK 安装目录的 `VULKAN_SDK` 环境变量。当前 Premake 脚本使用其中的 `Include` 目录；安装或修改环境变量后，重新打开终端和 Visual Studio。
+- 支持 Vulkan 1.3、`dynamicRendering`、`synchronization2` 和 `VK_KHR_swapchain` 的设备与驱动，并具备当前窗口 surface 的呈现支持。
+
+GLAD 按 Vulkan 1.4 生成加载代码，**不表示当前引擎要求 Vulkan 1.4 设备**；后端目前按 Vulkan 1.3 选择并创建设备。
+
+首次获取仓库时使用：
 
 ```powershell
 git clone --recurse-submodules https://github.com/catalpa-726/CatalpaEngine.git
@@ -61,7 +85,7 @@ cd CatalpaEngine
 git submodule update --init --recursive
 ```
 
-该命令恢复主仓库记录的提交，不自动追踪上游最新版本。此仓库目前为私有仓库，克隆者需要访问权限。
+该命令恢复主仓库记录的提交，不自动追踪上游最新版本。访问受限的仓库需要相应的克隆权限。
 
 GLAD 需要按下文选项单独生成。对于迁移前已经包含第三方源码的旧工作目录，先按 [一次性迁移说明](Script/Build/README.md) 处理。
 
@@ -100,13 +124,24 @@ bin/windows-x86_64/Debug/CatalpaBox/CatalpaBox.exe
 .\bin\windows-x86_64\Debug\CatalpaBox\CatalpaBox.exe
 ```
 
+正常启动时，核心日志依次包含：
+
+```text
+Vulkan instance created.
+Selected Vulkan device: <device name>
+Vulkan backend initialized.
+Vulkan device created.
+```
+
+这些日志表示初始化流程已到达逻辑设备创建阶段，不代表已经提交或呈现图像。窗口关闭后，由 `Application` 先释放 Runtime 及其设备，再销毁窗口。
+
 ## 第三方依赖
 
 GLFW、Dear ImGui、spdlog 使用正式 **Git submodule**：主仓库的 gitlink 固定提交，`.gitmodules` 记录获取地址。README 中的链接供查阅，不能替代这两部分配置。参见 [Git 官方说明](https://git-scm.com/docs/git-submodule)。
 
 | 依赖 | 当前用途 | 上游与迁移基线 |
 |---|---|---|
-| GLFW | 窗口、输入和后续 Vulkan surface 桥接 | [glfw/glfw](https://github.com/glfw/glfw)，[92dcf4ce](https://github.com/glfw/glfw/commit/92dcf4ce74f2e2554a98fea09be7c705c17daa5a) |
+| GLFW | 窗口、输入及 Vulkan surface 创建 | [glfw/glfw](https://github.com/glfw/glfw)，[92dcf4ce](https://github.com/glfw/glfw/commit/92dcf4ce74f2e2554a98fea09be7c705c17daa5a) |
 | Dear ImGui | 编辑与调试 UI，目前集成未完成 | [ocornut/imgui](https://github.com/ocornut/imgui)，docking [d88f238d](https://github.com/ocornut/imgui/commit/d88f238d1d363ef387382b2e29ad12cf96f826ac) |
 | spdlog | 日志，当前使用头文件 | [gabime/spdlog](https://github.com/gabime/spdlog)，[6d9805df](https://github.com/gabime/spdlog/commit/6d9805df3f588402b17073dcd13eb569ceda864d) |
 | GLAD | Vulkan 1.4 函数加载代码 | [Dav1dde/glad](https://github.com/Dav1dde/glad)，按下列选项本地生成 |

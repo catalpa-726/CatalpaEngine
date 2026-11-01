@@ -9,7 +9,19 @@
 
 namespace Catalpa {
 
-	static bool s_GLFWInitialized = false;
+	static unsigned int s_GLFWWindowCount = 0;
+
+	static std::runtime_error MakeGLFWError(const char* operation)
+	{
+		const char* description = nullptr;
+		const int error = glfwGetError(&description);
+
+		// 在清理 GLFW 资源之前，将错误描述复制到异常对象中。
+		return std::runtime_error(
+			std::string(operation) + " failed (GLFW " +
+			std::to_string(error) + "): " +
+			(description ? description : "No description"));
+	}
 
 	static void GLFWErrorCallback(int error, const char* description) {
 		CAT_CORE_ERROR("GLFW Error ({0}): {1}", error, description);
@@ -34,15 +46,22 @@ namespace Catalpa {
 
 		CAT_CORE_INFO("Creating window {0} ({1}, {2})", props.Title, props.Width, props.Height);
 
-		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-		if (!s_GLFWInitialized) {
-			int success = glfwInit();
-			CAT_CORE_ASSERT(success, "Could not intialize GLFW!");
+		if (s_GLFWWindowCount == 0) {
 			glfwSetErrorCallback(GLFWErrorCallback);
-			s_GLFWInitialized = true;
+			if (!glfwInit())
+				CAT_CORE_ASSERT(false, "Failed to initialize GLFW.");
 		}
 
-		m_Window = glfwCreateWindow((int)props.Width, (int)props.Height, m_Data.Title.c_str(), nullptr, nullptr);
+		glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+		m_Window = glfwCreateWindow(static_cast<int>(props.Width), static_cast<int>(props.Height), m_Data.Title.c_str(), nullptr, nullptr);
+
+		if (!m_Window) {
+			if (s_GLFWWindowCount == 0)
+				glfwTerminate();
+			CAT_CORE_ASSERT(false, "Failed to create window.");
+		}
+
+		++s_GLFWWindowCount;
 
 		//m_Context = new OpenGLContext(m_Window);
 		//m_Context->Init();
@@ -134,8 +153,17 @@ namespace Catalpa {
 			});
 	}
 
-	void WindowsWindow::Shutdown() {
+	void WindowsWindow::Shutdown()
+	{
+		if (!m_Window) {
+			return;
+		}
 		glfwDestroyWindow(m_Window);
+		m_Window = nullptr;
+		--s_GLFWWindowCount;
+		if (s_GLFWWindowCount == 0) {
+			glfwTerminate();
+		}
 	}
 
 	void WindowsWindow::OnUpdate() {
@@ -144,12 +172,24 @@ namespace Catalpa {
 		//m_Context.GetSwapChain().Flush();
 	}
 
+	std::pair<uint32_t, uint32_t> WindowsWindow::GetFramebufferSize() const
+	{
+		int width = 0, height = 0;
+		glfwGetFramebufferSize(m_Window, &width, &height);
+
+		return {
+			static_cast<uint32_t>(width),
+			static_cast<uint32_t>(height)
+		};
+	}
+
+	bool WindowsWindow::IsMinimized() const
+	{
+		return glfwGetWindowAttrib(m_Window, GLFW_ICONIFIED) == GLFW_TRUE;
+	}
+
 	void WindowsWindow::SetVSync(bool enabled) {
 		// 这个是针对opengl的，以后修改
-		if (enabled)
-			glfwSwapInterval(1);
-		else
-			glfwSwapInterval(0);
 		m_Data.VSync = enabled;
 	}
 
