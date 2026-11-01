@@ -1,0 +1,54 @@
+# Visual Studio 本机状态
+.vs/
+*.vcxproj.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.VC.opendb
+
+./docx/*.md
+
+# 构建、缓存、运行状态与发布输出
+/bin/
+/bin-int/
+/out/
+# 兼容迁移前留在依赖目录中的本机构建产物
+/Catalpa/third_party/*/bin/
+/Catalpa/third_party/*/bin-int/
+# GLAD 按 README 的选项在本地生成，构建适配由 Script/Build/GLAD.lua 管理
+/Catalpa/third_party/glad/
+/DerivedDataCache/
+/Cooked/
+/Saved/
+/Artifacts/
+/vcpkg_installed/
+
+/Projects/*/DerivedDataCache/
+/Projects/*/Cooked/
+/Projects/*/Saved/
+/Projects/*/vcpkg_installed/
+/CatalpaBox/Saved/
+/CatalpaEditor/Saved/
+/CatalpaPlayer/Saved/
+
+# 本项目由 Premake 生成的工程
+/CatalpaEngine.sln
+/Catalpa/Catalpa.vcxproj*
+/CatalpaBox/CatalpaBox.vcxproj*
+/CatalpaEditor/CatalpaEditor.vcxproj*
+/CatalpaPlayer/CatalpaPlayer.vcxproj*
+/Catalpa/third_party/glad/GLAD.vcxproj*
+/Catalpa/third_party/glfw/GLFW.vcxproj*
+/Catalpa/third_party/imgui/imgui.vcxproj*
+
+# Python 本机环境
+/.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# 系统杂项
+.DS_Store
+Thumbs.db
+Desktop.ini

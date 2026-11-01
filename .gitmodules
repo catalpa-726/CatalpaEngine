@@ -1,0 +1,9 @@
+[submodule "Catalpa/third_party/glfw"]
+	path = Catalpa/third_party/glfw
+	url = https://github.com/glfw/glfw.git
+[submodule "Catalpa/third_party/spdlog"]
+	path = Catalpa/third_party/spdlog
+	url = https://github.com/gabime/spdlog.git
+[submodule "Catalpa/third_party/imgui"]
+	path = Catalpa/third_party/imgui
+	url = https://github.com/ocornut/imgui.git
