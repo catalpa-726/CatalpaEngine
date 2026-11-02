@@ -75,4 +75,27 @@ namespace Catalpa {
         return status;
     }
 
+    RHIStatus VulkanFrameContext::CancelAcquire(VulkanQueue& queue, VulkanSwapchain& swapchain, RHIAcquireResult& acquired)
+    {
+        if (m_State != State::Acquired || !acquired.HasImage()) {
+            CAT_CORE_ASSERT(false, "Only an acquired, unsubmitted frame can be cancelled!");
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanFrameContext::CancelAcquire" };
+        }
+
+        const VkSemaphoreSubmitInfo waitInfo{
+            .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+            .semaphore = m_AcquireSemaphore.GetHandle(),
+            .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT
+        };
+
+        const RHIStatus status = queue.SubmitSynchronization(m_Fence, { &waitInfo, 1 });
+        if (!status.IsSuccess()) return status;
+
+        m_CommandList.Invalidate();
+        m_State = State::Submitted;
+        swapchain.RequestRecreate();
+        acquired = {};
+        return {};
+    }
+
 }

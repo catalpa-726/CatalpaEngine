@@ -40,6 +40,9 @@ namespace Catalpa {
         // 图像已转换到呈现布局，对应呈现信号量的 signal 提交已经成功。
         [[nodiscard]] RHIStatus Present(const RHIAcquireResult& acquired, RHIPresentOutcome& outcome);
 
+        // 请求后续重建，不立即销毁资源，也不覆盖 SurfaceLost 等状态。
+        void RequestRecreate() { if (m_Info.state == RHISwapchainState::Ready) m_Info.state = RHISwapchainState::OutOfDate; }
+
     private:
         const VulkanDevice& m_Device;
 

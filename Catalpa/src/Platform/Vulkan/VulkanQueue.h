@@ -23,8 +23,22 @@ namespace Catalpa {
             std::span<const VkSemaphoreSubmitInfo> waits = {}, 
             std::span<const VkSemaphoreSubmitInfo> signals = {});
 
+        // 不提交命令缓冲，只提交信号量等待或通知，并使用 Fence 观察完成。
+        [[nodiscard]] RHIStatus SubmitSynchronization(
+            VulkanFence& fence, 
+            std::span<const VkSemaphoreSubmitInfo> waits,
+            std::span<const VkSemaphoreSubmitInfo> signals = {});
+
         VkQueue GetHandle() const { return m_Queue; }
         uint32_t GetQueueFamily() const { return m_QueueFamily; }
+
+    private:
+        // 集中实现两种提交，复用已有的 Fence、错误处理和提交状态逻辑。
+        [[nodiscard]] RHIStatus SubmitInternal(
+            VulkanCommandList* commands, 
+            VulkanFence& fence, 
+            std::span<const VkSemaphoreSubmitInfo> waits, 
+            std::span<const VkSemaphoreSubmitInfo> signals);
 
     private:
         VkQueue m_Queue;
