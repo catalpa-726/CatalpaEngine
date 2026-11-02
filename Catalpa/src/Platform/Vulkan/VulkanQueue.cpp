@@ -15,8 +15,8 @@ namespace Catalpa {
     RHIStatus VulkanQueue::Submit(
         VulkanCommandList& commands,
         VulkanFence& fence,
-        std::span<const VkSemaphoreSubmitInfo> waits = {},
-        std::span<const VkSemaphoreSubmitInfo> signals = {})
+        std::span<const VkSemaphoreSubmitInfo> waits,
+        std::span<const VkSemaphoreSubmitInfo> signals)
     {
         if (!m_Failure.IsSuccess()) return m_Failure;
 

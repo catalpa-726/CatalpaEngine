@@ -7,6 +7,18 @@ namespace Catalpa {
 
     enum class RHIPresentMode { Fifo, Mailbox, Immediate };
     enum class RHISwapchainState { Uninitialized, Ready, Suspended, OutOfDate, SurfaceLost };
+    enum class RHIAcquireOutcome { Acquired, Suboptimal, NotReady, Suspended, OutOfDate };
+
+    /*
+    * RHIAcquireResult：描述本次获取结果和图像索引；实际错误继续使用已有 RHIStatus
+    * HasImage()：判断本次是否取得图像。它由结果计算，不额外保存一个容易失步的布尔字段。
+    */
+    struct RHIAcquireResult {
+        RHIAcquireOutcome outcome = RHIAcquireOutcome::NotReady;
+        uint32_t imageIndex = std::numeric_limits<uint32_t>::max();
+
+        [[nodiscard]] constexpr bool HasImage() const noexcept { return outcome == RHIAcquireOutcome::Acquired || outcome == RHIAcquireOutcome::Suboptimal; }
+    };
 
     struct RHISwapchainDesc {
         Extent2D extent{};

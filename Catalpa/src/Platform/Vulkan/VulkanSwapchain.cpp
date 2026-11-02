@@ -6,6 +6,47 @@
 
 namespace Catalpa {
 
+    RHIStatus VulkanSwapchain::Acquire(VulkanBinarySemaphore& semaphore, uint64_t timeoutNanoseconds, RHIAcquireResult& acquired)
+    {
+        acquired = {};
+
+        if (m_Info.state == RHISwapchainState::Suspended) { acquired.outcome = RHIAcquireOutcome::Suspended; return {}; }
+        if (m_Info.state == RHISwapchainState::OutOfDate) { acquired.outcome = RHIAcquireOutcome::OutOfDate; return {}; }
+
+        if (m_Info.state != RHISwapchainState::Ready) {
+            CAT_CORE_ASSERT(false, "Swapchain must be ready before acquiring an image!");
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanSwapchain::Acquire" };
+        }
+
+        uint32_t imageIndex = 0;
+        const VkResult result = vkAcquireNextImageKHR(m_Device.GetHandle(), m_Swapchain, timeoutNanoseconds, semaphore.GetHandle(), VK_NULL_HANDLE, &imageIndex);
+
+        switch (result) {
+            case VK_SUCCESS:
+            case VK_SUBOPTIMAL_KHR:
+                acquired = { .outcome = result == VK_SUCCESS ? RHIAcquireOutcome::Acquired : RHIAcquireOutcome::Suboptimal, .imageIndex = imageIndex };
+                return {};
+
+            case VK_NOT_READY:
+            case VK_TIMEOUT:
+                return {};
+
+            case VK_ERROR_OUT_OF_DATE_KHR:
+                m_Info.state = RHISwapchainState::OutOfDate;
+                acquired.outcome = RHIAcquireOutcome::OutOfDate;
+                return {};
+
+            case VK_ERROR_SURFACE_LOST_KHR:
+                m_Info.state = RHISwapchainState::SurfaceLost;
+                break;
+
+            default:
+                break;
+        }
+
+        return MakeVulkanStatus(result, "vkAcquireNextImageKHR");
+    }
+
     // 优先采用请求格式；没有匹配项时，在相同 sRGB／UNorm 编码类别中选择受支持的格式
     static PixelFormat SelectSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats, PixelFormat preferred, VkSurfaceFormatKHR& selected)
     {

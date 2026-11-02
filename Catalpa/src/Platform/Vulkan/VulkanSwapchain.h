@@ -33,6 +33,9 @@ namespace Catalpa {
         // 取得某张交换链图像对应的呈现等待信号量。这里的参数是后续 Acquire 返回的 image index
         VulkanBinarySemaphore& GetPresentSemaphore(uint32_t imageIndex) { return *m_PresentSemaphores[imageIndex]; }
 
+        // semaphore 必须已初始化、未触发，且不存在尚未完成的 signal/wait；timeout 单位为纳秒。
+        [[nodiscard]] RHIStatus Acquire(VulkanBinarySemaphore& semaphore, uint64_t timeoutNanoseconds, RHIAcquireResult& acquired);
+
     private:
         const VulkanDevice& m_Device;
 
