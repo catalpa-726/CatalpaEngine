@@ -5,6 +5,7 @@
 #include "RHISwapchain.h"
 #include "RHIError.h"
 #include "RHITypes.h"
+#include "RHICapabilities.h"
 
 namespace Catalpa {
 
@@ -19,6 +20,12 @@ namespace Catalpa {
 
         // 返回的交换链必须先于设备释放；失败时返回空指针并填写 status。
         [[nodiscard]] virtual std::unique_ptr<RHISwapchain> CreateSwapchain(const RHISwapchainDesc& desc, RHIStatus& status) = 0;
+
+        // 查询初始化时保存的设备上限。
+        virtual const RHICapabilities& GetCapabilities() const = 0;
+
+        // 查询普通 GPU 纹理的单项格式能力；未知格式返回全 false。
+        virtual RHIFormatSupport GetFormatSupport(PixelFormat format) const = 0;
 
         // 调用前结束 GPU 使用，并释放设备创建的子资源。
         virtual void Shutdown() = 0;

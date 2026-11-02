@@ -46,6 +46,9 @@ namespace Catalpa {
         VulkanResourceRegistry& GetResourceRegistry() { return *m_ResourceRegistry; }
         const VulkanResourceRegistry& GetResourceRegistry() const { return *m_ResourceRegistry; }
 
+        const RHICapabilities& GetCapabilities() const override { return m_Capabilities; }
+        RHIFormatSupport GetFormatSupport(PixelFormat format) const override;
+
     private:
         std::unique_ptr<VulkanBackend> m_Backend;
         VkDevice m_Device = VK_NULL_HANDLE;
@@ -60,6 +63,8 @@ namespace Catalpa {
         std::array<std::unique_ptr<VulkanFrameContext>, FramesInFlight> m_Frames{};
 
         std::unique_ptr<VulkanResourceRegistry> m_ResourceRegistry;
+
+        RHICapabilities m_Capabilities{};
     };
 
 }

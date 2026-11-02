@@ -4,17 +4,18 @@
 #include "VulkanUtils.h"
 #include "VulkanBinarySemaphore.h"
 #include "VulkanResourceRegistry.h"
+#include "VulkanConversions.h"
 
 namespace Catalpa {
 
     // 优先采用请求格式；没有匹配项时，在相同 sRGB／UNorm 编码类别中选择受支持的格式
     static PixelFormat SelectSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats, PixelFormat preferred, VkSurfaceFormatKHR& selected)
     {
-        constexpr std::array mappings{
-            std::pair{ PixelFormat::BGRA8_SRGB, VK_FORMAT_B8G8R8A8_SRGB },
-            std::pair{ PixelFormat::RGBA8_SRGB, VK_FORMAT_R8G8B8A8_SRGB },
-            std::pair{ PixelFormat::BGRA8_UNorm, VK_FORMAT_B8G8R8A8_UNORM },
-            std::pair{ PixelFormat::RGBA8_UNorm, VK_FORMAT_R8G8B8A8_UNORM }
+        constexpr std::array candidates{
+            PixelFormat::BGRA8_SRGB,
+            PixelFormat::RGBA8_SRGB,
+            PixelFormat::BGRA8_UNorm,
+            PixelFormat::RGBA8_UNorm
         };
 
         const PixelFormatInfo preferredInfo = GetPixelFormatInfo(preferred);
@@ -22,8 +23,10 @@ namespace Catalpa {
 
         PixelFormat chosen = PixelFormat::Unknown;
 
-        for (const auto& [pixelFormat, nativeFormat] : mappings) {
+        for (const PixelFormat pixelFormat : candidates) {
             if (GetPixelFormatInfo(pixelFormat).isSRGB != preferredInfo.isSRGB) continue;
+
+            const VkFormat nativeFormat = ToVulkanFormat(pixelFormat);
 
             for (const auto& format : formats) {
                 if (format.format != nativeFormat || format.colorSpace != VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) continue;
@@ -156,8 +159,8 @@ namespace Catalpa {
         if (result != VK_SUCCESS) return MakeVulkanStatus(result, "vkGetSwapchainImagesKHR");
 
         m_ImageViews.reserve(m_Images.size());
-        m_PresentSemaphores.reserve(m_Images.size());
         m_ImageViewHandles.reserve(m_Images.size());
+        m_PresentSemaphores.reserve(m_Images.size());
 
         for (const VkImage image : m_Images) {
             VkImageViewCreateInfo viewInfo{

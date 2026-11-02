@@ -9,6 +9,7 @@
 #include "VulkanFrameContext.h"
 #include "VulkanQueue.h"
 #include "VulkanResourceRegistry.h"
+#include "VulkanConversions.h"
 
 namespace Catalpa {
 
@@ -91,6 +92,20 @@ namespace Catalpa {
         m_GraphicsQueueFamily = families[0];
         m_PresentQueueFamily = families[1];
 
+        const auto& limits = physicalDevice.GetProperties().limits;
+
+        m_Capabilities = {
+            .maxTextureDimension2D = limits.maxImageDimension2D,
+            .maxTextureArrayLayers = limits.maxImageArrayLayers,
+            .maxColorAttachments = limits.maxColorAttachments,
+            .maxRenderTargetExtent = { limits.maxFramebufferWidth, limits.maxFramebufferHeight },
+            .maxPushConstantBytes = limits.maxPushConstantsSize,
+            .maxUniformBufferRange = limits.maxUniformBufferRange,
+            .maxStorageBufferRange = limits.maxStorageBufferRange,
+            .minUniformBufferOffsetAlignment = limits.minUniformBufferOffsetAlignment,
+            .minStorageBufferOffsetAlignment = limits.minStorageBufferOffsetAlignment
+        };
+
         m_Backend = std::move(backend);
         m_GraphicsQueue = std::make_unique<VulkanQueue>(graphicsQueue, m_GraphicsQueueFamily);
         m_ResourceRegistry = std::make_unique<VulkanResourceRegistry>(AllocateDeviceId());
@@ -120,6 +135,27 @@ namespace Catalpa {
         return swapchain;
     }
 
+    RHIFormatSupport VulkanDevice::GetFormatSupport(PixelFormat format) const
+    {
+        const VkFormat nativeFormat = ToVulkanFormat(format);
+        if (nativeFormat == VK_FORMAT_UNDEFINED) return {};
+
+        VkFormatProperties properties{};
+        vkGetPhysicalDeviceFormatProperties(m_PhysicalDevice, nativeFormat, &properties);
+
+        const VkFormatFeatureFlags features = properties.optimalTilingFeatures;
+
+        return {
+            .sampledImage = (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0,
+            .linearFiltering = (features & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0,
+            .storageImage = (features & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0,
+            .colorAttachment = (features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) != 0,
+            .colorAttachmentBlend = (features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT) != 0,
+            .transferSource = (features & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT) != 0,
+            .transferDestination = (features & VK_FORMAT_FEATURE_TRANSFER_DST_BIT) != 0
+        };
+    }
+
     void VulkanDevice::Shutdown()
     {
         for (auto& frame : m_Frames) frame.reset();
@@ -136,6 +172,7 @@ namespace Catalpa {
         }
 
         m_Backend.reset();
+        m_Capabilities = {};
     }
 
     DeviceId VulkanDevice::GetDeviceId() const
