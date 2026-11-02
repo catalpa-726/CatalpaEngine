@@ -27,6 +27,16 @@ namespace Catalpa {
         // 仅在实际提交成功后调用。
         void MarkSubmitted();
 
+        // 录制调用者提供的同步依赖；当前只允许在渲染段之外调用。
+        [[nodiscard]] RHIStatus PipelineBarrier(const VkDependencyInfo& dependencyInfo);
+
+        // 当前支持 flags = 0、viewMask = 0 的普通动态渲染。
+        [[nodiscard]] RHIStatus BeginRendering(const VkRenderingInfo& renderingInfo);
+        [[nodiscard]] RHIStatus EndRendering();
+
+        // 设置第一个视口和裁剪区域，坐标由调用者明确提供。
+        [[nodiscard]] RHIStatus SetViewportAndScissor(const VkViewport& viewport, const VkRect2D& scissor);
+
     private:
         // 	在原生命令池重置成功后同步恢复 Initial
         void OnPoolReset() { m_State = RHICommandListState::Initial; }

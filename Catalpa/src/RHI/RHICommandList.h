@@ -6,7 +6,7 @@
 // 提供不包含 Vulkan 类型的命令录制接口
 namespace Catalpa {
 
-    enum class RHICommandListState { Uninitialized, Initial, Recording, Executable, Pending, Invalid };
+    enum class RHICommandListState { Uninitialized, Initial, Recording, Rendering, Executable, Pending, Invalid };
 
     class CATALPA_API RHICommandList {
     public:

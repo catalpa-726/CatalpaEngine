@@ -34,7 +34,7 @@ namespace Catalpa {
     RHIStatus VulkanCommandList::End()
     {
         if (m_State != RHICommandListState::Recording) {
-            CAT_CORE_ASSERT(false, "Command list is not recording!");
+            CAT_CORE_ASSERT(false, "End the rendering scope before ending the command list!");
             return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::End" };
         }
 
@@ -48,6 +48,60 @@ namespace Catalpa {
     {
         CAT_CORE_ASSERT(m_State == RHICommandListState::Executable, "Command list must be executable before submission!");
         m_State = RHICommandListState::Pending;
+    }
+
+    // 录制已经给定的依赖，不自行推导资源状态
+    RHIStatus VulkanCommandList::PipelineBarrier(const VkDependencyInfo& dependencyInfo)
+    {
+        if (m_State != RHICommandListState::Recording) {
+            CAT_CORE_ASSERT(false, "Pipeline barriers must be recorded outside a rendering scope!");
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::PipelineBarrier" };
+        }
+
+        vkCmdPipelineBarrier2(m_CommandBuffer, &dependencyInfo);
+        return {};
+    }
+
+    // 开始渲染段，附件、清除值和渲染区域由 renderingInfo 提供
+    RHIStatus VulkanCommandList::BeginRendering(const VkRenderingInfo& renderingInfo)
+    {
+        if (m_State != RHICommandListState::Recording) {
+            CAT_CORE_ASSERT(false, "Command list must be recording outside a rendering scope!");
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::BeginRendering" };
+        }
+
+        if (renderingInfo.flags != 0 || renderingInfo.viewMask != 0)
+            return { .code = RHIErrorCode::Unsupported, .operation = "VulkanCommandList::BeginRendering" };
+
+        vkCmdBeginRendering(m_CommandBuffer, &renderingInfo);
+        m_State = RHICommandListState::Rendering;
+        return {};
+    }
+
+    // 结束渲染段，恢复为普通录制阶段
+    RHIStatus VulkanCommandList::EndRendering()
+    {
+        if (m_State != RHICommandListState::Rendering) {
+            CAT_CORE_ASSERT(false, "No rendering scope is active!");
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::EndRendering" };
+        }
+
+        vkCmdEndRendering(m_CommandBuffer);
+        m_State = RHICommandListState::Recording;
+        return {};
+    }
+
+    // 录制动态视口和裁剪区域，允许在普通录制阶段或渲染段内调用
+    RHIStatus VulkanCommandList::SetViewportAndScissor(const VkViewport& viewport, const VkRect2D& scissor)
+    {
+        if (m_State != RHICommandListState::Recording && m_State != RHICommandListState::Rendering) {
+            CAT_CORE_ASSERT(false, "Command list must be recording before setting viewport and scissor!");
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::SetViewportAndScissor" };
+        }
+
+        vkCmdSetViewport(m_CommandBuffer, 0, 1, &viewport);
+        vkCmdSetScissor(m_CommandBuffer, 0, 1, &scissor);
+        return {};
     }
 
 }
