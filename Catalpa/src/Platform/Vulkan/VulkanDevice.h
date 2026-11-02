@@ -7,6 +7,7 @@ namespace Catalpa {
 
     class VulkanBackend;
     class VulkanFrameContext;
+    class VulkanQueue;
 
     class VulkanDevice : public RHIDevice {
     public:
@@ -27,8 +28,10 @@ namespace Catalpa {
 
         VkDevice GetHandle() const { return m_Device; }
         VkPhysicalDevice GetPhysicalDevice() const { return m_PhysicalDevice; }
-        VkQueue GetGraphicsQueue() const { return m_GraphicsQueue; }
+
+        VulkanQueue& GetGraphicsQueue() { return *m_GraphicsQueue; }
         VkQueue GetPresentQueue() const { return m_PresentQueue; }
+
         uint32_t GetGraphicsQueueFamily() const { return m_GraphicsQueueFamily; }
         uint32_t GetPresentQueueFamily() const { return m_PresentQueueFamily; }
 
@@ -41,7 +44,7 @@ namespace Catalpa {
         VkDevice m_Device = VK_NULL_HANDLE;
         VkPhysicalDevice m_PhysicalDevice = VK_NULL_HANDLE;
 
-        VkQueue m_GraphicsQueue = VK_NULL_HANDLE;
+        std::unique_ptr<VulkanQueue> m_GraphicsQueue;
         VkQueue m_PresentQueue = VK_NULL_HANDLE;
 
         uint32_t m_GraphicsQueueFamily = VK_QUEUE_FAMILY_IGNORED;

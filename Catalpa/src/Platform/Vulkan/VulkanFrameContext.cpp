@@ -8,7 +8,7 @@ namespace Catalpa {
     RHIStatus VulkanFrameContext::Init(uint32_t queueFamily)
     {
         if (const RHIStatus status = m_CommandPool.Init(queueFamily); !status.IsSuccess()) return status;
-        if (const RHIStatus status = m_CommandPool.AllocatePrimary(m_CommandBuffer); !status.IsSuccess()) return status;
+        if (const RHIStatus status = m_CommandList.Init(m_CommandPool); !status.IsSuccess()) return status;
         if (const RHIStatus status = m_Fence.Init(true); !status.IsSuccess()) return status;
         return m_AcquireSemaphore.Init();
     }
@@ -26,8 +26,11 @@ namespace Catalpa {
         if (!status.IsSuccess() || !signaled) return status;
 
         status = m_CommandPool.Reset();
-        ready = status.IsSuccess();
-        return status;
+        if (!status.IsSuccess()) return status;
+
+        m_CommandList.OnPoolReset();
+        ready = true;
+        return {};
     }
 
 }

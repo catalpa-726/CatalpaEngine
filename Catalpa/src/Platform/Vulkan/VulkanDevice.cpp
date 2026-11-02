@@ -7,6 +7,7 @@
 #include "VulkanSwapchain.h"
 #include "VulkanUtils.h"
 #include "VulkanFrameContext.h"
+#include "VulkanQueue.h"
 
 namespace Catalpa {
 
@@ -72,12 +73,12 @@ namespace Catalpa {
 
         m_Device = device;
         m_PhysicalDevice = physicalHandle;
-        m_GraphicsQueue = graphicsQueue;
         m_PresentQueue = presentQueue;
         m_GraphicsQueueFamily = families[0];
         m_PresentQueueFamily = families[1];
 
         m_Backend = std::move(backend);
+        m_GraphicsQueue = std::make_unique<VulkanQueue>(graphicsQueue, m_GraphicsQueueFamily);
 
         for (auto& frame : m_Frames) {
             frame = std::make_unique<VulkanFrameContext>(*this);
@@ -107,12 +108,12 @@ namespace Catalpa {
     void VulkanDevice::Shutdown()
     {
         for (auto& frame : m_Frames) frame.reset();
+        m_GraphicsQueue.reset();
 
         if (m_Device != VK_NULL_HANDLE) {
             vkDestroyDevice(m_Device, nullptr);
             m_Device = VK_NULL_HANDLE;
             m_PhysicalDevice = VK_NULL_HANDLE;
-            m_GraphicsQueue = VK_NULL_HANDLE;
             m_PresentQueue = VK_NULL_HANDLE;
             m_GraphicsQueueFamily = VK_QUEUE_FAMILY_IGNORED;
             m_PresentQueueFamily = VK_QUEUE_FAMILY_IGNORED;
