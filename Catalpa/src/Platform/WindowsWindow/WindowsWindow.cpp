@@ -11,18 +11,6 @@ namespace Catalpa {
 
 	static unsigned int s_GLFWWindowCount = 0;
 
-	static std::runtime_error MakeGLFWError(const char* operation)
-	{
-		const char* description = nullptr;
-		const int error = glfwGetError(&description);
-
-		// 在清理 GLFW 资源之前，将错误描述复制到异常对象中。
-		return std::runtime_error(
-			std::string(operation) + " failed (GLFW " +
-			std::to_string(error) + "): " +
-			(description ? description : "No description"));
-	}
-
 	static void GLFWErrorCallback(int error, const char* description) {
 		CAT_CORE_ERROR("GLFW Error ({0}): {1}", error, description);
 	}
