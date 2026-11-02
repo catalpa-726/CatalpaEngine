@@ -12,7 +12,7 @@ namespace Catalpa {
 
     class VulkanSwapchain : public RHISwapchain {
     public:
-        VulkanSwapchain(const VulkanDevice& device, VkSurfaceKHR surface);
+        VulkanSwapchain(VulkanDevice& device, VkSurfaceKHR surface);
         ~VulkanSwapchain() override;
 
         VulkanSwapchain(const VulkanSwapchain&) = delete;
@@ -27,6 +27,7 @@ namespace Catalpa {
         // 供后端按有效图像索引取得图像及视图
         VkImage GetImage(uint32_t index) const { return m_Images[index]; }
         VkImageView GetImageView(uint32_t index) const { return m_ImageViews[index]; }
+        TextureViewHandle GetImageViewHandle(uint32_t imageIndex) const override { return m_ImageViewHandles[imageIndex]; }
 
         [[nodiscard]] RHIStatus Recreate(const RHISwapchainDesc& desc) override;
 
@@ -44,13 +45,14 @@ namespace Catalpa {
         void RequestRecreate() { if (m_Info.state == RHISwapchainState::Ready) m_Info.state = RHISwapchainState::OutOfDate; }
 
     private:
-        const VulkanDevice& m_Device;
+        VulkanDevice& m_Device;
 
         VkSurfaceKHR m_Surface = VK_NULL_HANDLE;
         VkSwapchainKHR m_Swapchain = VK_NULL_HANDLE;
 
         std::vector<VkImage> m_Images;
         std::vector<VkImageView> m_ImageViews;
+        std::vector<TextureViewHandle> m_ImageViewHandles;
 
         RHISwapchainInfo m_Info{};
 

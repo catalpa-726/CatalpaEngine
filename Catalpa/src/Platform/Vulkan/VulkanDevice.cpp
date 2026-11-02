@@ -8,8 +8,22 @@
 #include "VulkanUtils.h"
 #include "VulkanFrameContext.h"
 #include "VulkanQueue.h"
+#include "VulkanResourceRegistry.h"
 
 namespace Catalpa {
+
+    // 当前由主线程签发；计数器不随设备关闭而复位。
+    static DeviceId AllocateDeviceId()
+    {
+        static uint64_t next = 0;
+
+        if (next == std::numeric_limits<uint64_t>::max()) {
+            CAT_CORE_ASSERT(false, "Device identity space exhausted!");
+            std::abort();
+        }
+
+        return { .value = ++next };
+    }
 
     VulkanDevice::VulkanDevice() = default;
 
@@ -79,6 +93,7 @@ namespace Catalpa {
 
         m_Backend = std::move(backend);
         m_GraphicsQueue = std::make_unique<VulkanQueue>(graphicsQueue, m_GraphicsQueueFamily);
+        m_ResourceRegistry = std::make_unique<VulkanResourceRegistry>(AllocateDeviceId());
 
         for (auto& frame : m_Frames) {
             frame = std::make_unique<VulkanFrameContext>(*this);
@@ -111,6 +126,7 @@ namespace Catalpa {
         m_GraphicsQueue.reset();
 
         if (m_Device != VK_NULL_HANDLE) {
+            m_ResourceRegistry.reset();
             vkDestroyDevice(m_Device, nullptr);
             m_Device = VK_NULL_HANDLE;
             m_PhysicalDevice = VK_NULL_HANDLE;
@@ -120,6 +136,11 @@ namespace Catalpa {
         }
 
         m_Backend.reset();
+    }
+
+    DeviceId VulkanDevice::GetDeviceId() const
+    {
+        return m_ResourceRegistry ? m_ResourceRegistry->GetDeviceId() : DeviceId{};
     }
 
 }

@@ -3,6 +3,7 @@
 #include "Core/Base.h"
 #include "RHIError.h"
 #include "RHISwapchainDesc.h"
+#include "RHIHandle.h"
 
 // 提供上层能够持有的交换链接口
 namespace Catalpa {
@@ -16,6 +17,9 @@ namespace Catalpa {
 
         // 调用前结束旧交换链资源的 GPU 和呈现使用。
         [[nodiscard]] virtual RHIStatus Recreate(const RHISwapchainDesc& desc) = 0;
+
+        // imageIndex 索引当前交换链图像；返回值是独立的资源句柄。
+        virtual TextureViewHandle GetImageViewHandle(uint32_t imageIndex) const = 0;
 
         // 调用前结束交换链资源的 GPU 和呈现使用。
         virtual void Shutdown() = 0;

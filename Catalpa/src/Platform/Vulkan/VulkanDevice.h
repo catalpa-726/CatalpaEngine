@@ -8,8 +8,12 @@ namespace Catalpa {
     class VulkanBackend;
     class VulkanFrameContext;
     class VulkanQueue;
+    class VulkanResourceRegistry;
 
     class VulkanDevice : public RHIDevice {
+    public:
+        static constexpr uint32_t FramesInFlight = 2;
+
     public:
         VulkanDevice();
         ~VulkanDevice() override;
@@ -37,7 +41,10 @@ namespace Catalpa {
 
         VulkanFrameContext& GetFrameContext(uint32_t frameSlot) { return *m_Frames[frameSlot]; }
 
-        static constexpr uint32_t FramesInFlight = 2;
+        DeviceId GetDeviceId() const override;
+
+        VulkanResourceRegistry& GetResourceRegistry() { return *m_ResourceRegistry; }
+        const VulkanResourceRegistry& GetResourceRegistry() const { return *m_ResourceRegistry; }
 
     private:
         std::unique_ptr<VulkanBackend> m_Backend;
@@ -51,6 +58,8 @@ namespace Catalpa {
         uint32_t m_PresentQueueFamily = VK_QUEUE_FAMILY_IGNORED;
 
         std::array<std::unique_ptr<VulkanFrameContext>, FramesInFlight> m_Frames{};
+
+        std::unique_ptr<VulkanResourceRegistry> m_ResourceRegistry;
     };
 
 }

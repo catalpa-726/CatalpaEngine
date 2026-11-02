@@ -3,6 +3,7 @@
 #include "VulkanDevice.h"
 #include "VulkanUtils.h"
 #include "VulkanBinarySemaphore.h"
+#include "VulkanResourceRegistry.h"
 
 namespace Catalpa {
 
@@ -55,7 +56,7 @@ namespace Catalpa {
         return { VK_PRESENT_MODE_FIFO_KHR, RHIPresentMode::Fifo };
     }
 
-    VulkanSwapchain::VulkanSwapchain(const VulkanDevice& device, VkSurfaceKHR surface) : m_Device(device), m_Surface(surface) {}
+    VulkanSwapchain::VulkanSwapchain(VulkanDevice& device, VkSurfaceKHR surface) : m_Device(device), m_Surface(surface) {}
 
     VulkanSwapchain::~VulkanSwapchain() { Shutdown(); }
 
@@ -156,6 +157,7 @@ namespace Catalpa {
 
         m_ImageViews.reserve(m_Images.size());
         m_PresentSemaphores.reserve(m_Images.size());
+        m_ImageViewHandles.reserve(m_Images.size());
 
         for (const VkImage image : m_Images) {
             VkImageViewCreateInfo viewInfo{
@@ -170,6 +172,17 @@ namespace Catalpa {
             result = vkCreateImageView(device, &viewInfo, nullptr, &view);
             if (result != VK_SUCCESS) return MakeVulkanStatus(result, "vkCreateImageView");
             m_ImageViews.push_back(view);
+
+            const VulkanTextureViewRecord record{
+                .image = image,
+                .view = view,
+                .extent = { extent.width, extent.height },
+                .format = pixelFormat
+            };
+
+            TextureViewHandle handle{};
+            if (const RHIStatus status = m_Device.GetResourceRegistry().RegisterBorrowedTextureView(record, handle); !status.IsSuccess()) return status;
+            m_ImageViewHandles.push_back(handle);
 
             auto semaphore = std::make_unique<VulkanBinarySemaphore>(m_Device);
             if (const RHIStatus status = semaphore->Init(); !status.IsSuccess()) return status;
@@ -294,6 +307,10 @@ namespace Catalpa {
 
     void VulkanSwapchain::Shutdown()
     {
+        for (const TextureViewHandle handle : m_ImageViewHandles) 
+            m_Device.GetResourceRegistry().UnregisterBorrowedTextureView(handle);
+        m_ImageViewHandles.clear();
+
         m_PresentSemaphores.clear();
 
         for (const VkImageView view : m_ImageViews) vkDestroyImageView(m_Device.GetHandle(), view, nullptr);

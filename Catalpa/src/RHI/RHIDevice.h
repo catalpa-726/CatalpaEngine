@@ -4,6 +4,7 @@
 #include "RHIBackend.h"
 #include "RHISwapchain.h"
 #include "RHIError.h"
+#include "RHITypes.h"
 
 namespace Catalpa {
 
@@ -21,6 +22,8 @@ namespace Catalpa {
 
         // 调用前结束 GPU 使用，并释放设备创建的子资源。
         virtual void Shutdown() = 0;
+
+        virtual DeviceId GetDeviceId() const = 0;
     };
 
 }
