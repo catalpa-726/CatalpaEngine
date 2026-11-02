@@ -92,15 +92,29 @@ namespace Catalpa {
     }
 
     // 录制动态视口和裁剪区域，允许在普通录制阶段或渲染段内调用
-    RHIStatus VulkanCommandList::SetViewportAndScissor(const VkViewport& viewport, const VkRect2D& scissor)
+    RHIStatus VulkanCommandList::SetViewportAndScissor(const RHIViewport& viewport, const Rect2D& scissor)
     {
         if (m_State != RHICommandListState::Recording && m_State != RHICommandListState::Rendering) {
             CAT_CORE_ASSERT(false, "Command list must be recording before setting viewport and scissor!");
             return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::SetViewportAndScissor" };
         }
 
-        vkCmdSetViewport(m_CommandBuffer, 0, 1, &viewport);
-        vkCmdSetScissor(m_CommandBuffer, 0, 1, &scissor);
+        const VkViewport nativeViewport{
+            .x = viewport.x,
+            .y = viewport.y,
+            .width = viewport.width,
+            .height = viewport.height,
+            .minDepth = viewport.minDepth,
+            .maxDepth = viewport.maxDepth
+        };
+
+        const VkRect2D nativeScissor{
+            .offset = {.x = scissor.offset.x, .y = scissor.offset.y },
+            .extent = {.width = scissor.extent.width, .height = scissor.extent.height }
+        };
+
+        vkCmdSetViewport(m_CommandBuffer, 0, 1, &nativeViewport);
+        vkCmdSetScissor(m_CommandBuffer, 0, 1, &nativeScissor);
         return {};
     }
 

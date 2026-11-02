@@ -35,7 +35,7 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus EndRendering();
 
         // 设置第一个视口和裁剪区域，坐标由调用者明确提供。
-        [[nodiscard]] RHIStatus SetViewportAndScissor(const VkViewport& viewport, const VkRect2D& scissor);
+        [[nodiscard]] RHIStatus SetViewportAndScissor(const RHIViewport& viewport, const Rect2D& scissor) override;
 
     private:
         // 	在原生命令池重置成功后同步恢复 Initial

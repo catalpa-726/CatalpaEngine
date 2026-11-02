@@ -2,6 +2,7 @@
 
 #include "Core/Base.h"
 #include "RHIError.h"
+#include "RHITypes.h"
 
 // 提供不包含 Vulkan 类型的命令录制接口
 namespace Catalpa {
@@ -16,6 +17,8 @@ namespace Catalpa {
         [[nodiscard]] virtual RHIStatus End() = 0;
 
         virtual RHICommandListState GetState() const = 0;
+
+        [[nodiscard]] virtual RHIStatus SetViewportAndScissor(const RHIViewport& viewport, const Rect2D& scissor) = 0;
     };
 
 }
