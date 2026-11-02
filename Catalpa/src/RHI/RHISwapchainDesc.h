@@ -8,6 +8,7 @@ namespace Catalpa {
     enum class RHIPresentMode { Fifo, Mailbox, Immediate };
     enum class RHISwapchainState { Uninitialized, Ready, Suspended, OutOfDate, SurfaceLost };
     enum class RHIAcquireOutcome { Acquired, Suboptimal, NotReady, Suspended, OutOfDate };
+    enum class RHIPresentOutcome { Queued, Suboptimal, OutOfDate, SurfaceLost, NotQueued, Unknown };
 
     /*
     * RHIAcquireResult：描述本次获取结果和图像索引；实际错误继续使用已有 RHIStatus

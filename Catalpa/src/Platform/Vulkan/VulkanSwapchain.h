@@ -36,6 +36,10 @@ namespace Catalpa {
         // semaphore 必须已初始化、未触发，且不存在尚未完成的 signal/wait；timeout 单位为纳秒。
         [[nodiscard]] RHIStatus Acquire(VulkanBinarySemaphore& semaphore, uint64_t timeoutNanoseconds, RHIAcquireResult& acquired);
 
+        // acquired 必须来自当前交换链，且尚未呈现。
+        // 图像已转换到呈现布局，对应呈现信号量的 signal 提交已经成功。
+        [[nodiscard]] RHIStatus Present(const RHIAcquireResult& acquired, RHIPresentOutcome& outcome);
+
     private:
         const VulkanDevice& m_Device;
 

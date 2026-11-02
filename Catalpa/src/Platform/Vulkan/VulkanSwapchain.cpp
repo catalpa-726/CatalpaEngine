@@ -6,47 +6,6 @@
 
 namespace Catalpa {
 
-    RHIStatus VulkanSwapchain::Acquire(VulkanBinarySemaphore& semaphore, uint64_t timeoutNanoseconds, RHIAcquireResult& acquired)
-    {
-        acquired = {};
-
-        if (m_Info.state == RHISwapchainState::Suspended) { acquired.outcome = RHIAcquireOutcome::Suspended; return {}; }
-        if (m_Info.state == RHISwapchainState::OutOfDate) { acquired.outcome = RHIAcquireOutcome::OutOfDate; return {}; }
-
-        if (m_Info.state != RHISwapchainState::Ready) {
-            CAT_CORE_ASSERT(false, "Swapchain must be ready before acquiring an image!");
-            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanSwapchain::Acquire" };
-        }
-
-        uint32_t imageIndex = 0;
-        const VkResult result = vkAcquireNextImageKHR(m_Device.GetHandle(), m_Swapchain, timeoutNanoseconds, semaphore.GetHandle(), VK_NULL_HANDLE, &imageIndex);
-
-        switch (result) {
-            case VK_SUCCESS:
-            case VK_SUBOPTIMAL_KHR:
-                acquired = { .outcome = result == VK_SUCCESS ? RHIAcquireOutcome::Acquired : RHIAcquireOutcome::Suboptimal, .imageIndex = imageIndex };
-                return {};
-
-            case VK_NOT_READY:
-            case VK_TIMEOUT:
-                return {};
-
-            case VK_ERROR_OUT_OF_DATE_KHR:
-                m_Info.state = RHISwapchainState::OutOfDate;
-                acquired.outcome = RHIAcquireOutcome::OutOfDate;
-                return {};
-
-            case VK_ERROR_SURFACE_LOST_KHR:
-                m_Info.state = RHISwapchainState::SurfaceLost;
-                break;
-
-            default:
-                break;
-        }
-
-        return MakeVulkanStatus(result, "vkAcquireNextImageKHR");
-    }
-
     // 优先采用请求格式；没有匹配项时，在相同 sRGB／UNorm 编码类别中选择受支持的格式
     static PixelFormat SelectSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& formats, PixelFormat preferred, VkSurfaceFormatKHR& selected)
     {
@@ -239,6 +198,98 @@ namespace Catalpa {
         Shutdown();
         if (status.nativeCode == VK_ERROR_SURFACE_LOST_KHR) m_Info.state = RHISwapchainState::SurfaceLost;
         return status;
+    }
+
+    RHIStatus VulkanSwapchain::Acquire(VulkanBinarySemaphore& semaphore, uint64_t timeoutNanoseconds, RHIAcquireResult& acquired)
+    {
+        acquired = {};
+
+        if (m_Info.state == RHISwapchainState::Suspended) { acquired.outcome = RHIAcquireOutcome::Suspended; return {}; }
+        if (m_Info.state == RHISwapchainState::OutOfDate) { acquired.outcome = RHIAcquireOutcome::OutOfDate; return {}; }
+
+        if (m_Info.state != RHISwapchainState::Ready) {
+            CAT_CORE_ASSERT(false, "Swapchain must be ready before acquiring an image!");
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanSwapchain::Acquire" };
+        }
+
+        uint32_t imageIndex = 0;
+        const VkResult result = vkAcquireNextImageKHR(m_Device.GetHandle(), m_Swapchain, timeoutNanoseconds, semaphore.GetHandle(), VK_NULL_HANDLE, &imageIndex);
+
+        switch (result) {
+            case VK_SUCCESS:
+            case VK_SUBOPTIMAL_KHR:
+                acquired = { .outcome = result == VK_SUCCESS ? RHIAcquireOutcome::Acquired : RHIAcquireOutcome::Suboptimal, .imageIndex = imageIndex };
+                return {};
+
+            case VK_NOT_READY:
+            case VK_TIMEOUT:
+                return {};
+
+            case VK_ERROR_OUT_OF_DATE_KHR:
+                m_Info.state = RHISwapchainState::OutOfDate;
+                acquired.outcome = RHIAcquireOutcome::OutOfDate;
+                return {};
+
+            case VK_ERROR_SURFACE_LOST_KHR:
+                m_Info.state = RHISwapchainState::SurfaceLost;
+                break;
+
+            default:
+                break;
+        }
+
+        return MakeVulkanStatus(result, "vkAcquireNextImageKHR");
+    }
+
+    RHIStatus VulkanSwapchain::Present(const RHIAcquireResult& acquired, RHIPresentOutcome& outcome)
+    {
+        outcome = RHIPresentOutcome::NotQueued;
+
+        if (!acquired.HasImage() || acquired.imageIndex >= m_PresentSemaphores.size()) {
+            CAT_CORE_ASSERT(false, "Present requires a valid acquired image!");
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanSwapchain::Present" };
+        }
+
+        const VkSemaphore waitSemaphore = GetPresentSemaphore(acquired.imageIndex).GetHandle();
+        const VkPresentInfoKHR presentInfo{
+            .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .waitSemaphoreCount = 1,
+            .pWaitSemaphores = &waitSemaphore,
+            .swapchainCount = 1,
+            .pSwapchains = &m_Swapchain,
+            .pImageIndices = &acquired.imageIndex
+        };
+
+        outcome = RHIPresentOutcome::Unknown;
+        const VkResult result = vkQueuePresentKHR(m_Device.GetPresentQueue(), &presentInfo);
+
+        switch (result) {
+            case VK_SUCCESS:
+                outcome = RHIPresentOutcome::Queued;
+                if (acquired.outcome == RHIAcquireOutcome::Suboptimal) m_Info.state = RHISwapchainState::OutOfDate;
+                return {};
+
+            case VK_SUBOPTIMAL_KHR:
+            case VK_ERROR_OUT_OF_DATE_KHR:
+                outcome = result == VK_SUBOPTIMAL_KHR ? RHIPresentOutcome::Suboptimal : RHIPresentOutcome::OutOfDate;
+                m_Info.state = RHISwapchainState::OutOfDate;
+                return {};
+
+            case VK_ERROR_SURFACE_LOST_KHR:
+                outcome = RHIPresentOutcome::SurfaceLost;
+                m_Info.state = RHISwapchainState::SurfaceLost;
+                break;
+
+            case VK_ERROR_OUT_OF_HOST_MEMORY:
+            case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+                outcome = RHIPresentOutcome::NotQueued;
+                break;
+
+            default:
+                break;
+        }
+
+        return MakeVulkanStatus(result, "vkQueuePresentKHR");
     }
 
     void VulkanSwapchain::Shutdown()
