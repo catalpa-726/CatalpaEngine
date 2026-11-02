@@ -6,6 +6,7 @@
 namespace Catalpa {
 
     class VulkanBackend;
+    class VulkanFrameContext;
 
     class VulkanDevice : public RHIDevice {
     public:
@@ -19,6 +20,8 @@ namespace Catalpa {
         GraphicsBackend GetBackend() const override { return GraphicsBackend::Vulkan; }
         [[nodiscard]] RHIStatus WaitIdle() const override;
 
+        [[nodiscard]] std::unique_ptr<RHISwapchain> CreateSwapchain(const RHISwapchainDesc& desc, RHIStatus& status) override;
+
         // 调用前结束 GPU 使用，并释放设备创建的子资源。
         void Shutdown() override;
 
@@ -29,14 +32,22 @@ namespace Catalpa {
         uint32_t GetGraphicsQueueFamily() const { return m_GraphicsQueueFamily; }
         uint32_t GetPresentQueueFamily() const { return m_PresentQueueFamily; }
 
+        VulkanFrameContext& GetFrameContext(uint32_t frameSlot) { return *m_Frames[frameSlot]; }
+
+        static constexpr uint32_t FramesInFlight = 2;
+
     private:
         std::unique_ptr<VulkanBackend> m_Backend;
         VkDevice m_Device = VK_NULL_HANDLE;
         VkPhysicalDevice m_PhysicalDevice = VK_NULL_HANDLE;
+
         VkQueue m_GraphicsQueue = VK_NULL_HANDLE;
         VkQueue m_PresentQueue = VK_NULL_HANDLE;
+
         uint32_t m_GraphicsQueueFamily = VK_QUEUE_FAMILY_IGNORED;
         uint32_t m_PresentQueueFamily = VK_QUEUE_FAMILY_IGNORED;
+
+        std::array<std::unique_ptr<VulkanFrameContext>, FramesInFlight> m_Frames{};
     };
 
 }

@@ -32,6 +32,7 @@ namespace Catalpa {
         bool m_Started = false;
     };
 
+    // 集成 instance -> surface -> physical device 的创建，最后创建 device
     std::unique_ptr<RHIDevice> CreateVulkanDevice(Window& window, RHIStatus& status);
 
 }

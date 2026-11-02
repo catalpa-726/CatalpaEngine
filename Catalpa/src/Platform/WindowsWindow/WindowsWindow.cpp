@@ -151,6 +151,18 @@ namespace Catalpa {
 			KeyTypedEvent event(keycode);
 			data.EventCallback(event);
 			});
+
+		glfwSetFramebufferSizeCallback(m_Window, [](GLFWwindow* window, int width, int height) {
+			auto& data = *static_cast<WindowData*>(glfwGetWindowUserPointer(window));
+			WindowFramebufferResizeEvent event(static_cast<unsigned int>(width), static_cast<unsigned int>(height));
+			data.EventCallback(event);
+			});
+
+		glfwSetWindowIconifyCallback(m_Window, [](GLFWwindow* window, int iconified) {
+			auto& data = *static_cast<WindowData*>(glfwGetWindowUserPointer(window));
+			WindowMinimizeEvent event(iconified == GLFW_TRUE);
+			data.EventCallback(event);
+			});
 	}
 
 	void WindowsWindow::Shutdown()

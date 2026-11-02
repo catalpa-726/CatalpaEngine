@@ -3,14 +3,7 @@
 
 namespace Catalpa {
 
-	LayerStack::~LayerStack()
-	{
-		for (Layer* layer : m_Layers)
-		{
-			layer->OnDetach();
-			delete layer;
-		}
-	}
+	LayerStack::~LayerStack() { Clear(); }
 
 	void LayerStack::PushLayer(Layer* layer)
 	{
@@ -41,6 +34,17 @@ namespace Catalpa {
 		{
 			overlay->OnDetach();
 			m_Layers.erase(it);
+		}
+	}
+
+	void LayerStack::Clear()
+	{
+		auto layers = std::exchange(m_Layers, {});
+		m_LayerInsertIndex = 0;
+
+		for (auto it = layers.rbegin(); it != layers.rend(); ++it) {
+			(*it)->OnDetach();
+			delete* it;
 		}
 	}
 

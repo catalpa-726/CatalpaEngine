@@ -1,9 +1,12 @@
 ﻿#include "catpch.h"
+#include "Log/Log.h"
 #include "VulkanDevice.h"
 #include "VulkanPhysicalDevice.h"
 #include "VulkanLoader.h"
 #include "VulkanBackend.h"
-#include "Log/Log.h"
+#include "VulkanSwapchain.h"
+#include "VulkanUtils.h"
+#include "VulkanFrameContext.h"
 
 namespace Catalpa {
 
@@ -76,30 +79,35 @@ namespace Catalpa {
 
         m_Backend = std::move(backend);
 
+        for (auto& frame : m_Frames) {
+            frame = std::make_unique<VulkanFrameContext>(*this);
+
+            if (const RHIStatus status = frame->Init(m_GraphicsQueueFamily); !status.IsSuccess()) {
+                Shutdown();
+                return false;
+            }
+        }
+
         CAT_CORE_INFO("Vulkan device created.");
         return true;
     }
 
-    RHIStatus VulkanDevice::WaitIdle() const
+    RHIStatus VulkanDevice::WaitIdle() const { 
+        return MakeVulkanStatus(vkDeviceWaitIdle(m_Device), "vkDeviceWaitIdle");
+    }
+
+    std::unique_ptr<RHISwapchain> VulkanDevice::CreateSwapchain(const RHISwapchainDesc& desc, RHIStatus& status)
     {
-        const VkResult result = vkDeviceWaitIdle(m_Device);
-        if (result == VK_SUCCESS) return {};
-
-        RHIErrorCode code = RHIErrorCode::BackendFailure;
-
-        switch (result) {
-            case VK_ERROR_DEVICE_LOST: code = RHIErrorCode::DeviceLost; break;
-            case VK_ERROR_OUT_OF_HOST_MEMORY:
-            case VK_ERROR_OUT_OF_DEVICE_MEMORY: code = RHIErrorCode::OutOfMemory; break;
-            default: break;
-        }
-
-        CAT_CORE_ERROR("Failed to wait for Vulkan device. VkResult: {0}", static_cast<int>(result));
-        return { .code = code, .nativeCode = static_cast<int>(result), .operation = "vkDeviceWaitIdle" };
+        auto swapchain = std::make_unique<VulkanSwapchain>(*this, m_Backend->GetSurface().GetHandle());
+        status = swapchain->Init(desc);
+        if (!status.IsSuccess()) return nullptr;
+        return swapchain;
     }
 
     void VulkanDevice::Shutdown()
     {
+        for (auto& frame : m_Frames) frame.reset();
+
         if (m_Device != VK_NULL_HANDLE) {
             vkDestroyDevice(m_Device, nullptr);
             m_Device = VK_NULL_HANDLE;

@@ -38,9 +38,7 @@ namespace Catalpa {
         const VkResult result = vkCreateInstance(&createInfo, nullptr, &instance);
 
         if (result != VK_SUCCESS) {
-            CAT_CORE_ERROR(
-                "Failed to create Vulkan instance. VkResult: {0}",
-                static_cast<int>(result));
+            CAT_CORE_ERROR("Failed to create Vulkan instance. VkResult: {0}", static_cast<int>(result));
             return false;
         }
 

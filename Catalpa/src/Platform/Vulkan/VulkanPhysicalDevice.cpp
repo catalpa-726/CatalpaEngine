@@ -1,25 +1,9 @@
 ﻿#include "catpch.h"
-#include "VulkanPhysicalDevice.h"
 #include "Log/Log.h"
+#include "VulkanPhysicalDevice.h"
+#include "VulkanUtils.h"
 
 namespace Catalpa {
-
-    template<typename T>
-    static VkResult EnumerateVulkan(std::vector<T>& values, auto query)
-    {
-        for (;;) {
-            uint32_t count = 0;
-            if (const VkResult result = query(&count, nullptr); result != VK_SUCCESS) return result;
-
-            values.resize(count);
-            if (count == 0) return VK_SUCCESS;
-
-            const VkResult result = query(&count, values.data());
-            if (result == VK_INCOMPLETE) continue;
-            if (result == VK_SUCCESS) values.resize(count);
-            return result;
-        }
-    }
 
     static VkResult FindQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface, uint32_t& graphicsFamily, uint32_t& presentFamily)
     {

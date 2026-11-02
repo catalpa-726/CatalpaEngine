@@ -2,7 +2,15 @@
 
 namespace Catalpa {
 
-    enum class RHIErrorCode { None, Unsupported, InvalidDescription, OutOfMemory, DeviceLost, BackendFailure };
+    enum class RHIErrorCode { 
+        None, 
+        Unsupported, 
+        InvalidDescription, 
+        OutOfMemory, 
+        DeviceLost, 
+        BackendFailure, 
+        InvalidState            // 当前状态不允许操作
+    };
 
     struct RHIStatus {
         RHIErrorCode code = RHIErrorCode::None;

@@ -1,10 +1,26 @@
 ﻿#include "catpch.h"
 #include "EngineRuntime.h"
-#include "RHI/RHIBackendFactory.h"
-#include "Platform/Vulkan/VulkanBackend.h"
+
 #include "Log/Log.h"
+#include "Core/Window.h"
+
+#include "RHI/RHIBackendFactory.h"
+#include "RHI/RHISwapchain.h"
+
+#include "Platform/Vulkan/VulkanBackend.h"
 
 namespace Catalpa {
+
+    // 复用现有窗口接口，生成当前请求。最小化统一表达为零尺寸，初始化与后续更新都使用这个函数
+    static RHISwapchainDesc MakeSwapchainDesc(const Window& window)
+    {
+        const auto [width, height] = window.GetFramebufferSize();
+
+        return {
+            .extent = window.IsMinimized() ? Extent2D{} : Extent2D{ width, height },
+            .preferredPresentMode = window.IsVSync() ? RHIPresentMode::Fifo : RHIPresentMode::Immediate
+        };
+    }
 
     EngineRuntime::EngineRuntime() = default;
 
@@ -19,13 +35,52 @@ namespace Catalpa {
 
         RHIStatus status;
         m_Device = factory.Create(GraphicsBackend::Vulkan, window, status);
-        return status;
+        if (!status.IsSuccess()) return status;
+
+        const RHISwapchainDesc desc = MakeSwapchainDesc(window);
+        m_Swapchain = m_Device->CreateSwapchain(desc, status);
+
+        if (!status.IsSuccess()) {
+            Shutdown();
+            return status;
+        }
+
+        m_LastSwapchainDesc = desc;
+        return {};
     }
 
     void EngineRuntime::Shutdown()
     {
-        // 当前尚无 GPU 提交；加入提交功能时，在释放设备前完成 GPU 收束。
+        // 当前尚无 GPU 提交；接入渲染后，在这里完成 GPU 和呈现收束。
+        m_Swapchain.reset();
         m_Device.reset();
+        m_LastSwapchainDesc = {};
+        m_SwapchainDirty = true;
+    }
+
+    // 根据事件标记、VSync 变化或交换链状态，决定是否需要查询窗口。
+    // 查询后比较请求配置，确实需要时才重建。
+    RHIStatus EngineRuntime::Update(Window& window)
+    {
+        const bool dirty = std::exchange(m_SwapchainDirty, false);
+        const RHISwapchainState state = m_Swapchain->GetInfo().state;
+        const RHIPresentMode requestedMode = window.IsVSync() ? RHIPresentMode::Fifo : RHIPresentMode::Immediate;
+
+        const bool settingsChanged = requestedMode != m_LastSwapchainDesc.preferredPresentMode;
+        const bool retrySuspended = state == RHISwapchainState::Suspended && !m_LastSwapchainDesc.extent.IsEmpty();
+
+        if (!dirty && !settingsChanged && !retrySuspended && state != RHISwapchainState::OutOfDate) return {};
+
+        const RHISwapchainDesc desc = MakeSwapchainDesc(window);
+        const bool restoring = state == RHISwapchainState::Suspended && !desc.extent.IsEmpty();
+
+        if (desc == m_LastSwapchainDesc && !restoring && state != RHISwapchainState::OutOfDate) return {};
+
+        const RHIStatus status = m_Swapchain->Recreate(desc);
+
+        if (status.IsSuccess()) m_LastSwapchainDesc = desc;
+
+        return status;
     }
 
 }
