@@ -17,7 +17,11 @@ namespace Catalpa {
         VulkanQueue& operator=(const VulkanQueue&) = delete;
 
         // 主线程调用；命令列表和 Fence 必须来自同一设备，命令池队列族必须匹配。
-        [[nodiscard]] RHIStatus Submit(VulkanCommandList& commands, VulkanFence& fence);
+        [[nodiscard]] RHIStatus Submit(
+            VulkanCommandList& commands, 
+            VulkanFence& fence, 
+            std::span<const VkSemaphoreSubmitInfo> waits = {}, 
+            std::span<const VkSemaphoreSubmitInfo> signals = {});
 
         VkQueue GetHandle() const { return m_Queue; }
         uint32_t GetQueueFamily() const { return m_QueueFamily; }

@@ -12,7 +12,11 @@ namespace Catalpa {
     * 调用 vkQueueSubmit2()。
     * 提交成功后，才将命令列表和 Fence 标记为 Pending。
     */
-    RHIStatus VulkanQueue::Submit(VulkanCommandList& commands, VulkanFence& fence)
+    RHIStatus VulkanQueue::Submit(
+        VulkanCommandList& commands,
+        VulkanFence& fence,
+        std::span<const VkSemaphoreSubmitInfo> waits = {},
+        std::span<const VkSemaphoreSubmitInfo> signals = {})
     {
         if (!m_Failure.IsSuccess()) return m_Failure;
 
@@ -29,8 +33,12 @@ namespace Catalpa {
 
         const VkSubmitInfo2 submitInfo{
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+            .waitSemaphoreInfoCount = static_cast<uint32_t>(waits.size()),
+            .pWaitSemaphoreInfos = waits.data(),
             .commandBufferInfoCount = 1,
-            .pCommandBufferInfos = &commandInfo
+            .pCommandBufferInfos = &commandInfo,
+            .signalSemaphoreInfoCount = static_cast<uint32_t>(signals.size()),
+            .pSignalSemaphoreInfos = signals.data()
         };
 
         if (const RHIStatus status = fence.Reset(); !status.IsSuccess()) return status;

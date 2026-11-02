@@ -51,7 +51,16 @@ namespace Catalpa {
 
     void EngineRuntime::Shutdown()
     {
-        // 当前尚无 GPU 提交；接入渲染后，在这里完成 GPU 和呈现收束。
+        // 释放 Runtime 持有的资源之前，先结束设备使用。
+        if (m_Device) {
+            const RHIStatus status = m_Device->WaitIdle();
+
+            if (!status.IsSuccess() && status.code != RHIErrorCode::DeviceLost) {
+                CAT_CORE_ASSERT(false, "Cannot safely release resources after device wait failed!");
+                std::abort();
+            }
+        }
+
         m_Swapchain.reset();
         m_Device.reset();
         m_LastSwapchainDesc = {};
@@ -75,6 +84,8 @@ namespace Catalpa {
         const bool restoring = state == RHISwapchainState::Suspended && !desc.extent.IsEmpty();
 
         if (desc == m_LastSwapchainDesc && !restoring && state != RHISwapchainState::OutOfDate) return {};
+
+        if (const RHIStatus status = m_Device->WaitIdle(); !status.IsSuccess()) return status;
 
         const RHIStatus status = m_Swapchain->Recreate(desc);
 
