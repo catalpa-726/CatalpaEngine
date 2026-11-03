@@ -84,6 +84,9 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus WriteBuffer(BufferHandle buffer, uint64_t offset, std::span<const std::byte> data) override;
         void ReleaseBuffer(BufferHandle buffer) override;
 
+        [[nodiscard]] RHIStatus GetBufferState(BufferHandle buffer, RHIBufferStateSnapshot& snapshot) const override;
+        [[nodiscard]] RHIStatus GetTextureState(TextureViewHandle view, RHITextureStateSnapshot& snapshot) const override;
+
     private:
         // 后端环境与设备句柄
         std::unique_ptr<VulkanBackend> m_Backend;

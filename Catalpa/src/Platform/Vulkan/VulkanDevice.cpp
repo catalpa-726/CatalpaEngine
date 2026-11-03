@@ -12,6 +12,7 @@
 #include "VulkanConversions.h"
 #include "VulkanMemoryAllocator.h"
 #include "VulkanDebugUtils.h"
+#include "VulkanResourceStateTracker.h"
 
 namespace Catalpa {
 
@@ -302,5 +303,27 @@ namespace Catalpa {
     }
 
     void VulkanDevice::ReleaseBuffer(BufferHandle buffer) { m_ResourceRegistry->ReleaseBuffer(buffer); }
+
+    RHIStatus VulkanDevice::GetBufferState(BufferHandle buffer, RHIBufferStateSnapshot& snapshot) const
+    {
+        snapshot = {};
+        if (!m_DeviceFailure.IsSuccess()) return m_DeviceFailure;
+
+        if (!m_ResourceRegistry)
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanDevice::GetBufferState" };
+
+        return VulkanResourceStateTracker::Query(*m_ResourceRegistry, buffer, snapshot);
+    }
+
+    RHIStatus VulkanDevice::GetTextureState(TextureViewHandle view, RHITextureStateSnapshot& snapshot) const
+    {
+        snapshot = {};
+        if (!m_DeviceFailure.IsSuccess()) return m_DeviceFailure;
+
+        if (!m_ResourceRegistry)
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanDevice::GetTextureState" };
+
+        return VulkanResourceStateTracker::Query(*m_ResourceRegistry, view, snapshot);
+    }
 
 }

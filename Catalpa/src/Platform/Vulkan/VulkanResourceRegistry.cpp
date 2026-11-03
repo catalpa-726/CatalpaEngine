@@ -29,6 +29,12 @@ namespace Catalpa {
             return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanResourceRegistry::RegisterBorrowedTextureView" };
         }
 
+        // 当前一个底层图像只登记一个视图，避免同一图像拥有两份独立状态。
+        if (std::any_of(m_TextureViews.begin(), m_TextureViews.end(), [&](const auto& slot) {
+            return slot.record.view != VK_NULL_HANDLE && slot.record.image == record.image;
+            }))
+            return { .code = RHIErrorCode::Unsupported, .operation = "VulkanResourceRegistry::RegisterBorrowedTextureView" };
+
         uint32_t index = m_FirstFree;
 
         if (index != InvalidIndex) {
@@ -43,6 +49,7 @@ namespace Catalpa {
 
         auto& slot = m_TextureViews[index];
         slot.record = record;
+        slot.state = {};
         slot.nextFree = InvalidIndex;
         slot.references = 0;
 
@@ -72,6 +79,7 @@ namespace Catalpa {
         }
 
         slot.record = {};
+        slot.state = {};
 
         if (slot.generation == std::numeric_limits<uint32_t>::max()) return;
 
@@ -231,6 +239,7 @@ namespace Catalpa {
         slot.references = 0;
         slot.releaseRequested = false;
         slot.record = record;
+        slot.state = {};
 
         buffer = { .device = m_DeviceId, .slot = {.index = index, .generation = slot.generation } };
 
@@ -260,16 +269,45 @@ namespace Catalpa {
 
     RHIStatus VulkanResourceRegistry::WriteBuffer(BufferHandle buffer, uint64_t offset, std::span<const std::byte> data)
     {
-        const auto* slot = FindBuffer(buffer);
+        constexpr const char* operation = "VulkanResourceRegistry::WriteBuffer";
+        const auto* found = FindBuffer(buffer);
 
-        if (!slot || slot->releaseRequested)
-            return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanResourceRegistry::WriteBuffer" };
+        if (!found || found->releaseRequested)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
-        // 当前命令引用一直保留到安全 reset；因此这里同时禁止改写已录制和在飞数据。
-        if (slot->references != 0)
-            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanResourceRegistry::WriteBuffer" };
+        // 命令引用保留至安全 reset，因此同时禁止改写已录制和在飞数据。
+        if (found->references != 0)
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
-        return WriteVulkanBuffer(m_Device, slot->record, offset, data);
+        if (found->record.desc.memory != RHIMemoryDomain::Upload || !found->record.mapped)
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
+
+        if (!IsValidBufferRange(found->record.desc.size, offset, static_cast<uint64_t>(data.size())))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        if (data.empty()) return {};
+
+        auto& slot = m_Buffers[buffer.slot.index];
+        auto& initialized = slot.state.initialized;
+
+        if (slot.state.revision == std::numeric_limits<uint64_t>::max() || initialized.size() == initialized.max_size())
+            return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
+
+        // 在实际修改内容之前完成容量准备。
+        initialized.reserve(initialized.size() + 1);
+
+        const RHIStatus status = WriteVulkanBuffer(m_Device, slot.record, offset, data);
+        ++slot.state.revision;
+
+        if (status.IsSuccess()) {
+            MarkInitialized(initialized, offset, static_cast<uint64_t>(data.size()));
+        }
+        else {
+            // memcpy 已可能发生；flush 失败不能视为内容回滚。
+            initialized.clear();
+        }
+
+        return status;
     }
 
     void VulkanResourceRegistry::ReleaseBuffer(BufferHandle buffer) noexcept
@@ -309,6 +347,7 @@ namespace Catalpa {
     {
         auto& slot = m_Buffers[index];
         m_Retirement.RetireBuffer(std::exchange(slot.record, {}));
+        slot.state = {};
         slot.releaseRequested = false;
 
         if (slot.generation == std::numeric_limits<uint32_t>::max()) return;

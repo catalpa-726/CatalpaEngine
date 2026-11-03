@@ -2,7 +2,7 @@
 #include "UploadScheduler.h"
 #include "Log/Log.h"
 #include "RHI/RHIDevice.h"
-#include "RHI/RHICommandList.h"
+#include "Renderer/RenderGraph/RenderGraph.h"
 
 namespace Catalpa {
 
@@ -53,37 +53,25 @@ namespace Catalpa {
         return {};
     }
 
-    RHIStatus UploadScheduler::RecordPending(RHICommandList& commands)
+    RHIStatus UploadScheduler::AddPasses(RenderGraph& graph)
     {
-        if (m_Recorded || commands.GetState() != RHICommandListState::Recording)
-            return { .code = RHIErrorCode::InvalidState, .operation = "UploadScheduler::RecordPending" };
+        if (m_Recorded)
+            return { .code = RHIErrorCode::InvalidState, .operation = "UploadScheduler::AddPasses" };
 
         m_Recorded = true;
         m_RecordedCount = m_Pending.size();
 
-        if (m_RecordedCount == 0) return {};
-
-        RHICommandLabelScope uploadLabel(commands, "Static Buffer Uploads", { 0.2f, 0.8f, 0.3f, 1.0f });
-
         for (size_t i = 0; i < m_RecordedCount; ++i) {
-            const auto& pending = m_Pending[i];
+            const PendingBuffer pending = m_Pending[i];
+            RGBuffer source{}, destination{};
+
+            if (const RHIStatus status = graph.ImportBuffer(pending.staging, source); !status.IsSuccess()) return status;
+            if (const RHIStatus status = graph.ImportBuffer(pending.destination, destination); !status.IsSuccess()) return status;
+
             const RHIBufferCopy copy{ .size = pending.size };
 
-            if (const RHIStatus status = commands.CopyBuffer(pending.staging, pending.destination, copy); !status.IsSuccess()) return status;
-
-            const bool vertex = HasBufferUsage(pending.usage, RHIBufferUsage::Vertex);
-            const bool index = HasBufferUsage(pending.usage, RHIBufferUsage::Index);
-            const RHIResourceAccess access = vertex && index ? RHIResourceAccess::VertexIndexRead :
-                vertex ? RHIResourceAccess::VertexRead : RHIResourceAccess::IndexRead;
-
-            const RHIBufferBarrier barrier{
-                .buffer = pending.destination,
-                .size = pending.size,
-                .before = {.stage = RHIPipelineStage::Transfer, .access = RHIResourceAccess::TransferWrite },
-                .after = {.stage = RHIPipelineStage::VertexInput, .access = access }
-            };
-
-            if (const RHIStatus status = commands.PipelineBarrier(std::span<const RHIBufferBarrier>{ &barrier, 1 }); !status.IsSuccess()) return status;
+            if (const RHIStatus status = graph.AddCopyPass("Static Buffer Upload", source, destination, copy); !status.IsSuccess())
+                return status;
         }
 
         return {};

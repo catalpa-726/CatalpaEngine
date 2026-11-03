@@ -25,6 +25,10 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus Begin() override;
         [[nodiscard]] RHIStatus End() override;
 
+        [[nodiscard]] RHIStatus SetResourceStatePlan(
+            std::span<const RHIBufferStateUpdate> buffers,
+            std::span<const RHITextureStateUpdate> textures) override;
+
         // 录制状态与提交登记
         RHICommandListState GetState() const override { return m_State; }
         VkCommandBuffer GetHandle() const { return m_CommandBuffer; }
@@ -74,6 +78,15 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus RetainBuffer(BufferHandle handle);
         void ReleaseBuffers(size_t first = 0) noexcept;
 
+        // 提交前检查版本和资源声明覆盖。
+        [[nodiscard]] RHIStatus ValidateResourceStatePlan() const noexcept;
+
+        // 仅由 Queue 在原生提交成功后发布状态。
+        void CommitResourceStatePlan() noexcept;
+
+        // 当前帧必须只导出实际 Acquire 的图像到 Present。
+        bool ExportsPresent(TextureViewHandle view) const noexcept;
+
     private:
         // 帧复用与队列提交负责内部状态变更
         friend class VulkanFrameContext;
@@ -96,6 +109,11 @@ namespace Catalpa {
         bool m_ViewportAndScissorSet = false;
 
         std::vector<BufferHandle> m_RetainedBuffers;
+
+        std::vector<RHIBufferStateUpdate> m_BufferStateUpdates;
+        std::vector<RHITextureStateUpdate> m_TextureStateUpdates;
+        bool m_ResourceStatePlanBound = false;
+        bool m_ResourceStatePlanCommitted = false;
 
         uint32_t m_VertexStride = 0;
         uint32_t m_VertexAttributeEnd = 0;

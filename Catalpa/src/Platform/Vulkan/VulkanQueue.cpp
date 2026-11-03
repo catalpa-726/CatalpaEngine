@@ -119,6 +119,12 @@ namespace Catalpa {
             .pSignalSemaphoreInfos = signals.data()
         };
 
+        // nullptr 是取消 Acquire 的纯同步提交，不包含资源状态更新。
+        if (commands) {
+            if (const RHIStatus status = commands->ValidateResourceStatePlan(); !status.IsSuccess())
+                return status;
+        }
+
         if (const RHIStatus status = fence.Reset(); !status.IsSuccess()) return m_Device.ObserveStatus(status);
 
         const RHIStatus status = m_Device.ObserveStatus(MakeVulkanStatus(vkQueueSubmit2(m_Queue, 1, &submitInfo, fence.GetHandle()), "vkQueueSubmit2"));
@@ -132,7 +138,11 @@ namespace Catalpa {
             return status;
         }
 
-        if (commands) commands->MarkSubmitted();
+        if (commands) {
+            commands->CommitResourceStatePlan();
+            commands->MarkSubmitted();
+        }
+
         fence.MarkSubmitted();
         m_Pending.push_back({ .sequence = ++m_Submitted, .fence = &fence });
         return {};

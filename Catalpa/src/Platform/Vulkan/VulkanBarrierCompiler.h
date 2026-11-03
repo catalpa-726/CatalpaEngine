@@ -3,6 +3,7 @@
 #include "VulkanHeaders.h"
 #include "RHI/RHICommandTypes.h"
 #include "RHI/RHIError.h"
+#include "RHI/RHIBufferDesc.h"
 
 namespace Catalpa {
 
@@ -13,4 +14,10 @@ namespace Catalpa {
 
     [[nodiscard]] RHIStatus CompileVulkanBufferBarrier(const RHIBufferBarrier& desc, const VulkanResourceRegistry& registry, VkBufferMemoryBarrier2& barrier) noexcept;
 
+    // 共享 Buffer 访问转换与合法性检查，供屏障编码和状态提交校验复用。
+    [[nodiscard]] bool ConvertVulkanBufferAccess(
+        const RHIBufferAccess& source,
+        RHIBufferUsage usage,
+        VkPipelineStageFlags2& stage,
+        VkAccessFlags2& access) noexcept;
 }

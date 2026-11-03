@@ -1,17 +1,21 @@
 ﻿#pragma once
 
 #include "VulkanHeaders.h"
-#include "RHI/RHIHandle.h"
-#include "RHI/RHIError.h"
-#include "Images/PixelFormat.h"
+#include "VulkanBuffer.h"
 #include "VulkanPipeline.h"
 #include "VulkanResourceRetirement.h"
-#include "VulkanBuffer.h"
+
+#include "Images/PixelFormat.h"
+
+#include "RHI/RHIHandle.h"
+#include "RHI/RHIError.h"
+#include "RHI/RHIResourceState.h"
 
 // 登记表保存借用视图、自有管线和 Buffer，并校验设备身份、槽位和代次。
 namespace Catalpa {
 
     class VulkanDevice;
+    class VulkanResourceStateTracker;
 
     struct VulkanTextureViewRecord {
         VkImage image = VK_NULL_HANDLE;
@@ -70,6 +74,8 @@ namespace Catalpa {
         void ReleaseBufferReference(BufferHandle buffer) noexcept;
 
     private:
+        friend class VulkanResourceStateTracker;
+
         // 自有资源槽位及其回收
         struct PipelineSlot {
             uint32_t generation = 1;
@@ -85,6 +91,7 @@ namespace Catalpa {
             uint32_t references = 0;
             bool releaseRequested = false;
             VulkanBufferRecord record{};
+            RHIBufferState state{};
         };
 
         // 内部查询允许找到已请求释放、但仍被命令保留的记录。
@@ -105,6 +112,7 @@ namespace Catalpa {
             uint32_t nextFree = InvalidIndex;
             uint32_t references = 0;
             VulkanTextureViewRecord record{};
+            RHITextureState state{};
         };
 
         // 设备身份与借用视图登记

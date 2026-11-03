@@ -89,6 +89,9 @@ namespace Catalpa {
         if (m_State != State::Acquired || !m_ActiveSwapchain || wait != m_Acquired.acquireReady || signal != m_Acquired.renderFinished)
             return { .code = RHIErrorCode::InvalidState, .operation = "VulkanFrameContext::Submit" };
 
+        if (!m_CommandList.ExportsPresent(m_Acquired.view))
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanFrameContext::SubmitPresentExport" };
+
         const VkSemaphoreSubmitInfo waitInfo{
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
             .semaphore = m_AcquireSemaphore.GetHandle(),

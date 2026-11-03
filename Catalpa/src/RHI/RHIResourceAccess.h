@@ -6,7 +6,8 @@ namespace Catalpa {
     enum class RHIPipelineStage { None, ColorAttachmentOutput, AllCommands, Transfer, VertexInput };
     enum class RHIResourceAccess {
         None, ColorRead, ColorWrite, ColorReadWrite,
-        TransferRead, TransferWrite, VertexRead, IndexRead, VertexIndexRead
+        TransferRead, TransferWrite, VertexRead, IndexRead, VertexIndexRead,
+        TransferReadWrite, MemoryReadWrite
     };
     enum class RHITextureLayout { Undefined, ColorAttachment, Present };
 

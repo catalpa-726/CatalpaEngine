@@ -2,10 +2,10 @@
 #include "Renderer.h"
 #include "Log/Log.h"
 #include "RHI/RHIDevice.h"
-#include "RHI/RHICommandList.h"
 #include "TriangleVertexSpirv.h"
 #include "TriangleFragmentSpirv.h"
 #include "Geometry/VertexLayout.h"
+#include "RenderGraph/RenderGraph.h"
 
 namespace Catalpa {
 
@@ -44,65 +44,40 @@ namespace Catalpa {
         m_Device.ReleaseGraphicsPipeline(m_TrianglePipeline);
     }
 
-    RHIStatus Renderer::RecordFrame(RHICommandList& commands, const RHIAcquireResult& acquired)
+    RHIStatus Renderer::BuildFrameGraph(RenderGraph& graph, const RHIAcquireResult& acquired)
     {
-        if (const RHIStatus status = commands.Begin(); !status.IsSuccess()) return status;
-        RHICommandLabelScope frameLabel(commands, "Frame", { 0.2f, 0.4f, 0.8f, 1.0f });
+        if (const RHIStatus status = m_Uploads.AddPasses(graph); !status.IsSuccess()) return status;
 
-        if (const RHIStatus status = m_Uploads.RecordPending(commands); !status.IsSuccess()) return status;
+        RGBuffer vertices{}, indices{};
+        RGTexture color{};
 
-        const RHITextureAccess colorAccess{
-            .stage = RHIPipelineStage::ColorAttachmentOutput,
-            .access = RHIResourceAccess::ColorWrite,
-            .layout = RHITextureLayout::ColorAttachment
-        };
-
-        const RHITextureBarrier toColor{
-            .view = acquired.view,
-            .before = { .stage = RHIPipelineStage::AllCommands, .layout = RHITextureLayout::Undefined },
-            .after = colorAccess
-        };
-
-        if (const RHIStatus status = commands.PipelineBarrier({ &toColor, 1 }); !status.IsSuccess()) return status;
+        if (const RHIStatus status = graph.ImportBuffer(m_TriangleVertices, vertices); !status.IsSuccess()) return status;
+        if (const RHIStatus status = graph.ImportBuffer(m_TriangleIndices, indices); !status.IsSuccess()) return status;
+        if (const RHIStatus status = graph.ImportTexture(acquired.view, color); !status.IsSuccess()) return status;
 
         const Extent2D extent = m_Swapchain.GetInfo().extent;
 
-        const RHIColorAttachment color{
-            .view = acquired.view,
+        const RGIndexedDrawDesc draw{
+            .vertices = vertices,
+            .indices = indices,
+            .color = color,
+            .pipeline = m_TrianglePipeline,
+            .vertexOffset = 0,
+            .indexOffset = 0,
+            .indexType = RHIIndexType::UInt32,
+            .indexCount = static_cast<uint32_t>(TriangleIndices.size()),
             .loadOp = RHILoadOp::Clear,
             .storeOp = RHIStoreOp::Store,
-            .clearColor = { 0.02f, 0.02f, 0.02f, 1.0f }
+            .clearColor = { 0.02f, 0.02f, 0.02f, 1.0f },
+            .viewport = {
+                .width = static_cast<float>(extent.width),
+                .height = static_cast<float>(extent.height)
+            },
+            .scissor = {.extent = extent }
         };
 
-        const RHIRenderingDesc rendering{
-            .colorAttachments = { &color, 1 },
-            .renderArea = { .extent = extent }
-        };
-
-        const RHIViewport viewport{ .width = static_cast<float>(extent.width), .height = static_cast<float>(extent.height) };
-        const Rect2D scissor{ .extent = extent };
-
-        {
-            RHICommandLabelScope drawLabel(commands, "Triangle DrawIndexed", { 0.7f, 0.2f, 0.8f, 1.0f });
-
-            if (const RHIStatus status = commands.BeginRendering(rendering); !status.IsSuccess()) return status;
-            if (const RHIStatus status = commands.BindGraphicsPipeline(m_TrianglePipeline); !status.IsSuccess()) return status;
-            if (const RHIStatus status = commands.BindVertexBuffer(0, m_TriangleVertices); !status.IsSuccess()) return status;
-            if (const RHIStatus status = commands.BindIndexBuffer(m_TriangleIndices, RHIIndexType::UInt32); !status.IsSuccess()) return status;
-            if (const RHIStatus status = commands.SetViewportAndScissor(viewport, scissor); !status.IsSuccess()) return status;
-            if (const RHIStatus status = commands.DrawIndexed(static_cast<uint32_t>(TriangleIndices.size())); !status.IsSuccess()) return status;
-            if (const RHIStatus status = commands.EndRendering(); !status.IsSuccess()) return status;
-        }
-
-        const RHITextureBarrier toPresent{
-            .view = acquired.view,
-            .before = colorAccess,
-            .after = { .layout = RHITextureLayout::Present }
-        };
-
-        if (const RHIStatus status = commands.PipelineBarrier({ &toPresent, 1 }); !status.IsSuccess()) return status;
-        frameLabel.Close();
-        return commands.End();
+        if (const RHIStatus status = graph.AddDrawPass("Triangle DrawIndexed", draw); !status.IsSuccess()) return status;
+        return graph.ExportPresent(color);
     }
 
     RHIStatus Renderer::CancelFrame(RHIAcquireResult& acquired, RHIStatus failure)
@@ -143,7 +118,16 @@ namespace Catalpa {
         status = m_Swapchain.Acquire(frame.token, timeoutNanoseconds, acquired);
         if (!status.IsSuccess() || !acquired.HasImage()) return status;
 
-        status = RecordFrame(*frame.commands, acquired);
+        RenderGraph graph(m_Device);
+        RenderGraphPlan plan;
+
+        status = BuildFrameGraph(graph, acquired);
+        if (!status.IsSuccess()) return CancelFrame(acquired, status);
+
+        status = graph.Compile(plan);
+        if (!status.IsSuccess()) return CancelFrame(acquired, status);
+
+        status = plan.Record(*frame.commands);
         if (!status.IsSuccess()) return CancelFrame(acquired, status);
 
         const RHISubmission submission{

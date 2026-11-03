@@ -68,7 +68,7 @@ namespace Catalpa {
         return {};
     }
 
-    static bool ConvertBufferAccess(const RHIBufferAccess& source, RHIBufferUsage usage, VkPipelineStageFlags2& stage, VkAccessFlags2& access) noexcept
+    bool ConvertVulkanBufferAccess(const RHIBufferAccess& source, RHIBufferUsage usage, VkPipelineStageFlags2& stage, VkAccessFlags2& access) noexcept
     {
         switch (source.stage) {
             case RHIPipelineStage::None: stage = VK_PIPELINE_STAGE_2_NONE; break;
@@ -110,6 +110,14 @@ namespace Catalpa {
                 requiredStage = RHIPipelineStage::VertexInput;
                 requiredUsage = RHIBufferUsage::Vertex | RHIBufferUsage::Index;
                 break;
+            case RHIResourceAccess::TransferReadWrite:
+                access = VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+                requiredStage = RHIPipelineStage::Transfer;
+                requiredUsage = RHIBufferUsage::TransferSource | RHIBufferUsage::TransferDestination;
+                break;
+            case RHIResourceAccess::MemoryReadWrite:
+                access = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+                return source.stage == RHIPipelineStage::AllCommands;
             default:
                 return false;
         }
@@ -137,8 +145,8 @@ namespace Catalpa {
             .size = desc.size
         };
 
-        if (!ConvertBufferAccess(desc.before, record->desc.usage, native.srcStageMask, native.srcAccessMask) ||
-            !ConvertBufferAccess(desc.after, record->desc.usage, native.dstStageMask, native.dstAccessMask))
+        if (!ConvertVulkanBufferAccess(desc.before, record->desc.usage, native.srcStageMask, native.srcAccessMask) ||
+            !ConvertVulkanBufferAccess(desc.after, record->desc.usage, native.dstStageMask, native.dstAccessMask))
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
         barrier = native;

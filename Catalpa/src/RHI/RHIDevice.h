@@ -9,6 +9,7 @@
 #include "RHIQueue.h"
 #include "RHIPipelineDesc.h"
 #include "RHIBufferDesc.h"
+#include "RHIResourceState.h"
 
 namespace Catalpa {
 
@@ -57,6 +58,10 @@ namespace Catalpa {
 
         // 释放逻辑所有权；已有命令引用继续保留原生资源。
         virtual void ReleaseBuffer(BufferHandle buffer) = 0;
+
+        // 返回独立快照；已接受的队列状态不等于 GPU 已执行完成。
+        [[nodiscard]] virtual RHIStatus GetBufferState(BufferHandle buffer, RHIBufferStateSnapshot& snapshot) const = 0;
+        [[nodiscard]] virtual RHIStatus GetTextureState(TextureViewHandle view, RHITextureStateSnapshot& snapshot) const = 0;
 
         // 同步创建管线；成功后由设备管理原生资源。
         [[nodiscard]] virtual RHIStatus CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc, GraphicsPipelineHandle& pipeline) = 0;

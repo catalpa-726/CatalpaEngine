@@ -5,6 +5,7 @@
 #include "RHITypes.h"
 #include "RHIRenderingDesc.h"
 #include "RHICommandTypes.h"
+#include "RHIResourceState.h"
 
 // 提供不包含 Vulkan 类型的命令录制接口
 namespace Catalpa {
@@ -18,6 +19,12 @@ namespace Catalpa {
         // 命令列表录制边界。
         [[nodiscard]] virtual RHIStatus Begin() = 0;
         [[nodiscard]] virtual RHIStatus End() = 0;
+
+        // Begin 后、首个资源命令前设置一次；实现持有更新副本及资源引用。
+        // 访问声明须与实际录制一致，设置失败后不得继续提交。
+        [[nodiscard]] virtual RHIStatus SetResourceStatePlan(
+            std::span<const RHIBufferStateUpdate> buffers,
+            std::span<const RHITextureStateUpdate> textures) = 0;
 
         // 当前支持二维、单层、单采样颜色附件。
         // 附件执行时须已处于颜色附件状态；本函数不执行布局转换。

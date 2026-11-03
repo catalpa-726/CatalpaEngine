@@ -8,6 +8,7 @@
 #include "VulkanBarrierCompiler.h"
 #include "RHI/RHIBufferDesc.h"
 #include "VulkanDebugUtils.h"
+#include "VulkanResourceStateTracker.h"
 
 namespace Catalpa {
 
@@ -49,6 +50,100 @@ namespace Catalpa {
         const RHIStatus status = MakeVulkanStatus(vkEndCommandBuffer(m_CommandBuffer), "vkEndCommandBuffer");
         m_State = status.IsSuccess() ? RHICommandListState::Executable : RHICommandListState::Invalid;
         return m_Device.ObserveStatus(status);
+    }
+
+    RHIStatus VulkanCommandList::SetResourceStatePlan(
+        std::span<const RHIBufferStateUpdate> buffers,
+        std::span<const RHITextureStateUpdate> textures)
+    {
+        if (m_State != RHICommandListState::Recording ||
+            m_ResourceStatePlanBound || m_ResourceStatePlanCommitted ||
+            !m_RetainedBuffers.empty() || !m_RetainedViews.empty() || !m_RetainedPipelines.empty()) {
+            Invalidate();
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::SetResourceStatePlan" };
+        }
+
+        auto& registry = m_Device.GetResourceRegistry();
+
+        if (const RHIStatus status = VulkanResourceStateTracker::Validate(registry, buffers, textures, false); !status.IsSuccess()) {
+            Invalidate();
+            return status;
+        }
+
+        std::vector<RHIBufferStateUpdate> bufferUpdates(buffers.begin(), buffers.end());
+        std::vector<RHITextureStateUpdate> textureUpdates(textures.begin(), textures.end());
+
+        m_RetainedBuffers.reserve(bufferUpdates.size());
+        m_RetainedViews.reserve(textureUpdates.size());
+
+        const auto fail = [this](RHIStatus status) {
+            // 尚未录制资源命令，可以归还本次设置取得的引用。
+            ReleaseTextureViews();
+            ReleaseBuffers();
+            Invalidate();
+            return status;
+            };
+
+        for (const auto& update : bufferUpdates)
+            if (const RHIStatus status = RetainBuffer(update.buffer); !status.IsSuccess()) return fail(status);
+
+        for (const auto& update : textureUpdates)
+            if (const RHIStatus status = RetainTextureView(update.view); !status.IsSuccess()) return fail(status);
+
+        if (const RHIStatus status = VulkanResourceStateTracker::Validate(registry, bufferUpdates, textureUpdates, true); !status.IsSuccess())
+            return fail(status);
+
+        m_BufferStateUpdates.swap(bufferUpdates);
+        m_TextureStateUpdates.swap(textureUpdates);
+        m_ResourceStatePlanBound = true;
+        m_ResourceStatePlanCommitted = false;
+        return {};
+    }
+
+    RHIStatus VulkanCommandList::ValidateResourceStatePlan() const noexcept
+    {
+        if (m_State != RHICommandListState::Executable || !m_ResourceStatePlanBound || m_ResourceStatePlanCommitted)
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::ValidateResourceStatePlan" };
+
+        if (m_RetainedBuffers.size() != m_BufferStateUpdates.size() ||
+            m_RetainedViews.size() != m_TextureStateUpdates.size())
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::UndeclaredResource" };
+
+        for (const BufferHandle buffer : m_RetainedBuffers) {
+            if (std::none_of(m_BufferStateUpdates.begin(), m_BufferStateUpdates.end(),
+                [&](const auto& update) { return update.buffer == buffer; }))
+                return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::UndeclaredBuffer" };
+        }
+
+        for (const TextureViewHandle view : m_RetainedViews) {
+            if (std::none_of(m_TextureStateUpdates.begin(), m_TextureStateUpdates.end(),
+                [&](const auto& update) { return update.view == view; }))
+                return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::UndeclaredTexture" };
+        }
+
+        return VulkanResourceStateTracker::Validate(
+            m_Device.GetResourceRegistry(), m_BufferStateUpdates, m_TextureStateUpdates, true);
+    }
+
+    void VulkanCommandList::CommitResourceStatePlan() noexcept
+    {
+        CAT_CORE_ASSERT(
+            m_State == RHICommandListState::Executable && m_ResourceStatePlanBound && !m_ResourceStatePlanCommitted,
+            "Resource state plan must be valid and uncommitted!");
+
+        VulkanResourceStateTracker::CommitAccepted(
+            m_Device.GetResourceRegistry(), m_BufferStateUpdates, m_TextureStateUpdates);
+
+        m_ResourceStatePlanCommitted = true;
+    }
+
+    bool VulkanCommandList::ExportsPresent(TextureViewHandle view) const noexcept
+    {
+        return m_State == RHICommandListState::Executable &&
+            m_ResourceStatePlanBound && !m_ResourceStatePlanCommitted &&
+            m_TextureStateUpdates.size() == 1 &&
+            m_TextureStateUpdates.front().view == view &&
+            m_TextureStateUpdates.front().after.access.layout == RHITextureLayout::Present;
     }
 
     // 记录已成功接受的提交，本身不执行提交
@@ -259,6 +354,11 @@ namespace Catalpa {
         ReleaseTextureViews();
         ReleasePipelines();
         ReleaseBuffers();
+
+        m_BufferStateUpdates.clear();
+        m_TextureStateUpdates.clear();
+        m_ResourceStatePlanBound = false;
+        m_ResourceStatePlanCommitted = false;
 
         m_BoundColorFormat = PixelFormat::Unknown;
         m_RenderingColorFormat = PixelFormat::Unknown;

@@ -8,7 +8,7 @@ namespace Catalpa {
 
     class RHIDevice;
     class RHISwapchain;
-    class RHICommandList;
+    class RenderGraph;
 
     class Renderer {
     public:
@@ -22,8 +22,8 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus Render();
 
     private:
-        // 录制交换链图像布局转换、清屏和当前三角形绘制。
-        [[nodiscard]] RHIStatus RecordFrame(RHICommandList& commands, const RHIAcquireResult& acquired);
+        // 声明本帧上传、索引绘制和最终呈现输出。
+        [[nodiscard]] RHIStatus BuildFrameGraph(RenderGraph& graph, const RHIAcquireResult& acquired);
 
         // 录制或提交失败时，收尾尚未消费的 Acquire。
         [[nodiscard]] RHIStatus CancelFrame(RHIAcquireResult& acquired, RHIStatus failure);

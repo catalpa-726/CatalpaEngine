@@ -9,7 +9,7 @@
 namespace Catalpa {
 
     class RHIDevice;
-    class RHICommandList;
+    class RenderGraph;
 
     // 当前由主线程调用，只负责新建静态顶点/索引 Buffer 的上传。
     class UploadScheduler {
@@ -23,8 +23,8 @@ namespace Catalpa {
         // 立即复制 CPU 数据；目标所有权交给调用方，并须保留至请求提交或调度器关闭。
         [[nodiscard]] RHIStatus CreateBuffer(std::span<const std::byte> data, RHIBufferUsage usage, BufferHandle& buffer);
 
-        // 只录制复制与屏障，不自行提交。
-        [[nodiscard]] RHIStatus RecordPending(RHICommandList& commands);
+        // 冻结本次请求前缀并加入图，复制和屏障由图统一生成。
+        [[nodiscard]] RHIStatus AddPasses(RenderGraph& graph);
 
         // 只接受本次真实绘制提交的完成点；提交成功不等于 GPU 已完成。
         void OnSubmitted(const RHICompletionPoint& completion) noexcept;
@@ -46,7 +46,7 @@ namespace Catalpa {
         RHIDevice& m_Device;
         std::vector<PendingBuffer> m_Pending;
 
-        // 仅本次录制的请求前缀属于此次提交。
+        // 仅加入本帧图的请求前缀属于此次提交。
         size_t m_RecordedCount = 0;
         bool m_Recorded = false;
         RHICompletionPoint m_LastSubmission{};
