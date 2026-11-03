@@ -16,21 +16,24 @@ namespace Catalpa {
         static constexpr uint32_t FramesInFlight = 2;
 
     public:
+        // 构造与所有权
         VulkanDevice();
         ~VulkanDevice() override;
 
         VulkanDevice(const VulkanDevice&) = delete;
         VulkanDevice& operator=(const VulkanDevice&) = delete;
 
+        // 设备初始化、同步与交换链创建
         bool Init(std::unique_ptr<VulkanBackend> backend);
         GraphicsBackend GetBackend() const override { return GraphicsBackend::Vulkan; }
         [[nodiscard]] RHIStatus WaitIdle() const override;
 
         [[nodiscard]] std::unique_ptr<RHISwapchain> CreateSwapchain(const RHISwapchainDesc& desc, RHIStatus& status) override;
 
-        // 调用前结束 GPU 使用，并释放设备创建的子资源。
+        // 调用前结束 GPU 使用，并释放外部持有的设备子资源；内部帧和队列由此回收。
         void Shutdown() override;
 
+        // 原生对象、队列与帧槽
         VkDevice GetHandle() const { return m_Device; }
         VkPhysicalDevice GetPhysicalDevice() const { return m_PhysicalDevice; }
 
@@ -47,11 +50,13 @@ namespace Catalpa {
         RHIStatus ObserveStatus(RHIStatus status);
         const RHIStatus& GetFailure() const { return m_DeviceFailure; }
 
+        // 后端队列族与帧访问
         uint32_t GetGraphicsQueueFamily() const { return m_GraphicsQueueFamily; }
         uint32_t GetPresentQueueFamily() const { return m_PresentQueueFamily; }
 
         VulkanFrameContext& GetFrameContext(uint32_t frameSlot) { return *m_Frames[frameSlot]; }
 
+        // 资源登记与设备能力
         DeviceId GetDeviceId() const override;
 
         VulkanResourceRegistry& GetResourceRegistry() { return *m_ResourceRegistry; }
@@ -60,28 +65,32 @@ namespace Catalpa {
         const RHICapabilities& GetCapabilities() const override { return m_Capabilities; }
         RHIFormatSupport GetFormatSupport(PixelFormat format) const override;
 
+        // 关闭前收尾与管线管理
         [[nodiscard]] RHIStatus WaitIdleAndDiscardFrameCommands() override;
 
         [[nodiscard]] RHIStatus CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc, GraphicsPipelineHandle& pipeline) override;
         void ReleaseGraphicsPipeline(GraphicsPipelineHandle pipeline) override;
 
     private:
+        // 后端环境与设备句柄
         std::unique_ptr<VulkanBackend> m_Backend;
         VkDevice m_Device = VK_NULL_HANDLE;
         VkPhysicalDevice m_PhysicalDevice = VK_NULL_HANDLE;
 
+        // 队列及其所属队列族
         std::unique_ptr<VulkanQueue> m_GraphicsQueue;
         VkQueue m_PresentQueue = VK_NULL_HANDLE;
 
         uint32_t m_GraphicsQueueFamily = VK_QUEUE_FAMILY_IGNORED;
         uint32_t m_PresentQueueFamily = VK_QUEUE_FAMILY_IGNORED;
 
+        // 帧资源先于登记表和逻辑设备释放
         std::array<std::unique_ptr<VulkanFrameContext>, FramesInFlight> m_Frames{};
 
         std::unique_ptr<VulkanResourceRegistry> m_ResourceRegistry;
 
+        // 已启用能力与终止性设备状态
         RHICapabilities m_Capabilities{};
-
         RHIStatus m_DeviceFailure{};
     };
 

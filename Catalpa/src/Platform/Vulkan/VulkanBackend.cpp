@@ -35,7 +35,7 @@ namespace Catalpa {
     {
         if (!m_Started) return;
 
-        // GPU 等待和设备子资源回收由 VulkanDevice 在销毁逻辑设备前完成。
+        // GPU 等待由 Runtime 协调；VulkanDevice 在释放本后端前回收设备子资源并销毁逻辑设备。
         m_PhysicalDevice = VulkanPhysicalDevice{};
         m_Surface.Shutdown();
         m_Instance.Shutdown();

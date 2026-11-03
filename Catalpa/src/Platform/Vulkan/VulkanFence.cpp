@@ -28,7 +28,7 @@ namespace Catalpa {
         return {};
     }
 
-    // 等待已登记的提交；通过 signaled 返回是否已置位
+    // 等待已登记的队列操作；通过 signaled 返回是否已置位
     RHIStatus VulkanFence::Wait(uint64_t timeoutNanoseconds, bool& signaled)
     {
         signaled = m_State == VulkanFenceState::Signaled;
@@ -47,7 +47,7 @@ namespace Catalpa {
         return status;
     }
 
-    // 	为下一次提交清除信号，拒绝重置待完成的 Fence
+    // 为下一次队列操作清除信号，拒绝重置尚未观察到完成的 Fence
     RHIStatus VulkanFence::Reset()
     {
         if (m_State == VulkanFenceState::Unsubmitted) return {};
@@ -62,7 +62,7 @@ namespace Catalpa {
         return status;
     }
 
-    // 仅在实际提交成功后登记 Pending
+    // 仅在相关提交或呈现操作已被队列接受后登记 Pending
     void VulkanFence::MarkSubmitted()
     {
         CAT_CORE_ASSERT(m_State == VulkanFenceState::Unsubmitted, "Fence must be unsignaled and available before submission!");

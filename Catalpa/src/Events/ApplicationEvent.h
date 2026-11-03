@@ -9,8 +9,7 @@ namespace Catalpa {
 	{
 	public:
 		WindowResizeEvent(unsigned int width, unsigned int height)
-			: m_Width(width), m_Height(height) {
-		}
+			: m_Width(width), m_Height(height) {}
 
 		unsigned int GetWidth() const { return m_Width; }
 		unsigned int GetHeight() const { return m_Height; }
@@ -24,6 +23,7 @@ namespace Catalpa {
 
 		EVENT_CLASS_TYPE(WindowResize)
 		EVENT_CLASS_CATEGORY(EventCategoryApplication)
+
 	private:
 		unsigned int m_Width, m_Height;
 	};
@@ -99,4 +99,5 @@ namespace Catalpa {
 	private:
 		bool m_Minimized;
 	};
+
 }

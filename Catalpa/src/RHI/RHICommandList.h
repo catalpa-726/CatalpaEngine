@@ -15,6 +15,7 @@ namespace Catalpa {
     public:
         virtual ~RHICommandList() = default;
 
+        // 命令列表录制边界。
         [[nodiscard]] virtual RHIStatus Begin() = 0;
         [[nodiscard]] virtual RHIStatus End() = 0;
 
@@ -28,7 +29,7 @@ namespace Catalpa {
 
         [[nodiscard]] virtual RHIStatus SetViewportAndScissor(const RHIViewport& viewport, const Rect2D& scissor) = 0;
 
-        // 仅在渲染段之外调用；当前一批中每张图像最多出现一次。
+        // 仅在渲染段之外调用；同一次 PipelineBarrier 调用中每张图像最多出现一次。
         // 录制不代表转换已经执行，调用者负责正确的状态基线与提交顺序。
         [[nodiscard]] virtual RHIStatus PipelineBarrier(std::span<const RHITextureBarrier> barriers) = 0;
 

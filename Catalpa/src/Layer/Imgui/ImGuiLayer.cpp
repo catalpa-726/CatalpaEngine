@@ -10,18 +10,14 @@
 //#include "backends/imgui_impl_glfw.h"
 #include "Core/Application.h"
 
-// 暂时的
+// 暂时借用 GLFW 窗口接口；ImGui 的平台和 Vulkan 渲染后端尚未接入。
 #include <GLFW/glfw3.h>
 
 namespace Catalpa {
 
-	ImGuiLayer::ImGuiLayer() : Layer("ImageLayer") {
+	ImGuiLayer::ImGuiLayer() : Layer("ImageLayer") {}
 
-	}
-
-	ImGuiLayer::~ImGuiLayer() {
-
-	}
+	ImGuiLayer::~ImGuiLayer() {}
 
 	void ImGuiLayer::OnAttach() {
 		// Setup Dear ImGui context
@@ -38,7 +34,7 @@ namespace Catalpa {
 		// Setup Dear ImGui style
 		ImGui::StyleColorsDark();
 		// ImGui::StyleColorsclassic();
-		// when viewports are enabled we tweak MindowRounding/windowBg so platform windous can look identical to regular ones.
+		// When viewports are enabled, adjust WindowRounding/WindowBg for matching platform-window styling; backend integration is still pending.
 		ImGuiStyle& style = ImGui::GetStyle();
 		if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
 			style.WindowRounding = 0.0f;
@@ -47,7 +43,7 @@ namespace Catalpa {
 
 		Application& app = Application::Get();
 		GLFWwindow* window = static_cast<GLFWwindow*>(app.GetWindow().GetNativeWindow());
-		// Setup Platform/Renderer bindings
+		// Platform/Renderer bindings are not initialized yet; the OpenGL call below remains a commented reference.
 		//ImGui_ImplGlfw_InitForOpenGL(window, true);
 	}
 
@@ -70,7 +66,7 @@ namespace Catalpa {
 		Application& app = Application::Get();
 		io.DisplaySize = ImVec2(app.GetWindow().GetWidth(), app.GetWindow().GetHeight());
 
-		// Rendering
+		// Generate ImGui draw data; submission through the engine renderer is not connected yet.
 		ImGui::Render();
 
 		if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {

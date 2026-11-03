@@ -13,21 +13,17 @@ public:
         dispatcher.Dispatch<Catalpa::WindowResizeEvent>([](auto& e) {
             CAT_INFO("Window resized: {0}x{1}", e.GetWidth(), e.GetHeight());
             return false;
-            });
+        });
     }
 };
 
 class CatalpaBox : public Catalpa::Application {
 public:
-    CatalpaBox() { 
-        PushLayer(std::make_unique<BoxLayer>()); 
-    }
-	
-	~CatalpaBox() {
-		
-	}
+    CatalpaBox() { PushLayer(std::make_unique<BoxLayer>()); }
+
+    ~CatalpaBox() {}
 };
 
 Catalpa::Application* Catalpa::CreateApplication() {
-	return new CatalpaBox();
+    return new CatalpaBox();
 }

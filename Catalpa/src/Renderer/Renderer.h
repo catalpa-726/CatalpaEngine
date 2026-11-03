@@ -21,7 +21,7 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus Render();
 
     private:
-        // 录制清屏和当前最小绘制。
+        // 录制交换链图像布局转换、清屏和当前三角形绘制。
         [[nodiscard]] RHIStatus RecordFrame(RHICommandList& commands, const RHIAcquireResult& acquired);
 
         // 录制或提交失败时，收尾尚未消费的 Acquire。
@@ -31,13 +31,16 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus EnsureTrianglePipeline();
 
     private:
+        // 持有管线的逻辑所有权；设备负责原生资源生命周期。
         GraphicsPipelineHandle m_TrianglePipeline{};
 
+        // 借用 Runtime 持有的设备和交换链。
         RHIDevice& m_Device;
         RHISwapchain& m_Swapchain;
+
+        // 帧槽进度与管线对应的交换链格式。
         uint32_t m_FrameSlot = 0;
         PixelFormat m_TriangleFormat = PixelFormat::Unknown;
-
     };
 
 }

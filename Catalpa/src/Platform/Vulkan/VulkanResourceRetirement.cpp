@@ -3,9 +3,6 @@
 
 namespace Catalpa {
 
-    void VulkanResourceRetirement::RetirePipeline(VulkanPipelineRecord pipeline) noexcept
-    {
-        DestroyVulkanPipeline(m_Device, pipeline);
-    }
+    void VulkanResourceRetirement::RetirePipeline(VulkanPipelineRecord pipeline) noexcept { DestroyVulkanPipeline(m_Device, pipeline); }
 
 }

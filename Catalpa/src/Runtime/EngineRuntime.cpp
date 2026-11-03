@@ -72,8 +72,8 @@ namespace Catalpa {
         m_SwapchainDirty = true;
     }
 
-    // 根据事件标记、VSync 变化或交换链状态，决定是否需要查询窗口。
-    // 查询后比较请求配置，确实需要时才重建。
+    // 每轮先根据事件标记、VSync 变化或交换链状态处理更新，再执行绘制。
+    // UpdateSwapchain 负责查询和比较请求配置，确实需要时才重建。
     RHIStatus EngineRuntime::Update(Window& window)
     {
         if (const RHIStatus status = UpdateSwapchain(window); !status.IsSuccess()) return status;

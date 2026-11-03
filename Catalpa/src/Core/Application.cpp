@@ -6,7 +6,7 @@
 
 namespace Catalpa {
 
-	Application* Application::s_Instance = nullptr;
+    Application* Application::s_Instance = nullptr;
 
     Application::Application()
     {
@@ -91,10 +91,11 @@ namespace Catalpa {
         m_PendingLayers.clear();
     }
 
-	bool Application::OnWindowClose(WindowCloseEvent& e) {
-		m_Running = false;
-		return true;
-	}
+    bool Application::OnWindowClose(WindowCloseEvent& e)
+    {
+        m_Running = false;
+        return true;
+    }
 
     bool Application::OnWindowSurfaceChanged(Event&)
     {

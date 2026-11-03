@@ -27,8 +27,7 @@ namespace Catalpa {
 
         if (index != InvalidIndex) {
             m_FirstFree = m_TextureViews[index].nextFree;
-        }
-        else {
+        } else {
             if (m_TextureViews.size() >= InvalidIndex)
                 return { .code = RHIErrorCode::OutOfMemory, .operation = "VulkanResourceRegistry::RegisterBorrowedTextureView" };
 
@@ -114,8 +113,7 @@ namespace Catalpa {
         if (index == InvalidIndex) {
             index = static_cast<uint32_t>(m_Pipelines.size());
             m_Pipelines.emplace_back();
-        }
-        else {
+        } else {
             m_FirstFreePipeline = m_Pipelines[index].nextFree;
         }
 

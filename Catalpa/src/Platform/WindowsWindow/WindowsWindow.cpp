@@ -53,12 +53,12 @@ namespace Catalpa {
 
 		//m_Context = new OpenGLContext(m_Window);
 		//m_Context->Init();
-		// ^
+		// 以上 OpenGL Context 初始化仅保留为注释；当前窗口使用 GLFW_NO_API。
 
 		glfwSetWindowUserPointer(m_Window, &m_Data);
 		SetVSync(true);
 
-		// Set GLFW Callbacks
+		// 注册 GLFW 回调，转换为现有 Events 并交给窗口事件回调。
 		glfwSetWindowSizeCallback(m_Window, [](GLFWwindow* window, int width, int height) {
 			WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
 			data.Width = width;
@@ -66,13 +66,13 @@ namespace Catalpa {
 
 			WindowResizeEvent event(width, height);
 			data.EventCallback(event);
-			});
+		});
 
 		glfwSetWindowCloseCallback(m_Window, [](GLFWwindow* window) {
 			WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
 			WindowCloseEvent event;
 			data.EventCallback(event);
-			});
+		});
 
 		glfwSetKeyCallback(m_Window, [](GLFWwindow* window, int key, int scancode, int action, int mods) {
 			WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
@@ -97,7 +97,7 @@ namespace Catalpa {
 					break;
 				}
 			}
-			});
+		});
 
 		glfwSetMouseButtonCallback(m_Window, [](GLFWwindow* window, int button, int action, int mods) {
 			WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
@@ -117,40 +117,40 @@ namespace Catalpa {
 					break;
 				}
 			}
-			});
+		});
 
 		glfwSetScrollCallback(m_Window, [](GLFWwindow* window, double xoffset, double yoffset) {
 			WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
 
 			MouseScrolledEvent event((float)xoffset, (float)yoffset);
 			data.EventCallback(event);
-			});
+		});
 
 		glfwSetCursorPosCallback(m_Window, [](GLFWwindow* window, double xpos, double ypos) {
 			WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
 
 			MouseMovedEvent event((float)xpos, (float)ypos);
 			data.EventCallback(event);
-			});
+		});
 
 		glfwSetCharCallback(m_Window, [](GLFWwindow* window, unsigned int keycode) {
 			WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
 
 			KeyTypedEvent event(keycode);
 			data.EventCallback(event);
-			});
+		});
 
 		glfwSetFramebufferSizeCallback(m_Window, [](GLFWwindow* window, int width, int height) {
 			auto& data = *static_cast<WindowData*>(glfwGetWindowUserPointer(window));
 			WindowFramebufferResizeEvent event(static_cast<unsigned int>(width), static_cast<unsigned int>(height));
 			data.EventCallback(event);
-			});
+		});
 
 		glfwSetWindowIconifyCallback(m_Window, [](GLFWwindow* window, int iconified) {
 			auto& data = *static_cast<WindowData*>(glfwGetWindowUserPointer(window));
 			WindowMinimizeEvent event(iconified == GLFW_TRUE);
 			data.EventCallback(event);
-			});
+		});
 	}
 
 	void WindowsWindow::Shutdown()
@@ -189,7 +189,7 @@ namespace Catalpa {
 	}
 
 	void WindowsWindow::SetVSync(bool enabled) {
-		// 这个是针对opengl的，以后修改
+		// 保存 VSync 请求；EngineRuntime 据此选择并重建交换链的呈现模式。
 		m_Data.VSync = enabled;
 	}
 

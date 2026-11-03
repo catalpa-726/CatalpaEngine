@@ -49,7 +49,7 @@ namespace Catalpa {
         return m_Device.ObserveStatus(status);
     }
 
-    // 	记录已成功接受的提交，本身不执行提交
+    // 记录已成功接受的提交，本身不执行提交
     void VulkanCommandList::MarkSubmitted()
     {
         CAT_CORE_ASSERT(m_State == RHICommandListState::Executable, "Command list must be executable before submission!");
@@ -105,7 +105,7 @@ namespace Catalpa {
         return {};
     }
 
-    // 开始渲染段，附件、清除值和渲染区域由 renderingInfo 提供
+    // 开始渲染段，附件、清除值和渲染区域由 desc 提供
     RHIStatus VulkanCommandList::BeginRendering(const RHIRenderingDesc& desc)
     {
         constexpr const char* operation = "VulkanCommandList::BeginRendering";
@@ -162,7 +162,7 @@ namespace Catalpa {
                 .loadOp = loadOp,
                 .storeOp = storeOp,
                 .clearValue = {.color = {.float32 = { color[0], color[1], color[2], color[3] } } }
-                });
+            });
         }
 
         const size_t first = m_RetainedViews.size();

@@ -6,7 +6,7 @@ namespace Catalpa {
 
 	class CATALPA_API Input {
 	public:
-
+		// 统一的输入轮询入口。
 		inline static bool IsKeyPressed(int keycode) { return s_Instance->IsKeyPressedImpl(keycode); }
 
 		inline static bool IsMouseButtonPressed(int button) { return s_Instance->IsMouseButtonPressedImpl(button); }
@@ -15,7 +15,7 @@ namespace Catalpa {
 		inline static float GetMouseY() { return s_Instance->GetMouseYImpl(); }
 
 	protected:
-
+		// 由平台实现具体查询。
 		virtual bool IsKeyPressedImpl(int keycode) = 0;
 
 		virtual bool IsMouseButtonPressedImpl(int button) = 0;
@@ -24,9 +24,7 @@ namespace Catalpa {
 		virtual float GetMouseYImpl() = 0;
 
 	private:
-
 		static Input* s_Instance;
-
 	};
 
 }

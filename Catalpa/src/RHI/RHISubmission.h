@@ -7,7 +7,7 @@ namespace Catalpa {
 
     class RHICommandList;
 
-    // commands 借用自设备，在该帧槽下次成功 PrepareFrame 前有效。
+    // commands 借用自设备，仅供当前帧槽代次使用；帧槽复用、失设备清理或设备关闭后须重新获取。
     struct RHIFrameResources {
         RHIFrameToken token{};
         RHICommandList* commands = nullptr;

@@ -25,7 +25,7 @@ namespace Catalpa {
 
         const RHITextureBarrier toColor{
             .view = acquired.view,
-            .before = {.stage = RHIPipelineStage::AllCommands, .layout = RHITextureLayout::Undefined },
+            .before = { .stage = RHIPipelineStage::AllCommands, .layout = RHITextureLayout::Undefined },
             .after = colorAccess
         };
 
@@ -42,7 +42,7 @@ namespace Catalpa {
 
         const RHIRenderingDesc rendering{
             .colorAttachments = { &color, 1 },
-            .renderArea = {.extent = extent }
+            .renderArea = { .extent = extent }
         };
 
         const RHIViewport viewport{ .width = static_cast<float>(extent.width), .height = static_cast<float>(extent.height) };
@@ -57,7 +57,7 @@ namespace Catalpa {
         const RHITextureBarrier toPresent{
             .view = acquired.view,
             .before = colorAccess,
-            .after = {.layout = RHITextureLayout::Present }
+            .after = { .layout = RHITextureLayout::Present }
         };
 
         if (const RHIStatus status = commands.PipelineBarrier({ &toPresent, 1 }); !status.IsSuccess()) return status;
@@ -124,8 +124,8 @@ namespace Catalpa {
         if (m_TrianglePipeline.HasValue() && m_TriangleFormat == format) return {};
 
         const RHIGraphicsPipelineDesc desc{
-            .vertex = {.bytecode = TriangleVertexSpirv, .stage = RHIShaderStage::Vertex, .entryPoint = "vertexMain" },
-            .fragment = {.bytecode = TriangleFragmentSpirv, .stage = RHIShaderStage::Fragment, .entryPoint = "fragmentMain" },
+            .vertex = { .bytecode = TriangleVertexSpirv, .stage = RHIShaderStage::Vertex, .entryPoint = "vertexMain" },
+            .fragment = { .bytecode = TriangleFragmentSpirv, .stage = RHIShaderStage::Fragment, .entryPoint = "fragmentMain" },
             .colorFormat = format
         };
 

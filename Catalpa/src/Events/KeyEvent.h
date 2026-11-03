@@ -34,6 +34,7 @@ namespace Catalpa {
 		}
 
 		EVENT_CLASS_TYPE(KeyPressed)
+
 	private:
 		bool m_IsRepeat;
 	};
@@ -67,4 +68,5 @@ namespace Catalpa {
 
 		EVENT_CLASS_TYPE(KeyTyped)
 	};
+
 }

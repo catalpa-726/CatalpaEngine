@@ -286,7 +286,7 @@ namespace Catalpa {
 
     void VulkanSwapchain::Shutdown()
     {
-        for (const TextureViewHandle handle : m_ImageViewHandles) 
+        for (const TextureViewHandle handle : m_ImageViewHandles)
             m_Device.GetResourceRegistry().UnregisterBorrowedTextureView(handle);
         m_ImageViewHandles.clear();
 
@@ -302,7 +302,8 @@ namespace Catalpa {
         m_Info = {};
     }
 
-    RHIStatus VulkanSwapchain::AcquireNative(VulkanBinarySemaphore& semaphore, uint64_t timeoutNanoseconds, RHIAcquireResult& acquired) {
+    RHIStatus VulkanSwapchain::AcquireNative(VulkanBinarySemaphore& semaphore, uint64_t timeoutNanoseconds, RHIAcquireResult& acquired)
+    {
         acquired = {};
 
         if (m_Info.state == RHISwapchainState::Suspended) { acquired.outcome = RHIAcquireOutcome::Suspended; return {}; }
@@ -317,26 +318,26 @@ namespace Catalpa {
         const VkResult result = vkAcquireNextImageKHR(m_Device.GetHandle(), m_Swapchain, timeoutNanoseconds, semaphore.GetHandle(), VK_NULL_HANDLE, &imageIndex);
 
         switch (result) {
-            case VK_SUCCESS:
-            case VK_SUBOPTIMAL_KHR:
-                acquired = { .outcome = result == VK_SUCCESS ? RHIAcquireOutcome::Acquired : RHIAcquireOutcome::Suboptimal, .imageIndex = imageIndex };
-                return {};
+        case VK_SUCCESS:
+        case VK_SUBOPTIMAL_KHR:
+            acquired = { .outcome = result == VK_SUCCESS ? RHIAcquireOutcome::Acquired : RHIAcquireOutcome::Suboptimal, .imageIndex = imageIndex };
+            return {};
 
-            case VK_NOT_READY:
-            case VK_TIMEOUT:
-                return {};
+        case VK_NOT_READY:
+        case VK_TIMEOUT:
+            return {};
 
-            case VK_ERROR_OUT_OF_DATE_KHR:
-                m_Info.state = RHISwapchainState::OutOfDate;
-                acquired.outcome = RHIAcquireOutcome::OutOfDate;
-                return {};
+        case VK_ERROR_OUT_OF_DATE_KHR:
+            m_Info.state = RHISwapchainState::OutOfDate;
+            acquired.outcome = RHIAcquireOutcome::OutOfDate;
+            return {};
 
-            case VK_ERROR_SURFACE_LOST_KHR:
-                m_Info.state = RHISwapchainState::SurfaceLost;
-                break;
+        case VK_ERROR_SURFACE_LOST_KHR:
+            m_Info.state = RHISwapchainState::SurfaceLost;
+            break;
 
-            default:
-                break;
+        default:
+            break;
         }
 
         return MakeVulkanStatus(result, "vkAcquireNextImageKHR");
@@ -385,36 +386,36 @@ namespace Catalpa {
         const VkResult result = vkQueuePresentKHR(m_Device.GetPresentQueue(), &presentInfo);
 
         switch (result) {
-            case VK_SUCCESS:
-                if (fence) fence->MarkSubmitted();
-                outcome = RHIPresentOutcome::Queued;
-                if (acquired.outcome == RHIAcquireOutcome::Suboptimal) m_Info.state = RHISwapchainState::OutOfDate;
-                return {};
+        case VK_SUCCESS:
+            if (fence) fence->MarkSubmitted();
+            outcome = RHIPresentOutcome::Queued;
+            if (acquired.outcome == RHIAcquireOutcome::Suboptimal) m_Info.state = RHISwapchainState::OutOfDate;
+            return {};
 
-            case VK_SUBOPTIMAL_KHR:
-            case VK_ERROR_OUT_OF_DATE_KHR:
-                if (fence) fence->MarkSubmitted();
-                outcome = result == VK_SUBOPTIMAL_KHR ? RHIPresentOutcome::Suboptimal : RHIPresentOutcome::OutOfDate;
-                m_Info.state = RHISwapchainState::OutOfDate;
-                return {};
+        case VK_SUBOPTIMAL_KHR:
+        case VK_ERROR_OUT_OF_DATE_KHR:
+            if (fence) fence->MarkSubmitted();
+            outcome = result == VK_SUBOPTIMAL_KHR ? RHIPresentOutcome::Suboptimal : RHIPresentOutcome::OutOfDate;
+            m_Info.state = RHISwapchainState::OutOfDate;
+            return {};
 
-            case VK_ERROR_SURFACE_LOST_KHR:
-                if (fence) fence->MarkSubmitted();
-                outcome = RHIPresentOutcome::SurfaceLost;
-                m_Info.state = RHISwapchainState::SurfaceLost;
-                break;
+        case VK_ERROR_SURFACE_LOST_KHR:
+            if (fence) fence->MarkSubmitted();
+            outcome = RHIPresentOutcome::SurfaceLost;
+            m_Info.state = RHISwapchainState::SurfaceLost;
+            break;
 
-            case VK_ERROR_OUT_OF_HOST_MEMORY:
-            case VK_ERROR_OUT_OF_DEVICE_MEMORY:
-                outcome = RHIPresentOutcome::NotQueued;
-                break;
+        case VK_ERROR_OUT_OF_HOST_MEMORY:
+        case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+            outcome = RHIPresentOutcome::NotQueued;
+            break;
 
-            case VK_ERROR_DEVICE_LOST:
-                break;
+        case VK_ERROR_DEVICE_LOST:
+            break;
 
-            default:
-                CAT_CORE_ERROR("Unexpected vkQueuePresentKHR result: {0}; presentation lifetime is unknown.", static_cast<int>(result));
-                std::abort();
+        default:
+            CAT_CORE_ERROR("Unexpected vkQueuePresentKHR result: {0}; presentation lifetime is unknown.", static_cast<int>(result));
+            std::abort();
         }
 
         return MakeVulkanStatus(result, "vkQueuePresentKHR");

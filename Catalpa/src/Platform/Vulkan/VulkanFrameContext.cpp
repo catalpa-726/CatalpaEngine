@@ -8,12 +8,10 @@ namespace Catalpa {
 
     VulkanFrameContext::VulkanFrameContext(VulkanDevice& device, uint32_t slot) : m_Device(device), m_Slot(slot), m_Fence(device), m_AcquireSemaphore(device), m_CommandPool(device), m_CommandList(device) {}
 
+    // 先销毁原生命令池，随后成员析构归还命令保留的资源引用。
     VulkanFrameContext::~VulkanFrameContext() { m_CommandPool.Shutdown(); }
 
-    RHIFrameToken VulkanFrameContext::GetToken() const
-    {
-        return { .device = m_Device.GetDeviceId(), .slot = m_Slot, .generation = m_Generation };
-    }
+    RHIFrameToken VulkanFrameContext::GetToken() const { return { .device = m_Device.GetDeviceId(), .slot = m_Slot, .generation = m_Generation }; }
 
     RHIStatus VulkanFrameContext::Init(uint32_t queueFamily)
     {

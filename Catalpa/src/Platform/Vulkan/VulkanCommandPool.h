@@ -19,7 +19,7 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus Init(uint32_t queueFamily);
         [[nodiscard]] RHIStatus AllocatePrimary(VkCommandBuffer& commandBuffer);
 
-        // 调用前，池内命令缓冲的录制和 GPU 使用必须已经结束。
+        // 调用前停止对池内命令缓冲的录制，并结束其 GPU 使用；可丢弃未提交的录制。
         [[nodiscard]] RHIStatus Reset();
         void Shutdown();
 

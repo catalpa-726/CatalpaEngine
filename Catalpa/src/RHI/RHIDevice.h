@@ -15,15 +15,17 @@ namespace Catalpa {
     public:
         virtual ~RHIDevice() = default;
 
+        // 后端身份、设备等待与交换链创建。
         virtual GraphicsBackend GetBackend() const = 0;
 
         // 设备必须处于有效状态，调用期间停止向队列提交工作。
+        // 设备空闲不等同于呈现 Fence 的资源回收证明。
         [[nodiscard]] virtual RHIStatus WaitIdle() const = 0;
 
         // 返回的交换链必须先于设备释放；失败时返回空指针并填写 status。
         [[nodiscard]] virtual std::unique_ptr<RHISwapchain> CreateSwapchain(const RHISwapchainDesc& desc, RHIStatus& status) = 0;
 
-        // 查询初始化时保存的设备上限。
+        // 查询初始化时保存的设备上限与实际启用的可选能力。
         virtual const RHICapabilities& GetCapabilities() const = 0;
 
         // 查询普通 GPU 纹理的单项格式能力；未知格式返回全 false。
@@ -39,6 +41,7 @@ namespace Catalpa {
         // DeviceLost 表示进入失败关闭，不能继续使用该设备。
         [[nodiscard]] virtual RHIStatus WaitIdleAndDiscardFrameCommands() = 0;
 
+        // 图形队列与帧槽准备。
         virtual RHIQueue& GetGraphicsQueue() = 0;
         virtual uint32_t GetFrameCount() const = 0;
 

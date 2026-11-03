@@ -9,11 +9,11 @@
 namespace Catalpa {
 
     /*
-    * 确认命令录制已经完成。
-    * 准备提交描述，再调用已有 Fence::Reset()。
-    * 调用 vkQueueSubmit2()。
-    * 提交成功后，才将命令列表和 Fence 标记为 Pending。
-    */
+     * 确认命令录制已经完成。
+     * 准备提交描述，再调用已有 Fence::Reset()。
+     * 调用 vkQueueSubmit2()。
+     * 提交成功后，才将命令列表和 Fence 标记为 Pending。
+     */
     RHIStatus VulkanQueue::Submit(VulkanCommandList& commands, VulkanFence& fence, std::span<const VkSemaphoreSubmitInfo> waits, std::span<const VkSemaphoreSubmitInfo> signals)
     {
         return SubmitInternal(&commands, fence, waits, signals);

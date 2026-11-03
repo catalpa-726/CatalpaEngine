@@ -33,8 +33,10 @@ namespace Catalpa {
 	public:
 		virtual ~Event() = default;
 
+		// EventDispatcher 累积处理结果；Application 在已处理时停止向后续 Layer 传播。
 		bool Handled = false;
 
+		// 类型、分类与调试文本。
 		virtual EventType GetEventType() const = 0;
 		virtual const char* GetName() const = 0;
 		virtual int GetCategoryFlags() const = 0;
@@ -62,6 +64,7 @@ namespace Catalpa {
 			}
 			return false;
 		}
+
 	private:
 		Event& m_Event;
 	};

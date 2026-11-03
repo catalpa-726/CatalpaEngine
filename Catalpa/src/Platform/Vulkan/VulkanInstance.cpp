@@ -5,18 +5,13 @@
 
 namespace Catalpa {
 
-    VulkanInstance::~VulkanInstance()
-    {
-        Shutdown();
-    }
+    VulkanInstance::~VulkanInstance() { Shutdown(); }
 
     bool VulkanInstance::Init(const std::vector<const char*>& extensions, uint32_t apiVersion)
     {
         CAT_CORE_ASSERT(m_Instance == VK_NULL_HANDLE, "Vulkan instance already exists!");
 
-        if (!VulkanLoader::Load()) {
-            return false;
-        }
+        if (!VulkanLoader::Load()) { return false; }
 
         const bool surfaceMaintenanceEnabled = GLAD_VK_KHR_get_surface_capabilities2 && GLAD_VK_EXT_surface_maintenance1;
 
@@ -24,20 +19,18 @@ namespace Catalpa {
         if (surfaceMaintenanceEnabled) enabledExtensions.insert(enabledExtensions.end(), { VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME, VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME });
 
         VkApplicationInfo appInfo{
-                .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-                .pApplicationName = "CatalpaEngine",
-                .pEngineName = "CatalpaEngine",
-                .apiVersion = apiVersion
+            .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+            .pApplicationName = "CatalpaEngine",
+            .pEngineName = "CatalpaEngine",
+            .apiVersion = apiVersion
         };
-       
 
         VkInstanceCreateInfo createInfo{
-                .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-                .pApplicationInfo = &appInfo,
-                .enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size()),
-                .ppEnabledExtensionNames = enabledExtensions.data()
+            .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            .pApplicationInfo = &appInfo,
+            .enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size()),
+            .ppEnabledExtensionNames = enabledExtensions.data()
         };
-        
 
         VkInstance instance = VK_NULL_HANDLE;
         const VkResult result = vkCreateInstance(&createInfo, nullptr, &instance);

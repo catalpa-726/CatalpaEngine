@@ -135,9 +135,7 @@ namespace Catalpa {
         return true;
     }
 
-    RHIStatus VulkanDevice::WaitIdle() const { 
-        return MakeVulkanStatus(vkDeviceWaitIdle(m_Device), "vkDeviceWaitIdle");
-    }
+    RHIStatus VulkanDevice::WaitIdle() const { return MakeVulkanStatus(vkDeviceWaitIdle(m_Device), "vkDeviceWaitIdle"); }
 
     std::unique_ptr<RHISwapchain> VulkanDevice::CreateSwapchain(const RHISwapchainDesc& desc, RHIStatus& status)
     {
@@ -168,10 +166,7 @@ namespace Catalpa {
         };
     }
 
-    DeviceId VulkanDevice::GetDeviceId() const
-    {
-        return m_ResourceRegistry ? m_ResourceRegistry->GetDeviceId() : DeviceId{};
-    }
+    DeviceId VulkanDevice::GetDeviceId() const { return m_ResourceRegistry ? m_ResourceRegistry->GetDeviceId() : DeviceId{}; }
 
     RHIStatus VulkanDevice::WaitIdleAndDiscardFrameCommands()
     {
@@ -268,9 +263,6 @@ namespace Catalpa {
         return ObserveStatus(m_ResourceRegistry->CreateGraphicsPipeline(desc, pipeline));
     }
 
-    void VulkanDevice::ReleaseGraphicsPipeline(GraphicsPipelineHandle pipeline)
-    {
-        m_ResourceRegistry->ReleaseGraphicsPipeline(pipeline);
-    }
+    void VulkanDevice::ReleaseGraphicsPipeline(GraphicsPipelineHandle pipeline) { m_ResourceRegistry->ReleaseGraphicsPipeline(pipeline); }
 
 }

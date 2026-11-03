@@ -3,15 +3,15 @@
 #include "VulkanHeaders.h"
 #include "RHI/RHIError.h"
 
-// 声明 Fence 的所有权、提交状态和 CPU 等待接口。原生句柄只供 Vulkan 后端使用。
+// 声明 Fence 的所有权、队列操作状态和 CPU 等待接口。原生句柄只供 Vulkan 后端使用。
 namespace Catalpa {
 
     class VulkanDevice;
 
-    enum class VulkanFenceState { 
-        Unsubmitted,        // 未置位，尚未登记关联提交
-        Pending,            // 已提交，尚未观察到完成
-        Signaled            // 已置位；可能来自创建参数，也可能来自提交完成
+    enum class VulkanFenceState {
+        Unsubmitted,        // 未置位，尚未登记关联队列操作
+        Pending,            // 相关队列操作已入队，尚未观察到完成
+        Signaled            // 已置位；可能来自创建参数，也可能来自关联队列操作完成
     };
 
     class VulkanFence {

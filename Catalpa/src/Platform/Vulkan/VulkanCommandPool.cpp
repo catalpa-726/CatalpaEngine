@@ -9,7 +9,7 @@ namespace Catalpa {
 
     VulkanCommandPool::~VulkanCommandPool() { Shutdown(); }
 
-    // 	为指定队列族创建命令池
+    // 为指定队列族创建命令池
     RHIStatus VulkanCommandPool::Init(uint32_t queueFamily)
     {
         CAT_CORE_ASSERT(m_Pool == VK_NULL_HANDLE, "Vulkan command pool already exists!");

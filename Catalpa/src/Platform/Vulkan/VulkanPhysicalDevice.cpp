@@ -43,7 +43,7 @@ namespace Catalpa {
         std::vector<VkPhysicalDevice> devices;
         const VkResult enumerateResult = EnumerateVulkan(devices, [instance](uint32_t* count, VkPhysicalDevice* data) {
             return vkEnumeratePhysicalDevices(instance, count, data);
-            });
+        });
 
         if (enumerateResult != VK_SUCCESS) {
             CAT_CORE_ERROR("Failed to enumerate physical devices. VkResult: {0}", static_cast<int>(enumerateResult));
@@ -58,7 +58,7 @@ namespace Catalpa {
             std::vector<VkExtensionProperties> extensions;
             const VkResult extensionResult = EnumerateVulkan(extensions, [device](uint32_t* count, VkExtensionProperties* data) {
                 return vkEnumerateDeviceExtensionProperties(device, nullptr, count, data);
-                });
+            });
 
             if (extensionResult != VK_SUCCESS) {
                 CAT_CORE_ERROR("Failed to enumerate device extensions. VkResult: {0}", static_cast<int>(extensionResult));
@@ -68,8 +68,8 @@ namespace Catalpa {
             const auto supportsExtension = [&](const char* name) {
                 return std::ranges::any_of(extensions, [name](const VkExtensionProperties& extension) {
                     return std::string_view(extension.extensionName) == name;
-                    });
-                };
+                });
+            };
 
             if (!supportsExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME)) continue;
 

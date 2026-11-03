@@ -3,7 +3,7 @@
 #include "Core/Memory/GenerationalHandle.h"
 #include "RHITypes.h"
 
-// 通用槽位句柄外增加设备身份，并区分纹理和纹理视图
+// 在通用槽位句柄外增加设备身份，并区分纹理、纹理视图和图形管线
 namespace Catalpa {
 
     template<typename Tag>

@@ -23,6 +23,7 @@ namespace Catalpa {
 
 		EVENT_CLASS_TYPE(MouseMoved)
 		EVENT_CLASS_CATEGORY(EventCategoryMouse | EventCategoryInput)
+
 	private:
 		float m_MouseX, m_MouseY;
 	};
@@ -44,6 +45,7 @@ namespace Catalpa {
 
 		EVENT_CLASS_TYPE(MouseScrolled)
 		EVENT_CLASS_CATEGORY(EventCategoryMouse | EventCategoryInput)
+
 	private:
 		float m_XOffset, m_YOffset;
 	};
@@ -54,6 +56,7 @@ namespace Catalpa {
 		MouseCode GetMouseButton() const { return m_Button; }
 
 		EVENT_CLASS_CATEGORY(EventCategoryMouse | EventCategoryInput | EventCategoryMouseButton)
+
 	protected:
 		MouseButtonEvent(const MouseCode button) : m_Button(button) {}
 

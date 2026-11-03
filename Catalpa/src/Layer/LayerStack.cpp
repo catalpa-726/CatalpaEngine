@@ -44,7 +44,7 @@ namespace Catalpa {
 
 		for (auto it = layers.rbegin(); it != layers.rend(); ++it) {
 			(*it)->OnDetach();
-			delete* it;
+			delete *it;
 		}
 	}
 
