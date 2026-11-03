@@ -34,7 +34,7 @@ namespace Catalpa {
 
         const RHIStatus status = MakeVulkanStatus(vkBeginCommandBuffer(m_CommandBuffer, &beginInfo), "vkBeginCommandBuffer");
         m_State = status.IsSuccess() ? RHICommandListState::Recording : RHICommandListState::Invalid;
-        return status;
+        return m_Device.ObserveStatus(status);
     }
 
     RHIStatus VulkanCommandList::End()
@@ -46,7 +46,7 @@ namespace Catalpa {
 
         const RHIStatus status = MakeVulkanStatus(vkEndCommandBuffer(m_CommandBuffer), "vkEndCommandBuffer");
         m_State = status.IsSuccess() ? RHICommandListState::Executable : RHICommandListState::Invalid;
-        return status;
+        return m_Device.ObserveStatus(status);
     }
 
     // 	记录已成功接受的提交，本身不执行提交

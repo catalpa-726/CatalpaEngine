@@ -9,6 +9,7 @@ namespace Catalpa {
 
     class VulkanDevice;
     class VulkanBinarySemaphore;
+    class VulkanFrameContext;
 
     class VulkanSwapchain : public RHISwapchain {
     public:
@@ -35,14 +36,21 @@ namespace Catalpa {
         VulkanBinarySemaphore& GetPresentSemaphore(uint32_t imageIndex) { return *m_PresentSemaphores[imageIndex]; }
 
         // semaphore 必须已初始化、未触发，且不存在尚未完成的 signal/wait；timeout 单位为纳秒。
-        [[nodiscard]] RHIStatus Acquire(VulkanBinarySemaphore& semaphore, uint64_t timeoutNanoseconds, RHIAcquireResult& acquired);
+        [[nodiscard]] RHIStatus Acquire(RHIFrameToken frame, uint64_t timeoutNanoseconds, RHIAcquireResult& acquired) override;
+        [[nodiscard]] RHIStatus CancelAcquire(RHIAcquireResult& acquired, RHICompletionPoint& completion) override;
 
         // acquired 必须来自当前交换链，且尚未呈现。
         // 图像已转换到呈现布局，对应呈现信号量的 signal 提交已经成功。
-        [[nodiscard]] RHIStatus Present(const RHIAcquireResult& acquired, RHIPresentOutcome& outcome);
+        [[nodiscard]] RHIStatus Present(const RHIAcquireResult& acquired, RHIPresentOutcome& outcome) override;
 
         // 请求后续重建，不立即销毁资源，也不覆盖 SurfaceLost 等状态。
         void RequestRecreate() { if (m_Info.state == RHISwapchainState::Ready) m_Info.state = RHISwapchainState::OutOfDate; }
+
+    private:
+        friend class VulkanFrameContext;
+
+        [[nodiscard]] RHIStatus AcquireNative(VulkanBinarySemaphore& semaphore, uint64_t timeoutNanoseconds, RHIAcquireResult& acquired);
+        [[nodiscard]] RHIStatus PresentNative(const RHIAcquireResult& acquired, RHIPresentOutcome& outcome);
 
     private:
         VulkanDevice& m_Device;

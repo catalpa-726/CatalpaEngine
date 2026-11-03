@@ -6,6 +6,7 @@
 #include "RHIError.h"
 #include "RHITypes.h"
 #include "RHICapabilities.h"
+#include "RHIQueue.h"
 
 namespace Catalpa {
 
@@ -36,6 +37,12 @@ namespace Catalpa {
         // 等待设备后，丢弃设备管理的帧命令及其资源引用。
         // DeviceLost 表示进入失败关闭，不能继续使用该设备。
         [[nodiscard]] virtual RHIStatus WaitIdleAndDiscardFrameCommands() = 0;
+
+        virtual RHIQueue& GetGraphicsQueue() = 0;
+        virtual uint32_t GetFrameCount() const = 0;
+
+        // 等待指定帧槽，再重置它的命令资源；超时通过 ready == false 表示。
+        [[nodiscard]] virtual RHIStatus PrepareFrame(uint32_t slot, uint64_t timeoutNanoseconds, RHIFrameResources& frame, bool& ready) = 0;
     };
 
 }

@@ -107,11 +107,12 @@ namespace Catalpa {
         };
 
         m_Backend = std::move(backend);
-        m_GraphicsQueue = std::make_unique<VulkanQueue>(graphicsQueue, m_GraphicsQueueFamily);
         m_ResourceRegistry = std::make_unique<VulkanResourceRegistry>(AllocateDeviceId());
+        m_GraphicsQueue = std::make_unique<VulkanQueue>(*this, graphicsQueue, m_GraphicsQueueFamily, QueueId{ 1 });
 
-        for (auto& frame : m_Frames) {
-            frame = std::make_unique<VulkanFrameContext>(*this);
+        for (uint32_t slot = 0; slot < FramesInFlight; ++slot) {
+            auto& frame = m_Frames[slot];
+            frame = std::make_unique<VulkanFrameContext>(*this, slot);
 
             if (const RHIStatus status = frame->Init(m_GraphicsQueueFamily); !status.IsSuccess()) {
                 Shutdown();
@@ -130,7 +131,7 @@ namespace Catalpa {
     std::unique_ptr<RHISwapchain> VulkanDevice::CreateSwapchain(const RHISwapchainDesc& desc, RHIStatus& status)
     {
         auto swapchain = std::make_unique<VulkanSwapchain>(*this, m_Backend->GetSurface().GetHandle());
-        status = swapchain->Init(desc);
+        status = ObserveStatus(swapchain->Init(desc));
         if (!status.IsSuccess()) return nullptr;
         return swapchain;
     }
@@ -163,12 +164,13 @@ namespace Catalpa {
 
     RHIStatus VulkanDevice::WaitIdleAndDiscardFrameCommands()
     {
-        if (!m_DeviceFailure.IsSuccess()) return m_DeviceFailure;
+        if (!m_DeviceFailure.IsSuccess() && std::ranges::none_of(m_Frames, [](const auto& frame) { return static_cast<bool>(frame); }))
+            return m_DeviceFailure;
 
         RHIStatus status = WaitIdle();
 
-        if (status.IsSuccess() && m_GraphicsQueue && m_GraphicsQueue->GetFailure().code == RHIErrorCode::DeviceLost)
-            status = m_GraphicsQueue->GetFailure();
+        // 已经失设备，后续 WaitIdle 成功也不恢复正常运行。
+        if (status.IsSuccess() && !m_DeviceFailure.IsSuccess()) status = m_DeviceFailure;
 
         if (status.IsSuccess()) {
             for (auto& frame : m_Frames) {
@@ -186,7 +188,8 @@ namespace Catalpa {
         }
 
         if (status.code == RHIErrorCode::DeviceLost) {
-            m_DeviceFailure = status;
+            ObserveStatus(status);
+            if (m_GraphicsQueue) m_GraphicsQueue->DiscardPendingSubmissions();
             for (auto& frame : m_Frames) frame.reset();
         }
 
@@ -195,6 +198,7 @@ namespace Catalpa {
 
     void VulkanDevice::Shutdown()
     {
+        if (m_GraphicsQueue) m_GraphicsQueue->DiscardPendingSubmissions();
         for (auto& frame : m_Frames) frame.reset();
         m_GraphicsQueue.reset();
 
@@ -211,5 +215,38 @@ namespace Catalpa {
         m_Backend.reset();
         m_Capabilities = {};
         m_DeviceFailure = {};
+    }
+
+    RHIStatus VulkanDevice::ObserveStatus(RHIStatus status)
+    {
+        if (status.code == RHIErrorCode::DeviceLost) m_DeviceFailure = status;
+        return status;
+    }
+
+    VulkanFrameContext* VulkanDevice::ResolveFrame(RHIFrameToken token)
+    {
+        if (!token.HasValue() || token.device != GetDeviceId() || token.slot >= FramesInFlight) return nullptr;
+
+        auto* frame = m_Frames[token.slot].get();
+        return frame && frame->GetToken() == token ? frame : nullptr;
+    }
+
+    RHIStatus VulkanDevice::PrepareFrame(uint32_t slot, uint64_t timeoutNanoseconds, RHIFrameResources& resources, bool& ready)
+    {
+        resources = {};
+        ready = false;
+        if (!m_DeviceFailure.IsSuccess()) return m_DeviceFailure;
+
+        if (slot >= FramesInFlight)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanDevice::PrepareFrame" };
+
+        auto& frame = *m_Frames[slot];
+
+        if (frame.HasActiveAcquisition())
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanDevice::PrepareFrame" };
+
+        const RHIStatus status = ObserveStatus(frame.PrepareReuse(timeoutNanoseconds, ready));
+        if (status.IsSuccess() && ready) resources = { .token = frame.GetToken(), .commands = &frame.GetCommandList() };
+        return status;
     }
 }

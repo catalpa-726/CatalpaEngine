@@ -15,7 +15,7 @@ namespace Catalpa {
 
     class VulkanFrameContext {
     public:
-        explicit VulkanFrameContext(VulkanDevice& device);
+        VulkanFrameContext(VulkanDevice& device, uint32_t slot);
         ~VulkanFrameContext();
 
         VulkanFrameContext(const VulkanFrameContext&) = delete;
@@ -24,30 +24,35 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus Init(uint32_t queueFamily);
         [[nodiscard]] RHIStatus PrepareReuse(uint64_t timeoutNanoseconds, bool& ready);
 
+        // 查询当前帧身份，以及是否仍持有尚未收尾的获取。
+        RHIFrameToken GetToken() const;
+        bool HasActiveAcquisition() const { return m_ActiveSwapchain != nullptr; }
+
         VkCommandBuffer GetCommandBuffer() const { return m_CommandList.GetHandle(); }
         VulkanCommandList& GetCommandList() { return m_CommandList; }
-
         VulkanFence& GetFence() { return m_Fence; }
         VulkanBinarySemaphore& GetAcquireSemaphore() { return m_AcquireSemaphore; }
 
-        // Acquire()：使用本帧的 Acquire 信号量获取图像，并记录尚未提交的获取操作。
         [[nodiscard]] RHIStatus Acquire(VulkanSwapchain& swapchain, uint64_t timeoutNanoseconds, RHIAcquireResult& acquired);
+        [[nodiscard]] RHIStatus Submit(VulkanQueue& queue, const RHIGpuDependency& wait, const RHIGpuDependency& signal);
 
-        // Submit()：自动连接本帧的命令、Fence、Acquire 等待和呈现信号量。`presentSemaphore` 必须对应刚取得的图像，并来自同一设备。
-        [[nodiscard]] RHIStatus Submit(VulkanQueue& queue, VulkanBinarySemaphore& presentSemaphore);
-
-        // 仅取消尚未成功提交的获取；swapchain 和 acquired 必须对应本帧的同一次 Acquire。
-        // 调用前不得重建或销毁该交换链；成功后仍需等待 Fence 完成。
+        // 检查提交与获取对应关系，再进入原生呈现。
+        [[nodiscard]] RHIStatus Present(VulkanSwapchain& swapchain, const RHIAcquireResult& acquired, RHIPresentOutcome& outcome);
         [[nodiscard]] RHIStatus CancelAcquire(VulkanQueue& queue, VulkanSwapchain& swapchain, RHIAcquireResult& acquired);
 
     private:
-        // 三个阶段分别表示：允许获取图像、取得图像但尚未提交等待、提交已接受但尚未完成帧槽复用准备。
         enum class State { Available, Acquired, Submitted };
+
+        VulkanDevice& m_Device;
+        uint32_t m_Slot;
+        uint64_t m_Generation = 0;
         State m_State = State::Available;
+
+        VulkanSwapchain* m_ActiveSwapchain = nullptr;
+        RHIAcquireResult m_Acquired{};
 
         VulkanFence m_Fence;
         VulkanBinarySemaphore m_AcquireSemaphore;
-
         VulkanCommandPool m_CommandPool;
         VulkanCommandList m_CommandList;
     };

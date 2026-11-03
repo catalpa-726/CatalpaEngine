@@ -7,6 +7,7 @@
 namespace Catalpa {
 
     class Window;
+    class Renderer;
     class RHIDevice;
     class RHISwapchain;
 
@@ -22,7 +23,7 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus Init(Window& window);
         void Shutdown();
 
-        // 每轮窗口事件处理后，判断是否需要重建交换链。
+        // 每轮事件和 Layer 更新后，处理交换链变化并执行绘制。
         [[nodiscard]] RHIStatus Update(Window& window);
 
         void RequestSwapchainUpdate() { m_SwapchainDirty = true; }
@@ -30,11 +31,16 @@ namespace Catalpa {
     private:
         std::unique_ptr<RHIDevice> m_Device;
         std::unique_ptr<RHISwapchain> m_Swapchain;
+        std::unique_ptr<Renderer> m_Renderer;
 
         bool m_SwapchainDirty = true;
 
+    private:
         // 缓存上次接受的请求配置。后端可能限制尺寸或回退呈现模式，因此不能用实际结果代替这个缓存，否则容易每轮都重建。
         RHISwapchainDesc m_LastSwapchainDesc{}; 
+
+        // 只处理交换链更新，避免其中的早退跳过正常绘制。
+        [[nodiscard]] RHIStatus UpdateSwapchain(Window& window);
     };
 
 }

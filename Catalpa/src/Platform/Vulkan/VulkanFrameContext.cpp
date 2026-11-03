@@ -1,14 +1,19 @@
 ﻿#include "catpch.h"
-#include "Log/Log.h"
 #include "VulkanFrameContext.h"
+#include "VulkanDevice.h"
 #include "VulkanQueue.h"
 #include "VulkanSwapchain.h"
 
 namespace Catalpa {
 
-    VulkanFrameContext::VulkanFrameContext(VulkanDevice& device) : m_Fence(device), m_AcquireSemaphore(device), m_CommandPool(device), m_CommandList(device) {}
+    VulkanFrameContext::VulkanFrameContext(VulkanDevice& device, uint32_t slot) : m_Device(device), m_Slot(slot), m_Fence(device), m_AcquireSemaphore(device), m_CommandPool(device), m_CommandList(device) {}
 
     VulkanFrameContext::~VulkanFrameContext() { m_CommandPool.Shutdown(); }
+
+    RHIFrameToken VulkanFrameContext::GetToken() const
+    {
+        return { .device = m_Device.GetDeviceId(), .slot = m_Slot, .generation = m_Generation };
+    }
 
     RHIStatus VulkanFrameContext::Init(uint32_t queueFamily)
     {
@@ -18,7 +23,6 @@ namespace Catalpa {
         return m_AcquireSemaphore.Init();
     }
 
-    // 	等待提交完成，再重置命令池；`ready` 表示本次准备是否完成
     RHIStatus VulkanFrameContext::PrepareReuse(uint64_t timeoutNanoseconds, bool& ready)
     {
         ready = false;
@@ -26,15 +30,23 @@ namespace Catalpa {
         if (m_State == State::Acquired || m_Fence.GetState() == VulkanFenceState::Unsubmitted)
             return { .code = RHIErrorCode::InvalidState, .operation = "VulkanFrameContext::PrepareReuse" };
 
+        if (m_Generation == std::numeric_limits<uint64_t>::max())
+            return { .code = RHIErrorCode::OutOfMemory, .operation = "VulkanFrameContext::Generation" };
+
         bool signaled = false;
         RHIStatus status = m_Fence.Wait(timeoutNanoseconds, signaled);
         if (!status.IsSuccess() || !signaled) return status;
+
+        m_Device.GetGraphicsQueue().NotifyFenceCompleted(m_Fence);
 
         status = m_CommandPool.Reset();
         if (!status.IsSuccess()) return status;
 
         m_CommandList.OnPoolReset();
         m_State = State::Available;
+        m_ActiveSwapchain = nullptr;
+        m_Acquired = {};
+        ++m_Generation;
         ready = true;
         return {};
     }
@@ -43,22 +55,26 @@ namespace Catalpa {
     {
         acquired = {};
 
-        if (m_State != State::Available) {
-            CAT_CORE_ASSERT(false, "Frame must be available before acquiring an image!");
+        if (m_State != State::Available)
             return { .code = RHIErrorCode::InvalidState, .operation = "VulkanFrameContext::Acquire" };
-        }
 
-        const RHIStatus status = swapchain.Acquire(m_AcquireSemaphore, timeoutNanoseconds, acquired);
-        if (status.IsSuccess() && acquired.HasImage()) m_State = State::Acquired;
-        return status;
+        const RHIStatus status = swapchain.AcquireNative(m_AcquireSemaphore, timeoutNanoseconds, acquired);
+        if (!status.IsSuccess() || !acquired.HasImage()) return status;
+
+        acquired.view = swapchain.GetImageViewHandle(acquired.imageIndex);
+        acquired.acquireReady = { .source = GetToken(), .kind = RHIGpuDependencyKind::AcquireReady };
+        acquired.renderFinished = { .source = GetToken(), .kind = RHIGpuDependencyKind::RenderFinished };
+
+        m_Acquired = acquired;
+        m_ActiveSwapchain = &swapchain;
+        m_State = State::Acquired;
+        return {};
     }
 
-    RHIStatus VulkanFrameContext::Submit(VulkanQueue& queue, VulkanBinarySemaphore& presentSemaphore)
+    RHIStatus VulkanFrameContext::Submit(VulkanQueue& queue, const RHIGpuDependency& wait, const RHIGpuDependency& signal)
     {
-        if (m_State != State::Acquired) {
-            CAT_CORE_ASSERT(false, "Frame must have an acquired image before submission!");
+        if (m_State != State::Acquired || !m_ActiveSwapchain || wait != m_Acquired.acquireReady || signal != m_Acquired.renderFinished)
             return { .code = RHIErrorCode::InvalidState, .operation = "VulkanFrameContext::Submit" };
-        }
 
         const VkSemaphoreSubmitInfo waitInfo{
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
@@ -68,7 +84,7 @@ namespace Catalpa {
 
         const VkSemaphoreSubmitInfo signalInfo{
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-            .semaphore = presentSemaphore.GetHandle(),
+            .semaphore = m_ActiveSwapchain->GetPresentSemaphore(m_Acquired.imageIndex).GetHandle(),
             .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT
         };
 
@@ -77,12 +93,34 @@ namespace Catalpa {
         return status;
     }
 
+    RHIStatus VulkanFrameContext::Present(VulkanSwapchain& swapchain, const RHIAcquireResult& acquired, RHIPresentOutcome& outcome)
+    {
+        outcome = RHIPresentOutcome::NotQueued;
+
+        if (m_State != State::Submitted || m_ActiveSwapchain != &swapchain || acquired != m_Acquired)
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanFrameContext::Present" };
+
+        const RHIStatus status = swapchain.PresentNative(acquired, outcome);
+
+        switch (outcome) {
+        case RHIPresentOutcome::Queued:
+        case RHIPresentOutcome::Suboptimal:
+        case RHIPresentOutcome::OutOfDate:
+        case RHIPresentOutcome::SurfaceLost:
+            m_ActiveSwapchain = nullptr;
+            m_Acquired = {};
+            break;
+        default:
+            break;
+        }
+
+        return status;
+    }
+
     RHIStatus VulkanFrameContext::CancelAcquire(VulkanQueue& queue, VulkanSwapchain& swapchain, RHIAcquireResult& acquired)
     {
-        if (m_State != State::Acquired || !acquired.HasImage()) {
-            CAT_CORE_ASSERT(false, "Only an acquired, unsubmitted frame can be cancelled!");
+        if (m_State != State::Acquired || m_ActiveSwapchain != &swapchain || acquired != m_Acquired)
             return { .code = RHIErrorCode::InvalidState, .operation = "VulkanFrameContext::CancelAcquire" };
-        }
 
         const VkSemaphoreSubmitInfo waitInfo{
             .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
@@ -95,6 +133,8 @@ namespace Catalpa {
 
         m_CommandList.Invalidate();
         m_State = State::Submitted;
+        m_ActiveSwapchain = nullptr;
+        m_Acquired = {};
         swapchain.RequestRecreate();
         acquired = {};
         return {};

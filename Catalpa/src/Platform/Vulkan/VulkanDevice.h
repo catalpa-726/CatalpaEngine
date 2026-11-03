@@ -2,6 +2,7 @@
 
 #include "RHI/RHIDevice.h"
 #include "VulkanHeaders.h"
+#include "VulkanQueue.h"
 
 namespace Catalpa {
 
@@ -33,8 +34,18 @@ namespace Catalpa {
         VkDevice GetHandle() const { return m_Device; }
         VkPhysicalDevice GetPhysicalDevice() const { return m_PhysicalDevice; }
 
-        VulkanQueue& GetGraphicsQueue() { return *m_GraphicsQueue; }
         VkQueue GetPresentQueue() const { return m_PresentQueue; }
+        VulkanQueue& GetGraphicsQueue() override { return *m_GraphicsQueue; }
+        uint32_t GetFrameCount() const override { return FramesInFlight; }
+
+        [[nodiscard]] RHIStatus PrepareFrame(uint32_t slot, uint64_t timeoutNanoseconds, RHIFrameResources& frame, bool& ready) override;
+
+        // 后端统一解析设备、帧槽及代际。
+        VulkanFrameContext* ResolveFrame(RHIFrameToken token);
+
+        // 只登记失设备状态，不在当前调用栈内销毁资源。
+        RHIStatus ObserveStatus(RHIStatus status);
+        const RHIStatus& GetFailure() const { return m_DeviceFailure; }
 
         uint32_t GetGraphicsQueueFamily() const { return m_GraphicsQueueFamily; }
         uint32_t GetPresentQueueFamily() const { return m_PresentQueueFamily; }

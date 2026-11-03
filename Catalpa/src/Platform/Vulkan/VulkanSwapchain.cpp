@@ -5,6 +5,7 @@
 #include "VulkanBinarySemaphore.h"
 #include "VulkanResourceRegistry.h"
 #include "VulkanConversions.h"
+#include "VulkanFrameContext.h"
 
 namespace Catalpa {
 
@@ -208,7 +209,7 @@ namespace Catalpa {
     {
         Shutdown();
 
-        const RHIStatus status = Init(desc);
+        const RHIStatus status = m_Device.ObserveStatus(Init(desc));
         if (status.IsSuccess()) return status;
 
         Shutdown();
@@ -216,8 +217,66 @@ namespace Catalpa {
         return status;
     }
 
-    RHIStatus VulkanSwapchain::Acquire(VulkanBinarySemaphore& semaphore, uint64_t timeoutNanoseconds, RHIAcquireResult& acquired)
+    RHIStatus VulkanSwapchain::Acquire(RHIFrameToken token, uint64_t timeoutNanoseconds, RHIAcquireResult& acquired)
     {
+        acquired = {};
+        if (!m_Device.GetFailure().IsSuccess()) return m_Device.GetFailure();
+
+        auto* frame = m_Device.ResolveFrame(token);
+
+        if (!frame)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanSwapchain::Acquire" };
+
+        return m_Device.ObserveStatus(frame->Acquire(*this, timeoutNanoseconds, acquired));
+    }
+
+    RHIStatus VulkanSwapchain::Present(const RHIAcquireResult& acquired, RHIPresentOutcome& outcome)
+    {
+        outcome = RHIPresentOutcome::NotQueued;
+        if (!m_Device.GetFailure().IsSuccess()) return m_Device.GetFailure();
+
+        auto* frame = m_Device.ResolveFrame(acquired.acquireReady.source);
+
+        if (!frame)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanSwapchain::Present" };
+
+        return m_Device.ObserveStatus(frame->Present(*this, acquired, outcome));
+    }
+
+    RHIStatus VulkanSwapchain::CancelAcquire(RHIAcquireResult& acquired, RHICompletionPoint& completion)
+    {
+        completion = {};
+        if (!m_Device.GetFailure().IsSuccess()) return m_Device.GetFailure();
+
+        auto* frame = m_Device.ResolveFrame(acquired.acquireReady.source);
+
+        if (!frame)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanSwapchain::CancelAcquire" };
+
+        auto& queue = m_Device.GetGraphicsQueue();
+        const RHIStatus status = m_Device.ObserveStatus(frame->CancelAcquire(queue, *this, acquired));
+        if (status.IsSuccess()) completion = queue.GetLastCompletionPoint();
+        return status;
+    }
+
+    void VulkanSwapchain::Shutdown()
+    {
+        for (const TextureViewHandle handle : m_ImageViewHandles) 
+            m_Device.GetResourceRegistry().UnregisterBorrowedTextureView(handle);
+        m_ImageViewHandles.clear();
+
+        m_PresentSemaphores.clear();
+
+        for (const VkImageView view : m_ImageViews) vkDestroyImageView(m_Device.GetHandle(), view, nullptr);
+        m_ImageViews.clear();
+        m_Images.clear();
+
+        if (m_Swapchain != VK_NULL_HANDLE) vkDestroySwapchainKHR(m_Device.GetHandle(), m_Swapchain, nullptr);
+        m_Swapchain = VK_NULL_HANDLE;
+        m_Info = {};
+    }
+
+    RHIStatus VulkanSwapchain::AcquireNative(VulkanBinarySemaphore& semaphore, uint64_t timeoutNanoseconds, RHIAcquireResult& acquired) {
         acquired = {};
 
         if (m_Info.state == RHISwapchainState::Suspended) { acquired.outcome = RHIAcquireOutcome::Suspended; return {}; }
@@ -257,8 +316,7 @@ namespace Catalpa {
         return MakeVulkanStatus(result, "vkAcquireNextImageKHR");
     }
 
-    RHIStatus VulkanSwapchain::Present(const RHIAcquireResult& acquired, RHIPresentOutcome& outcome)
-    {
+    RHIStatus VulkanSwapchain::PresentNative(const RHIAcquireResult& acquired, RHIPresentOutcome& outcome) {
         outcome = RHIPresentOutcome::NotQueued;
 
         if (!acquired.HasImage() || acquired.imageIndex >= m_PresentSemaphores.size()) {
@@ -306,23 +364,6 @@ namespace Catalpa {
         }
 
         return MakeVulkanStatus(result, "vkQueuePresentKHR");
-    }
-
-    void VulkanSwapchain::Shutdown()
-    {
-        for (const TextureViewHandle handle : m_ImageViewHandles) 
-            m_Device.GetResourceRegistry().UnregisterBorrowedTextureView(handle);
-        m_ImageViewHandles.clear();
-
-        m_PresentSemaphores.clear();
-
-        for (const VkImageView view : m_ImageViews) vkDestroyImageView(m_Device.GetHandle(), view, nullptr);
-        m_ImageViews.clear();
-        m_Images.clear();
-
-        if (m_Swapchain != VK_NULL_HANDLE) vkDestroySwapchainKHR(m_Device.GetHandle(), m_Swapchain, nullptr);
-        m_Swapchain = VK_NULL_HANDLE;
-        m_Info = {};
     }
 
 }

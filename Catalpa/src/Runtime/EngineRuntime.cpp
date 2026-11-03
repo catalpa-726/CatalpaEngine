@@ -4,6 +4,8 @@
 #include "Log/Log.h"
 #include "Core/Window.h"
 
+#include "Renderer/Renderer.h"
+
 #include "RHI/RHIBackendFactory.h"
 #include "RHI/RHISwapchain.h"
 
@@ -45,6 +47,7 @@ namespace Catalpa {
             return status;
         }
 
+        m_Renderer = std::make_unique<Renderer>(*m_Device, *m_Swapchain);
         m_LastSwapchainDesc = desc;
         return {};
     }
@@ -62,6 +65,7 @@ namespace Catalpa {
             }
         }
 
+        m_Renderer.reset();
         m_Swapchain.reset();
         m_Device.reset();
         m_LastSwapchainDesc = {};
@@ -71,6 +75,12 @@ namespace Catalpa {
     // 根据事件标记、VSync 变化或交换链状态，决定是否需要查询窗口。
     // 查询后比较请求配置，确实需要时才重建。
     RHIStatus EngineRuntime::Update(Window& window)
+    {
+        if (const RHIStatus status = UpdateSwapchain(window); !status.IsSuccess()) return status;
+        return m_Renderer->Render();
+    }
+
+    RHIStatus EngineRuntime::UpdateSwapchain(Window& window)
     {
         const bool dirty = std::exchange(m_SwapchainDirty, false);
         const RHISwapchainState state = m_Swapchain->GetInfo().state;
