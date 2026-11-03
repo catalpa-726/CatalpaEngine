@@ -33,6 +33,117 @@ namespace Catalpa {
             CAT_CORE_ASSERT(slot.references == 0, "Buffer is still referenced by commands!");
             m_Retirement.RetireBuffer(std::exchange(slot.record, {}));
         }
+
+        for (auto& slot : m_Samplers) {
+            CAT_CORE_ASSERT(slot.references == 0, "Sampler is still referenced by commands!");
+            m_Retirement.RetireSampler(std::exchange(slot.record, {}));
+        }
+    }
+
+    RHIStatus VulkanResourceRegistry::CreateSampler(const RHISamplerDesc& desc, SamplerHandle& sampler)
+    {
+        constexpr const char* operation = "VulkanResourceRegistry::CreateSampler";
+        sampler = {};
+
+        // 只在创建时检查原生分配上限；待命令归还的对象仍占用名额。
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(m_Device.GetPhysicalDevice(), &properties);
+
+        const size_t liveCount = static_cast<size_t>(std::count_if(
+            m_Samplers.begin(), m_Samplers.end(),
+            [](const auto& slot) { return slot.record.sampler != VK_NULL_HANDLE; }));
+
+        if (liveCount >= properties.limits.maxSamplerAllocationCount)
+            return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
+
+        if (m_FirstFreeSampler == InvalidIndex) {
+            if (m_Samplers.size() >= InvalidIndex)
+                return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
+
+            m_Samplers.reserve(m_Samplers.size() + 1);
+        }
+
+        VulkanSamplerRecord record{};
+        if (const RHIStatus status = CreateVulkanSampler(m_Device, desc, record); !status.IsSuccess()) return status;
+
+        uint32_t index = m_FirstFreeSampler;
+
+        if (index == InvalidIndex) {
+            index = static_cast<uint32_t>(m_Samplers.size());
+            m_Samplers.emplace_back();
+        }
+        else {
+            m_FirstFreeSampler = m_Samplers[index].nextFree;
+        }
+
+        auto& slot = m_Samplers[index];
+        slot.nextFree = InvalidIndex;
+        slot.references = 0;
+        slot.releaseRequested = false;
+        slot.record = record;
+
+        sampler = { .device = m_DeviceId, .slot = { .index = index, .generation = slot.generation } };
+        return {};
+    }
+
+    const VulkanResourceRegistry::SamplerSlot* VulkanResourceRegistry::FindSampler(SamplerHandle sampler) const noexcept
+    {
+        if (!sampler.HasValue() || sampler.device != m_DeviceId || sampler.slot.index >= m_Samplers.size()) return nullptr;
+
+        const auto& slot = m_Samplers[sampler.slot.index];
+        return slot.generation == sampler.slot.generation && slot.record.sampler != VK_NULL_HANDLE ? &slot : nullptr;
+    }
+
+    const VulkanSamplerRecord* VulkanResourceRegistry::ResolveSampler(SamplerHandle sampler) const noexcept
+    {
+        const auto* slot = FindSampler(sampler);
+        return slot && !slot->releaseRequested ? &slot->record : nullptr;
+    }
+
+    void VulkanResourceRegistry::ReleaseSampler(SamplerHandle sampler) noexcept
+    {
+        if (!ResolveSampler(sampler)) return;
+
+        auto& slot = m_Samplers[sampler.slot.index];
+        slot.releaseRequested = true;
+        if (slot.references == 0) RecycleSampler(sampler.slot.index);
+    }
+
+    RHIStatus VulkanResourceRegistry::RetainSampler(SamplerHandle sampler) noexcept
+    {
+        if (!ResolveSampler(sampler))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanResourceRegistry::RetainSampler" };
+
+        auto& references = m_Samplers[sampler.slot.index].references;
+
+        if (references == std::numeric_limits<uint32_t>::max())
+            return { .code = RHIErrorCode::OutOfMemory, .operation = "VulkanResourceRegistry::RetainSampler" };
+
+        ++references;
+        return {};
+    }
+
+    void VulkanResourceRegistry::ReleaseSamplerReference(SamplerHandle sampler) noexcept
+    {
+        const auto* found = FindSampler(sampler);
+        CAT_CORE_ASSERT(found && found->references != 0, "Sampler has no retained reference!");
+
+        auto& slot = m_Samplers[sampler.slot.index];
+        --slot.references;
+        if (slot.releaseRequested && slot.references == 0) RecycleSampler(sampler.slot.index);
+    }
+
+    void VulkanResourceRegistry::RecycleSampler(uint32_t index) noexcept
+    {
+        auto& slot = m_Samplers[index];
+        m_Retirement.RetireSampler(std::exchange(slot.record, {}));
+        slot.releaseRequested = false;
+
+        if (slot.generation == std::numeric_limits<uint32_t>::max()) return;
+
+        ++slot.generation;
+        slot.nextFree = m_FirstFreeSampler;
+        m_FirstFreeSampler = index;
     }
 
     RHIStatus VulkanResourceRegistry::CreateTexture(const RHITextureDesc& desc, TextureHandle& texture)
@@ -361,7 +472,7 @@ namespace Catalpa {
         slot.nextFree = InvalidIndex;
         slot.references = 0;
         slot.releaseRequested = false;
-        slot.record = record;
+        slot.record = std::move(record);
 
         pipeline = { .device = m_DeviceId, .slot = {.index = index, .generation = slot.generation } };
 
@@ -369,8 +480,8 @@ namespace Catalpa {
             const std::string name = "GraphicsPipeline[" + std::to_string(m_DeviceId.value) + ":" +
                 std::to_string(index) + ":" + std::to_string(slot.generation) + "]";
 
-            debug.NameObject(m_Device.GetHandle(), VK_OBJECT_TYPE_PIPELINE, VulkanHandleToUint64(record.pipeline), name.c_str());
-            debug.NameObject(m_Device.GetHandle(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, VulkanHandleToUint64(record.layout), (name + ".Layout").c_str());
+            debug.NameObject(m_Device.GetHandle(), VK_OBJECT_TYPE_PIPELINE, VulkanHandleToUint64(slot.record.pipeline), name.c_str());
+            debug.NameObject(m_Device.GetHandle(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, VulkanHandleToUint64(slot.record.layout), (name + ".Layout").c_str());
         }
 
         return {};

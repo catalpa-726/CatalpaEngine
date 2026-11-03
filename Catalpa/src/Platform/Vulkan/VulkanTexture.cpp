@@ -126,6 +126,7 @@ namespace Catalpa {
             .sampleCount = parent.desc.sampleCount,
             .usage = parent.desc.usage,
             .presentable = parent.presentable,
+            .linearFiltering = device.GetFormatSupport(format).linearFiltering,
             .texture = texture
         };
 

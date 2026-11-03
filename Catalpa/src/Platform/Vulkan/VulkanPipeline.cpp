@@ -32,6 +32,67 @@ namespace Catalpa {
         if (pushConstants.size > capabilities.maxPushConstantBytes)
             return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
 
+        const auto bindingEntries = desc.bindingLayout.entries;
+
+        if (bindingEntries.size() > RHIMaxBindingsPerSet)
+            return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
+
+        std::array<VkDescriptorSetLayoutBinding, RHIMaxBindingsPerSet> nativeBindings{};
+        uint32_t sampledImageCount = 0;
+        uint32_t samplerCount = 0;
+
+        for (size_t i = 0; i < bindingEntries.size(); ++i) {
+            const auto& entry = bindingEntries[i];
+
+            if (entry.visibility != RHIShaderVisibility::Fragment)
+                return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
+
+            for (size_t previous = 0; previous < i; ++previous) {
+                if (bindingEntries[previous].binding == entry.binding)
+                    return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanGraphicsPipeline" };
+            }
+
+            VkDescriptorType type{};
+
+            switch (entry.type) {
+            case RHIBindingType::SampledTexture:
+                type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                ++sampledImageCount;
+                break;
+            case RHIBindingType::Sampler:
+                type = VK_DESCRIPTOR_TYPE_SAMPLER;
+                ++samplerCount;
+                break;
+            default:
+                return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanGraphicsPipeline" };
+            }
+
+            nativeBindings[i] = {
+                .binding = entry.binding,
+                .descriptorType = type,
+                .descriptorCount = 1,
+                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
+            };
+        }
+
+        if (!bindingEntries.empty()) {
+            VkPhysicalDeviceProperties properties{};
+            vkGetPhysicalDeviceProperties(device.GetPhysicalDevice(), &properties);
+            const auto& limits = properties.limits;
+
+            // Fragment 的单颜色附件也计入 maxPerStageResources，独立 sampler 不计入。
+            if (limits.maxBoundDescriptorSets < 1 ||
+                sampledImageCount > limits.maxPerStageDescriptorSampledImages ||
+                sampledImageCount > limits.maxDescriptorSetSampledImages ||
+                samplerCount > limits.maxPerStageDescriptorSamplers ||
+                samplerCount > limits.maxDescriptorSetSamplers ||
+                sampledImageCount + 1 > limits.maxPerStageResources)
+                return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
+        }
+
+        // 在原生对象创建前复制调用方描述，成功发布时只交换容器。
+        std::vector<RHIBindingLayoutEntry> bindings(bindingEntries.begin(), bindingEntries.end());
+
         if ((!hasVertexInput && vertexLayout.stride != 0) ||
             (hasVertexInput && (vertexLayout.stride == 0 || vertexLayout.stride % 4 != 0)))
             return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanGraphicsPipeline" };
@@ -83,6 +144,27 @@ namespace Catalpa {
             return status;
         }
 
+        if (!bindings.empty()) {
+            const VkDescriptorSetLayoutCreateInfo bindingInfo{
+                .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                .bindingCount = static_cast<uint32_t>(bindings.size()),
+                .pBindings = nativeBindings.data()
+            };
+
+            VkDescriptorSetLayout bindingLayout = VK_NULL_HANDLE;
+            status = MakeVulkanStatus(
+                vkCreateDescriptorSetLayout(device.GetHandle(), &bindingInfo, nullptr, &bindingLayout),
+                "vkCreateDescriptorSetLayout");
+
+            if (!status.IsSuccess()) {
+                DestroyVulkanShader(device, fragment);
+                DestroyVulkanShader(device, vertex);
+                return status;
+            }
+
+            pipeline.bindingLayout = bindingLayout;
+        }
+
         const VkPushConstantRange pushConstantRange{
             .stageFlags = pushConstantStages,
             .offset = 0,
@@ -91,13 +173,20 @@ namespace Catalpa {
 
         const VkPipelineLayoutCreateInfo layoutInfo{
             .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .setLayoutCount = bindings.empty() ? 0u : 1u,
+            .pSetLayouts = bindings.empty() ? nullptr : &pipeline.bindingLayout,
             .pushConstantRangeCount = pushConstants.size != 0 ? 1u : 0u,
             .pPushConstantRanges = pushConstants.size != 0 ? &pushConstantRange : nullptr
         };
 
-        status = MakeVulkanStatus(vkCreatePipelineLayout(device.GetHandle(), &layoutInfo, nullptr, &pipeline.layout), "vkCreatePipelineLayout");
+        VkPipelineLayout layout = VK_NULL_HANDLE;
+        status = MakeVulkanStatus(
+            vkCreatePipelineLayout(device.GetHandle(), &layoutInfo, nullptr, &layout),
+            "vkCreatePipelineLayout");
 
         if (status.IsSuccess()) {
+            pipeline.layout = layout;
+
             const std::array stages{
                 VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = vertex.stage, .module = vertex.module, .pName = vertex.entryPoint },
                 VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = fragment.stage, .module = fragment.module, .pName = fragment.entryPoint }
@@ -200,6 +289,7 @@ namespace Catalpa {
         pipeline.vertexAttributeEnd = vertexAttributeEnd;
         pipeline.pushConstantBytes = pushConstants.size;
         pipeline.pushConstantStages = pushConstantStages;
+        pipeline.bindings.swap(bindings);
         return {};
     }
 
@@ -207,6 +297,7 @@ namespace Catalpa {
     {
         if (pipeline.pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device.GetHandle(), pipeline.pipeline, nullptr);
         if (pipeline.layout != VK_NULL_HANDLE) vkDestroyPipelineLayout(device.GetHandle(), pipeline.layout, nullptr);
+        if (pipeline.bindingLayout != VK_NULL_HANDLE) vkDestroyDescriptorSetLayout(device.GetHandle(), pipeline.bindingLayout, nullptr);
         pipeline = {};
     }
 

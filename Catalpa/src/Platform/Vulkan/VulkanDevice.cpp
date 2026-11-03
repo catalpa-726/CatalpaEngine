@@ -344,4 +344,13 @@ namespace Catalpa {
 
     void VulkanDevice::ReleaseTextureView(TextureViewHandle view) { m_ResourceRegistry->ReleaseTextureView(view); }
 
+    RHIStatus VulkanDevice::CreateSampler(const RHISamplerDesc& desc, SamplerHandle& sampler)
+    {
+        sampler = {};
+        if (!m_DeviceFailure.IsSuccess()) return m_DeviceFailure;
+        return ObserveStatus(m_ResourceRegistry->CreateSampler(desc, sampler));
+    }
+
+    void VulkanDevice::ReleaseSampler(SamplerHandle sampler) { m_ResourceRegistry->ReleaseSampler(sampler); }
+
 }

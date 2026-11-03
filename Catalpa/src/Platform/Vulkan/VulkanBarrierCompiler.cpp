@@ -17,6 +17,7 @@ namespace Catalpa {
         switch (source.stage) {
         case RHIPipelineStage::None: stage = VK_PIPELINE_STAGE_2_NONE; break;
         case RHIPipelineStage::ColorAttachmentOutput: stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT; break;
+        case RHIPipelineStage::FragmentShader: stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT; break;
         case RHIPipelineStage::AllCommands: stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; break;
         case RHIPipelineStage::Transfer: stage = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT; break;
         default: return false;
@@ -40,6 +41,11 @@ namespace Catalpa {
         case RHITextureLayout::TransferDestination:
             if (!HasTextureUsage(usage, RHITextureUsage::TransferDestination)) return false;
             layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            break;
+
+        case RHITextureLayout::ShaderReadOnly:
+            if (!HasTextureUsage(usage, RHITextureUsage::Sampled)) return false;
+            layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             break;
 
         default:
@@ -67,6 +73,11 @@ namespace Catalpa {
             access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
             return source.layout == RHITextureLayout::TransferDestination &&
                 (source.stage == RHIPipelineStage::Transfer || source.stage == RHIPipelineStage::AllCommands);
+
+        case RHIResourceAccess::SampledRead:
+            access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+            return source.layout == RHITextureLayout::ShaderReadOnly &&
+                (source.stage == RHIPipelineStage::FragmentShader || source.stage == RHIPipelineStage::AllCommands);
 
         default:
             return false;

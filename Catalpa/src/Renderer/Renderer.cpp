@@ -3,6 +3,8 @@
 #include "Log/Log.h"
 #include "RHI/RHIDevice.h"
 #include "RHI/RHITextureDesc.h"
+#include "RHI/RHIBindingDesc.h"
+#include "RHI/RHISamplerDesc.h"
 #include "TriangleVertexSpirv.h"
 #include "TriangleFragmentSpirv.h"
 #include "Geometry/VertexLayout.h"
@@ -15,12 +17,14 @@ namespace Catalpa {
         struct TriangleVertex {
             float position[2];
             float color[3];
+            float uv[2];
         };
 
         static_assert(sizeof(float) == 4);
-        static_assert(sizeof(TriangleVertex) == 20);
+        static_assert(sizeof(TriangleVertex) == 28);
         static_assert(offsetof(TriangleVertex, position) == 0);
         static_assert(offsetof(TriangleVertex, color) == 8);
+        static_assert(offsetof(TriangleVertex, uv) == 20);
 
         // 与 Slang 中两个 float4 对应。
         // transform.xy 为缩放，transform.zw 为平移。
@@ -36,16 +40,22 @@ namespace Catalpa {
         static_assert(offsetof(TriangleDrawParameters, tint) == 16);
 
         constexpr std::array<TriangleVertex, 3> TriangleVertices{ {
-            { { 0.0f, -0.6f }, { 1.0f, 0.0f, 1.0f } },
-            { { 0.6f,  0.5f }, { 0.0f, 1.0f, 0.0f } },
-            { {-0.6f,  0.5f }, { 1.0f, 1.0f, 1.0f } }
+            { { 0.0f, -0.6f }, { 1.0f, 0.0f, 1.0f }, { 0.5f, 0.0f } },
+            { { 0.6f,  0.5f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f } },
+            { {-0.6f,  0.5f }, { 1.0f, 1.0f, 1.0f }, { 0.0f, 1.0f } }
         } };
 
         constexpr std::array<uint32_t, 3> TriangleIndices{ 0, 1, 2 };
 
-        constexpr std::array<VertexAttribute, 2> TriangleAttributes{ {
+        constexpr std::array<VertexAttribute, 3> TriangleAttributes{ {
             {.location = 0, .format = VertexFormat::Float2, .offset = static_cast<uint32_t>(offsetof(TriangleVertex, position)) },
-            {.location = 1, .format = VertexFormat::Float3, .offset = static_cast<uint32_t>(offsetof(TriangleVertex, color)) }
+            {.location = 1, .format = VertexFormat::Float3, .offset = static_cast<uint32_t>(offsetof(TriangleVertex, color)) },
+            {.location = 2, .format = VertexFormat::Float2, .offset = static_cast<uint32_t>(offsetof(TriangleVertex, uv)) }
+        } };
+
+        constexpr std::array<RHIBindingLayoutEntry, 2> TriangleBindings{ {
+            {.binding = 0, .type = RHIBindingType::SampledTexture, .visibility = RHIShaderVisibility::Fragment },
+            {.binding = 1, .type = RHIBindingType::Sampler, .visibility = RHIShaderVisibility::Fragment }
         } };
 
         void SetTriangleDrawParameters(RGIndexedDrawDesc& draw, const TriangleDrawParameters& parameters)
@@ -59,6 +69,7 @@ namespace Catalpa {
     Renderer::~Renderer()
     {
         m_Uploads.Shutdown();
+        m_Device.ReleaseSampler(m_TriangleSampler);
         m_Device.ReleaseTextureView(m_TriangleTextureView);
         m_Device.ReleaseTexture(m_TriangleTexture);
         m_Device.ReleaseBuffer(m_TriangleIndices);
@@ -71,11 +82,12 @@ namespace Catalpa {
         if (const RHIStatus status = m_Uploads.AddPasses(graph); !status.IsSuccess()) return status;
 
         RGBuffer vertices{}, indices{};
-        RGTexture color{};
+        RGTexture color{}, sampledTexture{};
 
         if (const RHIStatus status = graph.ImportBuffer(m_TriangleVertices, vertices); !status.IsSuccess()) return status;
         if (const RHIStatus status = graph.ImportBuffer(m_TriangleIndices, indices); !status.IsSuccess()) return status;
         if (const RHIStatus status = graph.ImportTexture(acquired.view, color); !status.IsSuccess()) return status;
+        if (const RHIStatus status = graph.ImportTexture(m_TriangleTextureView, sampledTexture); !status.IsSuccess()) return status;
 
         const Extent2D extent = m_Swapchain.GetInfo().extent;
 
@@ -97,6 +109,13 @@ namespace Catalpa {
             },
             .scissor = {.extent = extent }
         };
+
+        draw.sampledTextures.push_back({
+            .texture = sampledTexture,
+            .sampler = m_TriangleSampler,
+            .textureBinding = 0,
+            .samplerBinding = 1
+            });
 
         constexpr TriangleDrawParameters left{
             .transform = { 0.60f, 0.60f, -0.42f, 0.0f },
@@ -146,6 +165,7 @@ namespace Catalpa {
         if (const RHIStatus status = EnsureTrianglePipeline(); !status.IsSuccess()) return status;
         if (const RHIStatus status = EnsureTriangleGeometry(); !status.IsSuccess()) return status;
         if (const RHIStatus status = EnsureTriangleTexture(); !status.IsSuccess()) return status;
+        if (const RHIStatus status = EnsureTriangleSampler(); !status.IsSuccess()) return status;
 
         constexpr uint64_t timeoutNanoseconds = 16'000'000;
         RHIFrameResources frame{};
@@ -204,7 +224,8 @@ namespace Catalpa {
             .pushConstants = {
                 .size = static_cast<uint32_t>(sizeof(TriangleDrawParameters)),
                 .visibility = RHIShaderVisibility::VertexFragment
-            }
+            },
+            .bindingLayout = {.entries = TriangleBindings }
         };
 
         GraphicsPipelineHandle pipeline{};
@@ -258,6 +279,14 @@ namespace Catalpa {
         };
 
         return m_Uploads.CreateTexture(pixels, desc, m_TriangleTexture, m_TriangleTextureView);
+    }
+
+    RHIStatus Renderer::EnsureTriangleSampler()
+    {
+        if (m_TriangleSampler.HasValue()) return {};
+
+        // 默认使用最近邻过滤和 Repeat 寻址。
+        return m_Device.CreateSampler(RHISamplerDesc{}, m_TriangleSampler);
     }
 
 }

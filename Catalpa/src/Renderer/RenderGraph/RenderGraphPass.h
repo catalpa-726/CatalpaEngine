@@ -2,10 +2,20 @@
 
 #include "RenderGraphResource.h"
 #include "RHI/RHICommandTypes.h"
+#include "RHI/RHIBindingDesc.h"
 #include "RHI/RHIRenderingDesc.h"
 
 // 描述当前索引绘制 Pass。复制和绘制都采用明确参数，由同一份参数生成访问声明与命令
 namespace Catalpa {
+
+    // 一份声明同时确定采样资源访问和 set 0 的纹理、Sampler 绑定。
+    // 当前只支持 fragment 采样；每对使用两个独立 binding。
+    struct RGSampledTextureBinding {
+        RGTexture texture{};
+        SamplerHandle sampler{};
+        uint32_t textureBinding = 0;
+        uint32_t samplerBinding = 1;
+    };
 
     // 当前支持一个逐顶点数据流、一个索引流和一张完整颜色附件。
     struct RGIndexedDrawDesc {
@@ -27,6 +37,7 @@ namespace Catalpa {
         RHIViewport viewport{};
         Rect2D scissor{};
         std::vector<std::byte> pushConstants;                           // 自有字节副本；空数组表示本次绘制未提供 push constants。
+        std::vector<RGSampledTextureBinding> sampledTextures;
     };
 
 }

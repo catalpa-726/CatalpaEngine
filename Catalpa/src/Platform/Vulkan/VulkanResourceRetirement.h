@@ -3,6 +3,7 @@
 #include "VulkanPipeline.h"
 #include "VulkanBuffer.h"
 #include "VulkanTexture.h"
+#include "VulkanSampler.h"
 
 namespace Catalpa {
 
@@ -26,6 +27,9 @@ namespace Catalpa {
 
         // 只接收已经没有命令引用的 View；返回前完成实际销毁。
         void RetireTextureView(VulkanTextureViewRecord view) noexcept;
+
+        // 只接收已无命令引用、允许实际清理的 Sampler。
+        void RetireSampler(VulkanSamplerRecord sampler) noexcept;
 
     private:
         const VulkanDevice& m_Device;

@@ -93,6 +93,10 @@ namespace Catalpa {
         void ReleaseTexture(TextureHandle texture) override;
         void ReleaseTextureView(TextureViewHandle view) override;
 
+        // Sampler 创建和逻辑所有权。
+        [[nodiscard]] RHIStatus CreateSampler(const RHISamplerDesc& desc, SamplerHandle& sampler) override;
+        void ReleaseSampler(SamplerHandle sampler) override;
+
     private:
         // 后端环境与设备句柄
         std::unique_ptr<VulkanBackend> m_Backend;

@@ -3,13 +3,13 @@
 // 描述资源的执行阶段和访问方式；纹理另有布局与子资源范围。
 namespace Catalpa {
 
-    enum class RHIPipelineStage { None, ColorAttachmentOutput, AllCommands, Transfer, VertexInput };
+    enum class RHIPipelineStage { None, ColorAttachmentOutput, AllCommands, Transfer, VertexInput, FragmentShader };
     enum class RHIResourceAccess {
         None, ColorRead, ColorWrite, ColorReadWrite,
         TransferRead, TransferWrite, VertexRead, IndexRead, VertexIndexRead,
-        TransferReadWrite, MemoryReadWrite
+        TransferReadWrite, MemoryReadWrite, SampledRead
     };
-    enum class RHITextureLayout { Undefined, ColorAttachment, Present, TransferDestination };
+    enum class RHITextureLayout { Undefined, ColorAttachment, Present, TransferDestination, ShaderReadOnly };
 
     struct RHITextureAccess {
         RHIPipelineStage stage = RHIPipelineStage::None;

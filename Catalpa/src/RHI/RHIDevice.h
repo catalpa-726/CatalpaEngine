@@ -11,6 +11,7 @@
 #include "RHIBufferDesc.h"
 #include "RHIResourceState.h"
 #include "RHITextureDesc.h"
+#include "RHISamplerDesc.h"
 
 namespace Catalpa {
 
@@ -68,6 +69,12 @@ namespace Catalpa {
         // Acquire 返回的交换链借用 View 不由这两个接口释放。
         virtual void ReleaseTexture(TextureHandle texture) = 0;
         virtual void ReleaseTextureView(TextureViewHandle view) = 0;
+
+        // 创建采样方式，成功后由设备管理原生对象。
+        [[nodiscard]] virtual RHIStatus CreateSampler(const RHISamplerDesc& desc, SamplerHandle& sampler) = 0;
+
+        // 释放逻辑所有权；命令引用继续保留原生对象。
+        virtual void ReleaseSampler(SamplerHandle sampler) = 0;
 
         // 返回独立快照；已接受的队列状态不等于 GPU 已执行完成。
         [[nodiscard]] virtual RHIStatus GetBufferState(BufferHandle buffer, RHIBufferStateSnapshot& snapshot) const = 0;

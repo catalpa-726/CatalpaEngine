@@ -60,6 +60,10 @@ namespace Catalpa {
 
                         if (const RHIStatus status = commands.BeginRendering(rendering); !status.IsSuccess()) return status;
                         if (const RHIStatus status = commands.BindGraphicsPipeline(draw.pipeline); !status.IsSuccess()) return status;
+                        if (!step.bindings.empty()) {
+                            if (const RHIStatus status = commands.SetGraphicsBindings(step.bindings); !status.IsSuccess())
+                                return status;
+                        }
                         if (!draw.pushConstants.empty()) {
                             if (const RHIStatus status = commands.SetGraphicsPushConstants(draw.pushConstants); !status.IsSuccess())
                                 return status;

@@ -27,6 +27,7 @@ namespace Catalpa {
         uint32_t sampleCount = 1;
         RHITextureUsage usage = RHITextureUsage::None;
         bool presentable = false;
+        bool linearFiltering = false;
         TextureHandle texture{};
         bool borrowed = false;
     };

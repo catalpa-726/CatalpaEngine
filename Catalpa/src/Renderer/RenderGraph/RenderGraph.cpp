@@ -16,12 +16,13 @@ namespace Catalpa {
             return result;
         }
 
-        // 限定当前颜色附件和上传路径能够处理的布局。
+        // 限定当前颜色附件、上传和 fragment 采样能够处理的布局。
         bool IsSupportedLayout(RHITextureLayout layout) noexcept
         {
             return layout == RHITextureLayout::Undefined ||
                 layout == RHITextureLayout::ColorAttachment ||
                 layout == RHITextureLayout::TransferDestination ||
+                layout == RHITextureLayout::ShaderReadOnly ||
                 layout == RHITextureLayout::Present;
         }
 
@@ -31,6 +32,7 @@ namespace Catalpa {
             RHIResourceAccess access = RHIResourceAccess::None;
             if (layout == RHITextureLayout::ColorAttachment) access = RHIResourceAccess::ColorReadWrite;
             else if (layout == RHITextureLayout::TransferDestination) access = RHIResourceAccess::TransferWrite;
+            else if (layout == RHITextureLayout::ShaderReadOnly) access = RHIResourceAccess::SampledRead;
 
             return { .stage = RHIPipelineStage::AllCommands, .access = access, .layout = layout };
         }
@@ -241,6 +243,31 @@ namespace Catalpa {
         if (!HasTextureUsage(color->snapshot.usage, RHITextureUsage::ColorAttachment))
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
+        if (desc.sampledTextures.size() > RHIMaxBindingsPerSet / 2)
+            return { .code = RHIErrorCode::Unsupported, .operation = operation };
+
+        for (size_t i = 0; i < desc.sampledTextures.size(); ++i) {
+            const auto& binding = desc.sampledTextures[i];
+            const auto* sampled = Resolve(binding.texture);
+
+            if (!sampled || binding.texture == desc.color ||
+                !HasTextureUsage(sampled->snapshot.usage, RHITextureUsage::Sampled) ||
+                !binding.sampler.HasValue() || binding.sampler.device != m_Device.GetDeviceId() ||
+                binding.textureBinding == binding.samplerBinding)
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+            // binding 数字不要求连续，但不同声明不得覆盖同一个槽。
+            for (size_t j = 0; j < i; ++j) {
+                const auto& previous = desc.sampledTextures[j];
+
+                if (binding.textureBinding == previous.textureBinding ||
+                    binding.textureBinding == previous.samplerBinding ||
+                    binding.samplerBinding == previous.textureBinding ||
+                    binding.samplerBinding == previous.samplerBinding)
+                    return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            }
+        }
+
         if ((desc.loadOp != RHILoadOp::Load && desc.loadOp != RHILoadOp::Clear && desc.loadOp != RHILoadOp::DontCare) ||
             (desc.storeOp != RHIStoreOp::Store && desc.storeOp != RHIStoreOp::DontCare))
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
@@ -435,6 +462,50 @@ namespace Catalpa {
                 step.indices = m_Buffers[indices].handle;
                 step.color = m_Textures[color].handle;
                 step.extent = m_Textures[color].snapshot.extent;
+
+                step.bindings.reserve(draw.sampledTextures.size() * 2);
+
+                for (const auto& binding : draw.sampledTextures) {
+                    const uint32_t sampled = binding.texture.slot.index;
+                    const TextureViewHandle view = m_Textures[sampled].handle;
+                    auto& sampledState = textures[sampled];
+
+                    if (!sampledState.initialized)
+                        return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedSampledTexture" };
+
+                    const RHITextureAccess sampledAccess{
+                        .stage = RHIPipelineStage::FragmentShader,
+                        .access = RHIResourceAccess::SampledRead,
+                        .layout = RHITextureLayout::ShaderReadOnly
+                    };
+
+                    // 连续的相同只读访问不需要重复屏障；上传或附件访问之后必须建立依赖。
+                    if (sampledState.access.stage != sampledAccess.stage ||
+                        sampledState.access.access != sampledAccess.access ||
+                        sampledState.access.layout != sampledAccess.layout) {
+                        step.textureBarriers.push_back({
+                            .view = view,
+                            .before = ConservativeTextureBefore(sampledState.access.layout),
+                            .after = sampledAccess
+                            });
+                    }
+
+                    sampledState.access = sampledAccess;
+                    textureUsed[sampled] = 1;
+
+                    // 与上面的资源访问来自同一份声明，不另收一份绑定参数。
+                    step.bindings.push_back({
+                        .binding = binding.textureBinding,
+                        .type = RHIBindingType::SampledTexture,
+                        .texture = view
+                        });
+
+                    step.bindings.push_back({
+                        .binding = binding.samplerBinding,
+                        .type = RHIBindingType::Sampler,
+                        .sampler = binding.sampler
+                        });
+                }
 
                 if (vertices == indices) {
                     addBufferAccess(step, vertices, {

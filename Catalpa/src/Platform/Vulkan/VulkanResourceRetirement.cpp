@@ -11,4 +11,6 @@ namespace Catalpa {
 
     void VulkanResourceRetirement::RetireTextureView(VulkanTextureViewRecord view) noexcept { DestroyVulkanTextureView(m_Device, view); }
 
+    void VulkanResourceRetirement::RetireSampler(VulkanSamplerRecord sampler) noexcept { DestroyVulkanSampler(m_Device, sampler); }
+
 }

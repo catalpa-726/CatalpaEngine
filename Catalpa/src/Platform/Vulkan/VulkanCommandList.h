@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "VulkanHeaders.h"
+#include "VulkanDescriptorAllocator.h"
 #include "RHI/RHICommandList.h"
 #include "Images/PixelFormat.h"
 
@@ -14,7 +15,7 @@ namespace Catalpa {
     class VulkanCommandList : public RHICommandList {
     public:
         // 构造与命令缓冲借用
-        explicit VulkanCommandList(VulkanDevice& device) : m_Device(device) {}
+        explicit VulkanCommandList(VulkanDevice& device) : m_Device(device), m_Descriptors(device) {}
         ~VulkanCommandList() override;
 
         VulkanCommandList(const VulkanCommandList&) = delete;
@@ -49,6 +50,9 @@ namespace Catalpa {
         // 管线绑定与绘制
         [[nodiscard]] RHIStatus BindGraphicsPipeline(GraphicsPipelineHandle pipeline) override;
         [[nodiscard]] RHIStatus SetGraphicsPushConstants(std::span<const std::byte> data) override;
+
+        // 校验完整绑定布局，分配新 set，并保留其引用资源。
+        [[nodiscard]] RHIStatus SetGraphicsBindings(std::span<const RHIBinding> bindings) override;
         [[nodiscard]] RHIStatus Draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0) override;
 
         [[nodiscard]] RHIStatus PipelineBarrier(std::span<const RHIBufferBarrier> barriers) override;
@@ -69,8 +73,14 @@ namespace Catalpa {
         // 释放 first 之后追加的引用；默认释放全部。
         void ReleaseTextureViews(size_t first = 0) noexcept;
 
-        // 只在原生命令池重置成功后调用。
-        void OnPoolReset();
+        // 命令列表对 Sampler 去重保活。
+        [[nodiscard]] RHIStatus RetainSampler(SamplerHandle sampler);
+
+        // 归还 first 之后追加的命令引用。
+        void ReleaseSamplers(size_t first = 0) noexcept;
+
+        // 只在原生命令池重置成功后调用；描述符重置失败时保留资源引用。
+        [[nodiscard]] RHIStatus OnPoolReset();
 
         // 失效不等于 GPU 使用已经结束，因此这里不释放引用。
         void Invalidate() { m_State = RHICommandListState::Invalid; }
@@ -103,6 +113,8 @@ namespace Catalpa {
 
         // 借用设备，并保留录制所引用的资源。
         VulkanDevice& m_Device;
+        VulkanDescriptorAllocator m_Descriptors;
+        std::vector<SamplerHandle> m_RetainedSamplers;
         std::vector<TextureViewHandle> m_RetainedViews;
         std::vector<GraphicsPipelineHandle> m_RetainedPipelines;
 
@@ -111,6 +123,11 @@ namespace Catalpa {
         uint32_t m_PushConstantBytes = 0;
         VkShaderStageFlags m_PushConstantStages = 0;
         bool m_PushConstantsSet = false;
+
+        VkDescriptorSetLayout m_BoundBindingLayout = VK_NULL_HANDLE;
+        std::array<RHIBindingLayoutEntry, RHIMaxBindingsPerSet> m_BoundBindings{};
+        size_t m_BoundBindingCount = 0;
+        bool m_GraphicsBindingsSet = false;
 
         // 当前管线、渲染附件与动态状态
         PixelFormat m_BoundColorFormat = PixelFormat::Unknown;

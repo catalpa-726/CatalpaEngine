@@ -13,7 +13,14 @@
 
 namespace Catalpa {
 
-    VulkanCommandList::~VulkanCommandList() { ReleaseTextureViews(); ReleasePipelines(); ReleaseBuffers(); }
+    VulkanCommandList::~VulkanCommandList()
+    {
+        m_Descriptors.Shutdown();
+        ReleaseTextureViews();
+        ReleaseSamplers();
+        ReleasePipelines();
+        ReleaseBuffers();
+    }
 
     RHIStatus VulkanCommandList::Init(VulkanCommandPool& pool)
     {
@@ -341,9 +348,33 @@ namespace Catalpa {
         }
     }
 
-    void VulkanCommandList::OnPoolReset()
+    RHIStatus VulkanCommandList::RetainSampler(SamplerHandle sampler)
     {
+        if (std::ranges::find(m_RetainedSamplers, sampler) != m_RetainedSamplers.end()) return {};
+
+        m_RetainedSamplers.push_back(sampler);
+        const RHIStatus status = m_Device.GetResourceRegistry().RetainSampler(sampler);
+        if (!status.IsSuccess()) m_RetainedSamplers.pop_back();
+        return status;
+    }
+
+    void VulkanCommandList::ReleaseSamplers(size_t first) noexcept
+    {
+        while (m_RetainedSamplers.size() > first) {
+            m_Device.GetResourceRegistry().ReleaseSamplerReference(m_RetainedSamplers.back());
+            m_RetainedSamplers.pop_back();
+        }
+    }
+
+    RHIStatus VulkanCommandList::OnPoolReset()
+    {
+        if (const RHIStatus status = m_Device.ObserveStatus(m_Descriptors.Reset()); !status.IsSuccess()) {
+            Invalidate();
+            return status;
+        }
+
         ReleaseTextureViews();
+        ReleaseSamplers();
         ReleasePipelines();
         ReleaseBuffers();
 
@@ -357,6 +388,10 @@ namespace Catalpa {
         m_PushConstantStages = 0;
         m_PushConstantsSet = false;
 
+        m_BoundBindingLayout = VK_NULL_HANDLE;
+        m_BoundBindingCount = 0;
+        m_GraphicsBindingsSet = false;
+
         m_BoundColorFormat = PixelFormat::Unknown;
         m_RenderingColorFormat = PixelFormat::Unknown;
         m_ViewportAndScissorSet = false;
@@ -369,6 +404,7 @@ namespace Catalpa {
         m_IndexBufferBound = false;
         m_State = RHICommandListState::Initial;
         m_DebugLabelDepth = 0;
+        return {};
     }
 
     RHIStatus VulkanCommandList::BindGraphicsPipeline(GraphicsPipelineHandle pipeline)
@@ -390,6 +426,11 @@ namespace Catalpa {
                 return status;
             }
         }
+
+        std::ranges::copy(record->bindings, m_BoundBindings.begin());
+        m_BoundBindingCount = record->bindings.size();
+        m_BoundBindingLayout = record->bindingLayout;
+        m_GraphicsBindingsSet = m_BoundBindingCount == 0;
 
         vkCmdBindPipeline(m_CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, record->pipeline);
 
@@ -426,12 +467,126 @@ namespace Catalpa {
         return {};
     }
 
+    RHIStatus VulkanCommandList::SetGraphicsBindings(std::span<const RHIBinding> bindings)
+    {
+        constexpr const char* operation = "VulkanCommandList::SetGraphicsBindings";
+
+        // 设置失败后，后续 Draw 不能静默沿用旧绑定。
+        m_GraphicsBindingsSet = false;
+
+        if ((m_State != RHICommandListState::Recording && m_State != RHICommandListState::Rendering) ||
+            m_BoundPipelineLayout == VK_NULL_HANDLE || m_BoundBindingLayout == VK_NULL_HANDLE)
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
+
+        if (bindings.empty() || bindings.size() != m_BoundBindingCount)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        const std::span<const RHIBindingLayoutEntry> layout{ m_BoundBindings.data(), m_BoundBindingCount };
+        auto& registry = m_Device.GetResourceRegistry();
+
+        std::array<VkDescriptorImageInfo, RHIMaxBindingsPerSet> images{};
+        std::array<VkWriteDescriptorSet, RHIMaxBindingsPerSet> writes{};
+
+        bool requiresLinearFiltering = false;
+        bool texturesSupportLinearFiltering = true;
+
+        for (size_t i = 0; i < bindings.size(); ++i) {
+            const auto& binding = bindings[i];
+            const auto expected = std::ranges::find(layout, binding.binding, &RHIBindingLayoutEntry::binding);
+
+            if (expected == layout.end() || expected->type != binding.type)
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+            for (size_t previous = 0; previous < i; ++previous) {
+                if (bindings[previous].binding == binding.binding)
+                    return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            }
+
+            VkDescriptorType type{};
+
+            switch (binding.type) {
+                case RHIBindingType::SampledTexture:
+                {
+                    const auto* record = registry.ResolveTextureView(binding.texture);
+
+                    if (!record || !HasTextureUsage(record->usage, RHITextureUsage::Sampled))
+                        return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+                    images[i].imageView = record->view;
+                    images[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                    texturesSupportLinearFiltering &= record->linearFiltering;
+                    type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                    break;
+                }
+
+                case RHIBindingType::Sampler:
+                {
+                    const auto* record = registry.ResolveSampler(binding.sampler);
+
+                    if (!record)
+                        return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+                    images[i].sampler = record->sampler;
+                    requiresLinearFiltering |= record->linearFiltering;
+                    type = VK_DESCRIPTOR_TYPE_SAMPLER;
+                    break;
+                }
+
+                default:
+                    return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            }
+
+            writes[i] = {
+                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstBinding = binding.binding,
+                .descriptorCount = 1,
+                .descriptorType = type,
+                .pImageInfo = &images[i]
+            };
+        }
+
+        // 独立描述符无法确定 Shader 实际配对，当前保守覆盖全部可能组合。
+        if (requiresLinearFiltering && !texturesSupportLinearFiltering)
+            return { .code = RHIErrorCode::Unsupported, .operation = operation };
+
+        const size_t firstView = m_RetainedViews.size();
+        const size_t firstSampler = m_RetainedSamplers.size();
+
+        const auto fail = [this, firstView, firstSampler](RHIStatus status) {
+            ReleaseSamplers(firstSampler);
+            ReleaseTextureViews(firstView);
+            return status;
+        };
+
+        for (const auto& binding : bindings) {
+            const RHIStatus status = binding.type == RHIBindingType::SampledTexture ?
+                RetainTextureView(binding.texture) : RetainSampler(binding.sampler);
+
+            if (!status.IsSuccess()) return fail(status);
+        }
+
+        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+
+        if (const RHIStatus status = m_Device.ObserveStatus(m_Descriptors.Allocate(m_BoundBindingLayout, descriptorSet)); !status.IsSuccess())
+            return fail(status);
+
+        for (size_t i = 0; i < bindings.size(); ++i) writes[i].dstSet = descriptorSet;
+
+        vkUpdateDescriptorSets(m_Device.GetHandle(), static_cast<uint32_t>(bindings.size()), writes.data(), 0, nullptr);
+        vkCmdBindDescriptorSets(
+            m_CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            m_BoundPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+
+        m_GraphicsBindingsSet = true;
+        return {};
+    }
+
     RHIStatus VulkanCommandList::Draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
     {
         constexpr const char* operation = "VulkanCommandList::Draw";
 
         if (m_State != RHICommandListState::Rendering || m_BoundColorFormat == PixelFormat::Unknown ||
-            m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet || !m_PushConstantsSet)
+            m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet || !m_PushConstantsSet || !m_GraphicsBindingsSet)
             return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
         if (m_VertexStride != 0) {
@@ -457,7 +612,7 @@ namespace Catalpa {
         constexpr const char* operation = "VulkanCommandList::DrawIndexed";
 
         if (m_State != RHICommandListState::Rendering || m_BoundColorFormat == PixelFormat::Unknown ||
-            m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet || !m_PushConstantsSet ||
+            m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet || !m_PushConstantsSet || !m_GraphicsBindingsSet ||
             !m_IndexBufferBound || (m_VertexStride != 0 && !m_VertexBufferBound))
             return { .code = RHIErrorCode::InvalidState, .operation = operation };
 

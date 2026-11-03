@@ -24,7 +24,7 @@ namespace Catalpa {
         return true;
     }
 
-    // 当前仅允许单层颜色附件及交换链呈现状态。
+    // 当前支持单层颜色附件、上传、采样和交换链呈现状态。
     static bool IsValidTextureState(const RHITextureState& state, const VulkanTextureRecord& texture) noexcept
     {
         const auto& source = state.access;

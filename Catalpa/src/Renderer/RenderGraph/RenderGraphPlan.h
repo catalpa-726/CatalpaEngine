@@ -50,6 +50,7 @@ namespace Catalpa {
             TextureViewHandle destinationView{};
             RHIBufferTextureCopy textureCopy{};
             RGIndexedDrawDesc draw{};
+            std::vector<RHIBinding> bindings;
             BufferHandle vertices{};
             BufferHandle indices{};
             TextureViewHandle color{};

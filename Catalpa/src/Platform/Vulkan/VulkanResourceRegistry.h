@@ -4,6 +4,7 @@
 #include "VulkanBuffer.h"
 #include "VulkanPipeline.h"
 #include "VulkanTexture.h"
+#include "VulkanSampler.h"
 #include "VulkanResourceRetirement.h"
 
 #include "Images/PixelFormat.h"
@@ -49,6 +50,14 @@ namespace Catalpa {
         // 命令引用与 View 所有者释放分开。
         [[nodiscard]] RHIStatus RetainTextureView(TextureViewHandle handle) noexcept;
         void ReleaseTextureViewReference(TextureViewHandle handle) noexcept;
+
+        // Sampler 所有权与命令引用。
+        [[nodiscard]] RHIStatus CreateSampler(const RHISamplerDesc& desc, SamplerHandle& sampler);
+        const VulkanSamplerRecord* ResolveSampler(SamplerHandle sampler) const noexcept;
+        void ReleaseSampler(SamplerHandle sampler) noexcept;
+
+        [[nodiscard]] RHIStatus RetainSampler(SamplerHandle sampler) noexcept;
+        void ReleaseSamplerReference(SamplerHandle sampler) noexcept;
 
         // 自有管线：创建后由登记表持有原生载荷。
         [[nodiscard]] RHIStatus CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc, GraphicsPipelineHandle& pipeline);
@@ -108,6 +117,14 @@ namespace Catalpa {
             VulkanPipelineRecord record{};
         };
 
+        struct SamplerSlot {
+            uint32_t generation = 1;
+            uint32_t nextFree = InvalidIndex;
+            uint32_t references = 0;
+            bool releaseRequested = false;
+            VulkanSamplerRecord record{};
+        };
+
         struct BufferSlot {
             uint32_t generation = 1;
             uint32_t nextFree = InvalidIndex;
@@ -122,6 +139,7 @@ namespace Catalpa {
         const ViewSlot* FindTextureView(TextureViewHandle view) const noexcept;
         const PipelineSlot* FindPipeline(GraphicsPipelineHandle pipeline) const noexcept;
         const BufferSlot* FindBuffer(BufferHandle buffer) const noexcept;
+        const SamplerSlot* FindSampler(SamplerHandle sampler) const noexcept;
 
         // View 实际销毁后归还父图像引用。
         void ReleaseTextureReference(TextureHandle texture) noexcept;
@@ -131,6 +149,7 @@ namespace Catalpa {
         void RecycleTextureView(uint32_t index) noexcept;
         void RecyclePipeline(uint32_t index) noexcept;
         void RecycleBuffer(uint32_t index) noexcept;
+        void RecycleSampler(uint32_t index) noexcept;
 
     private:
         VulkanDevice& m_Device;
@@ -150,6 +169,9 @@ namespace Catalpa {
 
         std::vector<BufferSlot> m_Buffers;
         uint32_t m_FirstFreeBuffer = InvalidIndex;
+
+        std::vector<SamplerSlot> m_Samplers;
+        uint32_t m_FirstFreeSampler = InvalidIndex;
     };
 
 }

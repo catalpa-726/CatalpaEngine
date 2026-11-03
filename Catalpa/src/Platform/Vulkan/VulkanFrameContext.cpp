@@ -55,7 +55,9 @@ namespace Catalpa {
         status = m_CommandPool.Reset();
         if (!status.IsSuccess()) return status;
 
-        m_CommandList.OnPoolReset();
+        status = m_CommandList.OnPoolReset();
+        if (!status.IsSuccess()) return status;
+
         m_State = State::Available;
         m_ActiveSwapchain = nullptr;
         m_Acquired = {};

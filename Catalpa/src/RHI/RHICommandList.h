@@ -6,6 +6,7 @@
 #include "RHIRenderingDesc.h"
 #include "RHICommandTypes.h"
 #include "RHIResourceState.h"
+#include "RHIBindingDesc.h"
 
 // 提供不包含 Vulkan 类型的命令录制接口
 namespace Catalpa {
@@ -47,6 +48,9 @@ namespace Catalpa {
         // 每次成功绑定含参数块的管线后，必须重新写入。
         // 数据只在本次调用期间借用，字节数须与管线声明完全一致。
         [[nodiscard]] virtual RHIStatus SetGraphicsPushConstants(std::span<const std::byte> data) = 0;
+
+        // 提供当前管线要求的完整 set 0；每次成功绑定管线后重新设置。
+        [[nodiscard]] virtual RHIStatus SetGraphicsBindings(std::span<const RHIBinding> bindings) = 0;
 
         // 非索引绘制；管线有顶点输入时检查绑定与读取范围。
         [[nodiscard]] virtual RHIStatus Draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0) = 0;
