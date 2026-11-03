@@ -17,6 +17,49 @@ namespace Catalpa {
         if (desc.sampleCount != 1 || !device.GetFormatSupport(desc.colorFormat).colorAttachment)
             return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
 
+        const auto& vertexLayout = desc.vertexLayout;
+        const auto& capabilities = device.GetCapabilities();
+        const bool hasVertexInput = !vertexLayout.attributes.empty();
+
+        if ((!hasVertexInput && vertexLayout.stride != 0) ||
+            (hasVertexInput && (vertexLayout.stride == 0 || vertexLayout.stride % 4 != 0)))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanGraphicsPipeline" };
+
+        if (vertexLayout.attributes.size() > capabilities.maxVertexInputAttributes ||
+            vertexLayout.stride > capabilities.maxVertexInputBindingStride)
+            return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
+
+        std::vector<VkVertexInputAttributeDescription> attributes;
+        attributes.reserve(vertexLayout.attributes.size());
+        uint32_t vertexAttributeEnd = 0;
+
+        for (const auto& attribute : vertexLayout.attributes) {
+            const uint32_t byteSize = GetVertexFormatByteSize(attribute.format);
+            const VkFormat format = ToVulkanFormat(attribute.format);
+
+            if (byteSize == 0 || format == VK_FORMAT_UNDEFINED || attribute.offset % 4 != 0)
+                return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanGraphicsPipeline" };
+
+            if (attribute.location >= capabilities.maxVertexInputAttributes ||
+                attribute.offset > capabilities.maxVertexInputAttributeOffset)
+                return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
+
+            if (attribute.offset > vertexLayout.stride || byteSize > vertexLayout.stride - attribute.offset)
+                return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanGraphicsPipeline" };
+
+            if (std::ranges::any_of(attributes, [&](const auto& existing) { return existing.location == attribute.location; }))
+                return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanGraphicsPipeline" };
+
+            VkFormatProperties properties{};
+            vkGetPhysicalDeviceFormatProperties(device.GetPhysicalDevice(), format, &properties);
+
+            if ((properties.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT) == 0)
+                return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
+
+            attributes.push_back({ .location = attribute.location, .binding = 0, .format = format, .offset = attribute.offset });
+            vertexAttributeEnd = std::max(vertexAttributeEnd, attribute.offset + byteSize);
+        }
+
         VulkanShaderRecord vertex{}, fragment{};
 
         RHIStatus status = CreateVulkanShader(device, desc.vertex, vertex);
@@ -38,7 +81,19 @@ namespace Catalpa {
                 VkPipelineShaderStageCreateInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, .stage = fragment.stage, .module = fragment.module, .pName = fragment.entryPoint }
             };
 
-            const VkPipelineVertexInputStateCreateInfo vertexInput{ .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+            const VkVertexInputBindingDescription binding{
+                .binding = 0,
+                .stride = vertexLayout.stride,
+                .inputRate = VK_VERTEX_INPUT_RATE_VERTEX
+            };
+
+            const VkPipelineVertexInputStateCreateInfo vertexInput{
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+                .vertexBindingDescriptionCount = hasVertexInput ? 1u : 0u,
+                .pVertexBindingDescriptions = hasVertexInput ? &binding : nullptr,
+                .vertexAttributeDescriptionCount = static_cast<uint32_t>(attributes.size()),
+                .pVertexAttributeDescriptions = hasVertexInput ? attributes.data() : nullptr
+            };
 
             const VkPipelineInputAssemblyStateCreateInfo assembly{
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
@@ -119,6 +174,8 @@ namespace Catalpa {
 
         pipeline.colorFormat = desc.colorFormat;
         pipeline.sampleCount = desc.sampleCount;
+        pipeline.vertexStride = vertexLayout.stride;
+        pipeline.vertexAttributeEnd = vertexAttributeEnd;
         return {};
     }
 

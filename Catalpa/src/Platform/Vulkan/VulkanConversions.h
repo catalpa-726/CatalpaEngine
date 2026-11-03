@@ -3,6 +3,8 @@
 #include "VulkanHeaders.h"
 #include "Images/PixelFormat.h"
 #include "RHI/RHIRenderingDesc.h"
+#include "RHI/RHIBufferDesc.h"
+#include "Geometry/VertexLayout.h"
 
 namespace Catalpa {
 
@@ -10,5 +12,9 @@ namespace Catalpa {
 
     [[nodiscard]] VkAttachmentLoadOp ToVulkanLoadOp(RHILoadOp operation) noexcept;
     [[nodiscard]] VkAttachmentStoreOp ToVulkanStoreOp(RHIStoreOp operation) noexcept;
+
+    [[nodiscard]] VkBufferUsageFlags ToVulkanBufferUsage(RHIBufferUsage usage) noexcept;
+
+    [[nodiscard]] VkFormat ToVulkanFormat(VertexFormat format) noexcept;
 
 }

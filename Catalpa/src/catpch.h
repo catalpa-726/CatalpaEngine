@@ -23,5 +23,7 @@
 #include <cstdlib>
 #include <string_view>
 #include <chrono>
+#include <cstddef>
+#include <cstring>
 
 #include <span>

@@ -2,6 +2,7 @@
 
 #include "RHI/RHIError.h"
 #include "RHI/RHISwapchainDesc.h"
+#include "Uploads/UploadScheduler.h"
 
 namespace Catalpa {
 
@@ -11,7 +12,7 @@ namespace Catalpa {
 
     class Renderer {
     public:
-        Renderer(RHIDevice& device, RHISwapchain& swapchain) : m_Device(device), m_Swapchain(swapchain) {}
+        Renderer(RHIDevice& device, RHISwapchain& swapchain) : m_Device(device), m_Swapchain(swapchain), m_Uploads(device) {}
         ~Renderer();
 
         Renderer(const Renderer&) = delete;
@@ -30,13 +31,20 @@ namespace Catalpa {
         // 按交换链实际格式创建或替换管线。
         [[nodiscard]] RHIStatus EnsureTrianglePipeline();
 
+        // 分别幂等创建静态几何，上传由当前帧统一录制。
+        [[nodiscard]] RHIStatus EnsureTriangleGeometry();
+
     private:
-        // 持有管线的逻辑所有权；设备负责原生资源生命周期。
+        // 持有管线及静态几何的逻辑所有权；设备负责原生资源生命周期。
         GraphicsPipelineHandle m_TrianglePipeline{};
+
+        BufferHandle m_TriangleVertices{};
+        BufferHandle m_TriangleIndices{};
 
         // 借用 Runtime 持有的设备和交换链。
         RHIDevice& m_Device;
         RHISwapchain& m_Swapchain;
+        UploadScheduler m_Uploads;
 
         // 帧槽进度与管线对应的交换链格式。
         uint32_t m_FrameSlot = 0;

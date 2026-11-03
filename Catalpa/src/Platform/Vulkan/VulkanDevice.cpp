@@ -109,6 +109,9 @@ namespace Catalpa {
             .maxTextureArrayLayers = limits.maxImageArrayLayers,
             .maxColorAttachments = limits.maxColorAttachments,
             .maxRenderTargetExtent = { limits.maxFramebufferWidth, limits.maxFramebufferHeight },
+            .maxVertexInputAttributes = limits.maxVertexInputAttributes,
+            .maxVertexInputAttributeOffset = limits.maxVertexInputAttributeOffset,
+            .maxVertexInputBindingStride = limits.maxVertexInputBindingStride,
             .maxPushConstantBytes = limits.maxPushConstantsSize,
             .maxUniformBufferRange = limits.maxUniformBufferRange,
             .maxStorageBufferRange = limits.maxStorageBufferRange,
@@ -273,5 +276,20 @@ namespace Catalpa {
     }
 
     void VulkanDevice::ReleaseGraphicsPipeline(GraphicsPipelineHandle pipeline) { m_ResourceRegistry->ReleaseGraphicsPipeline(pipeline); }
+
+    RHIStatus VulkanDevice::CreateBuffer(const RHIBufferDesc& desc, BufferHandle& buffer)
+    {
+        buffer = {};
+        if (!m_DeviceFailure.IsSuccess()) return m_DeviceFailure;
+        return ObserveStatus(m_ResourceRegistry->CreateBuffer(desc, buffer));
+    }
+
+    RHIStatus VulkanDevice::WriteBuffer(BufferHandle buffer, uint64_t offset, std::span<const std::byte> data)
+    {
+        if (!m_DeviceFailure.IsSuccess()) return m_DeviceFailure;
+        return ObserveStatus(m_ResourceRegistry->WriteBuffer(buffer, offset, data));
+    }
+
+    void VulkanDevice::ReleaseBuffer(BufferHandle buffer) { m_ResourceRegistry->ReleaseBuffer(buffer); }
 
 }

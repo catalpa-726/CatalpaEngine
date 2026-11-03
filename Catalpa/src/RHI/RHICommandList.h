@@ -38,6 +38,18 @@ namespace Catalpa {
 
         // 当前支持无顶点缓冲的非索引绘制。
         [[nodiscard]] virtual RHIStatus Draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0) = 0;
+
+        // 仅在渲染段之外录制；复制不隐式插入访问屏障。
+        [[nodiscard]] virtual RHIStatus PipelineBarrier(std::span<const RHIBufferBarrier> barriers) = 0;
+        [[nodiscard]] virtual RHIStatus CopyBuffer(BufferHandle source, BufferHandle destination, const RHIBufferCopy& copy) = 0;
+
+        // 当前支持 binding 0 的单个交错顶点流。
+        [[nodiscard]] virtual RHIStatus BindVertexBuffer(uint32_t binding, BufferHandle buffer, uint64_t offset = 0) = 0;
+        [[nodiscard]] virtual RHIStatus BindIndexBuffer(BufferHandle buffer, RHIIndexType type, uint64_t offset = 0) = 0;
+
+        // 检查索引字节范围；索引值及 vertexOffset 对应的顶点范围由调用方保证。
+        [[nodiscard]] virtual RHIStatus DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1, uint32_t firstIndex = 0, int32_t vertexOffset = 0, uint32_t firstInstance = 0) = 0;
+
     };
 
 }

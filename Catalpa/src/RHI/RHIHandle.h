@@ -3,7 +3,7 @@
 #include "Core/Memory/GenerationalHandle.h"
 #include "RHITypes.h"
 
-// 在通用槽位句柄外增加设备身份，并区分纹理、纹理视图和图形管线
+// 在通用槽位句柄外增加设备身份，并区分 Buffer、纹理、纹理视图和图形管线。
 namespace Catalpa {
 
     template<typename Tag>
@@ -23,5 +23,8 @@ namespace Catalpa {
 
     struct RHIGraphicsPipelineTag;
     using GraphicsPipelineHandle = RHIHandle<RHIGraphicsPipelineTag>;
+
+    struct RHIBufferTag;
+    using BufferHandle = RHIHandle<RHIBufferTag>;
 
 }

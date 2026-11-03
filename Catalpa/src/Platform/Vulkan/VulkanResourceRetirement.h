@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "VulkanPipeline.h"
+#include "VulkanBuffer.h"
 
 namespace Catalpa {
 
@@ -16,6 +17,10 @@ namespace Catalpa {
         // 命令引用保持到安全重置或销毁；这里只接收已可清理且没有命令引用的管线。
         void RetirePipeline(VulkanPipelineRecord pipeline) noexcept;
 
+        // 只接收已无命令引用、允许实际清理的 Buffer。
+        void RetireBuffer(VulkanBufferRecord buffer) noexcept;
+
+    private:
         const VulkanDevice& m_Device;
     };
 

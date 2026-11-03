@@ -75,6 +75,11 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc, GraphicsPipelineHandle& pipeline) override;
         void ReleaseGraphicsPipeline(GraphicsPipelineHandle pipeline) override;
 
+        // Buffer
+        [[nodiscard]] RHIStatus CreateBuffer(const RHIBufferDesc& desc, BufferHandle& buffer) override;
+        [[nodiscard]] RHIStatus WriteBuffer(BufferHandle buffer, uint64_t offset, std::span<const std::byte> data) override;
+        void ReleaseBuffer(BufferHandle buffer) override;
+
     private:
         // 后端环境与设备句柄
         std::unique_ptr<VulkanBackend> m_Backend;

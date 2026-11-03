@@ -6,6 +6,7 @@
 #include "Images/PixelFormat.h"
 #include "VulkanPipeline.h"
 #include "VulkanResourceRetirement.h"
+#include "VulkanBuffer.h"
 
 // 登记表保存借用视图和自有管线，并校验设备身份、槽位和代次。
 namespace Catalpa {
@@ -59,6 +60,15 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus RetainPipeline(GraphicsPipelineHandle pipeline) noexcept;
         void ReleasePipeline(GraphicsPipelineHandle pipeline) noexcept;
 
+        // 自有 Buffer：逻辑所有权与命令引用分别管理。
+        [[nodiscard]] RHIStatus CreateBuffer(const RHIBufferDesc& desc, BufferHandle& buffer);
+        [[nodiscard]] RHIStatus WriteBuffer(BufferHandle buffer, uint64_t offset, std::span<const std::byte> data);
+        const VulkanBufferRecord* ResolveBuffer(BufferHandle buffer) const noexcept;
+        void ReleaseBuffer(BufferHandle buffer) noexcept;
+
+        [[nodiscard]] RHIStatus RetainBuffer(BufferHandle buffer) noexcept;
+        void ReleaseBufferReference(BufferHandle buffer) noexcept;
+
     private:
         // 管线槽位及其回收
         struct PipelineSlot {
@@ -69,11 +79,22 @@ namespace Catalpa {
             VulkanPipelineRecord record{};
         };
 
+        struct BufferSlot {
+            uint32_t generation = 1;
+            uint32_t nextFree = InvalidIndex;
+            uint32_t references = 0;
+            bool releaseRequested = false;
+            VulkanBufferRecord record{};
+        };
+
         // 内部查询允许找到已请求释放、但仍被命令保留的记录。
         const PipelineSlot* FindPipeline(GraphicsPipelineHandle pipeline) const noexcept;
 
         // 移交原生载荷给退休入口，再回收槽位。
         void RecyclePipeline(uint32_t index) noexcept;
+
+        const BufferSlot* FindBuffer(BufferHandle buffer) const noexcept;
+        void RecycleBuffer(uint32_t index) noexcept;
 
     private:
         // 视图槽位
@@ -96,6 +117,9 @@ namespace Catalpa {
         VulkanResourceRetirement m_Retirement;
         std::vector<PipelineSlot> m_Pipelines;
         uint32_t m_FirstFreePipeline = InvalidIndex;
+
+        std::vector<BufferSlot> m_Buffers;
+        uint32_t m_FirstFreeBuffer = InvalidIndex;
     };
 
 }

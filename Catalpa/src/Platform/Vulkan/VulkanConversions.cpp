@@ -33,4 +33,29 @@ namespace Catalpa {
         }
     }
 
+    VkBufferUsageFlags ToVulkanBufferUsage(RHIBufferUsage usage) noexcept
+    {
+        constexpr RHIBufferUsage supported = RHIBufferUsage::TransferSource | RHIBufferUsage::TransferDestination |
+            RHIBufferUsage::Vertex | RHIBufferUsage::Index;
+
+        if ((static_cast<uint32_t>(usage) & ~static_cast<uint32_t>(supported)) != 0) return 0;
+
+        VkBufferUsageFlags flags = 0;
+        if (HasBufferUsage(usage, RHIBufferUsage::TransferSource)) flags |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        if (HasBufferUsage(usage, RHIBufferUsage::TransferDestination)) flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        if (HasBufferUsage(usage, RHIBufferUsage::Vertex)) flags |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        if (HasBufferUsage(usage, RHIBufferUsage::Index)) flags |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        return flags;
+    }
+
+    VkFormat ToVulkanFormat(VertexFormat format) noexcept
+    {
+        switch (format) {
+        case VertexFormat::Float2: return VK_FORMAT_R32G32_SFLOAT;
+        case VertexFormat::Float3: return VK_FORMAT_R32G32B32_SFLOAT;
+        case VertexFormat::Float4: return VK_FORMAT_R32G32B32A32_SFLOAT;
+        default: return VK_FORMAT_UNDEFINED;
+        }
+    }
+
 }

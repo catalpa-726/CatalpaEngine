@@ -1,10 +1,13 @@
 ﻿#pragma once
 
-// 说明在哪个执行阶段、怎样访问图像，以及使用什么布局
+// 描述资源的执行阶段和访问方式；纹理另有布局与子资源范围。
 namespace Catalpa {
 
-    enum class RHIPipelineStage { None, ColorAttachmentOutput, AllCommands };
-    enum class RHIResourceAccess { None, ColorRead, ColorWrite, ColorReadWrite };
+    enum class RHIPipelineStage { None, ColorAttachmentOutput, AllCommands, Transfer, VertexInput };
+    enum class RHIResourceAccess {
+        None, ColorRead, ColorWrite, ColorReadWrite,
+        TransferRead, TransferWrite, VertexRead, IndexRead, VertexIndexRead
+    };
     enum class RHITextureLayout { Undefined, ColorAttachment, Present };
 
     struct RHITextureAccess {
@@ -21,6 +24,11 @@ namespace Catalpa {
         uint32_t layerCount = 1;
 
         constexpr bool operator==(const RHITextureSubresourceRange&) const = default;
+    };
+
+    struct RHIBufferAccess {
+        RHIPipelineStage stage = RHIPipelineStage::None;
+        RHIResourceAccess access = RHIResourceAccess::None;
     };
 
 }

@@ -12,8 +12,11 @@ namespace Catalpa {
         uint32_t maxTextureArrayLayers = 0;
         uint32_t maxColorAttachments = 0;
         Extent2D maxRenderTargetExtent{};
+        uint32_t maxVertexInputAttributes = 0;
 
         // 以下大小和对齐均以字节为单位。
+        uint32_t maxVertexInputAttributeOffset = 0;
+        uint32_t maxVertexInputBindingStride = 0;
         uint32_t maxPushConstantBytes = 0;
         uint64_t maxUniformBufferRange = 0;
         uint64_t maxStorageBufferRange = 0;

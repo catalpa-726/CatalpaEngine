@@ -8,6 +8,7 @@
 #include "RHICapabilities.h"
 #include "RHIQueue.h"
 #include "RHIPipelineDesc.h"
+#include "RHIBufferDesc.h"
 
 namespace Catalpa {
 
@@ -47,6 +48,15 @@ namespace Catalpa {
 
         // 等待指定帧槽，再重置它的命令资源；超时通过 ready == false 表示。
         [[nodiscard]] virtual RHIStatus PrepareFrame(uint32_t slot, uint64_t timeoutNanoseconds, RHIFrameResources& frame, bool& ready) = 0;
+
+        // 创建 Buffer；成功后由设备登记并管理原生资源。
+        [[nodiscard]] virtual RHIStatus CreateBuffer(const RHIBufferDesc& desc, BufferHandle& buffer) = 0;
+
+        // 同步复制 CPU 数据并完成必要的 flush；当前拒绝写入仍被命令引用的 Buffer。
+        [[nodiscard]] virtual RHIStatus WriteBuffer(BufferHandle buffer, uint64_t offset, std::span<const std::byte> data) = 0;
+
+        // 释放逻辑所有权；已有命令引用继续保留原生资源。
+        virtual void ReleaseBuffer(BufferHandle buffer) = 0;
 
         // 同步创建管线；成功后由设备管理原生资源。
         [[nodiscard]] virtual RHIStatus CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc, GraphicsPipelineHandle& pipeline) = 0;

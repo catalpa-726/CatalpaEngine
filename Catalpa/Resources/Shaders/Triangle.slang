@@ -1,18 +1,21 @@
-﻿struct VertexOutput
+﻿struct VertexInput
+{
+    [[vk::location(0)]] float2 position : POSITION;
+    [[vk::location(1)]] float3 color : COLOR0;
+};
+
+struct VertexOutput
 {
     float4 position : SV_Position;
     [[vk::location(0)]] float3 color : COLOR0;
 };
 
 [shader("vertex")]
-VertexOutput vertexMain(uint vertexId : SV_VulkanVertexID)
+VertexOutput vertexMain(VertexInput input)
 {
-    const float2 positions[3] = { float2(0.0, -0.6), float2(0.6, 0.5), float2(-0.6, 0.5) };
-    const float3 colors[3] = { float3(1.0, 0.0, 1.0), float3(0.0, 1.0, 0.0), float3(1.0, 1.0, 1.0) };
-
     VertexOutput output;
-    output.position = float4(positions[vertexId], 0.0, 1.0);
-    output.color = colors[vertexId];
+    output.position = float4(input.position, 0.0, 1.0);
+    output.color = input.color;
     return output;
 }
 

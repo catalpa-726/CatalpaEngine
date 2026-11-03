@@ -11,6 +11,10 @@ namespace Catalpa {
             CAT_CORE_ASSERT(slot.references == 0, "Pipeline is still referenced by commands!");
             m_Retirement.RetirePipeline(std::exchange(slot.record, {}));
         }
+        for (auto& slot : m_Buffers) {
+            CAT_CORE_ASSERT(slot.references == 0, "Buffer is still referenced by commands!");
+            m_Retirement.RetireBuffer(std::exchange(slot.record, {}));
+        }
     }
 
     // 取得空闲槽位，保存信息并返回句柄
@@ -185,6 +189,114 @@ namespace Catalpa {
         ++slot.generation;
         slot.nextFree = m_FirstFreePipeline;
         m_FirstFreePipeline = index;
+    }
+
+    RHIStatus VulkanResourceRegistry::CreateBuffer(const RHIBufferDesc& desc, BufferHandle& buffer)
+    {
+        buffer = {};
+
+        if (m_FirstFreeBuffer == InvalidIndex) {
+            if (m_Buffers.size() >= InvalidIndex)
+                return { .code = RHIErrorCode::OutOfMemory, .operation = "VulkanResourceRegistry::CreateBuffer" };
+
+            m_Buffers.reserve(m_Buffers.size() + 1);
+        }
+
+        VulkanBufferRecord record{};
+        if (const RHIStatus status = CreateVulkanBuffer(m_Device, desc, record); !status.IsSuccess()) return status;
+
+        uint32_t index = m_FirstFreeBuffer;
+
+        if (index == InvalidIndex) {
+            index = static_cast<uint32_t>(m_Buffers.size());
+            m_Buffers.emplace_back();
+        }
+        else {
+            m_FirstFreeBuffer = m_Buffers[index].nextFree;
+        }
+
+        auto& slot = m_Buffers[index];
+        slot.nextFree = InvalidIndex;
+        slot.references = 0;
+        slot.releaseRequested = false;
+        slot.record = record;
+
+        buffer = { .device = m_DeviceId, .slot = {.index = index, .generation = slot.generation } };
+        return {};
+    }
+
+    const VulkanResourceRegistry::BufferSlot* VulkanResourceRegistry::FindBuffer(BufferHandle buffer) const noexcept
+    {
+        if (!buffer.HasValue() || buffer.device != m_DeviceId || buffer.slot.index >= m_Buffers.size()) return nullptr;
+
+        const auto& slot = m_Buffers[buffer.slot.index];
+        return slot.generation == buffer.slot.generation && slot.record.buffer != VK_NULL_HANDLE ? &slot : nullptr;
+    }
+
+    const VulkanBufferRecord* VulkanResourceRegistry::ResolveBuffer(BufferHandle buffer) const noexcept
+    {
+        const auto* slot = FindBuffer(buffer);
+        return slot && !slot->releaseRequested ? &slot->record : nullptr;
+    }
+
+    RHIStatus VulkanResourceRegistry::WriteBuffer(BufferHandle buffer, uint64_t offset, std::span<const std::byte> data)
+    {
+        const auto* slot = FindBuffer(buffer);
+
+        if (!slot || slot->releaseRequested)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanResourceRegistry::WriteBuffer" };
+
+        // 当前命令引用一直保留到安全 reset；因此这里同时禁止改写已录制和在飞数据。
+        if (slot->references != 0)
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanResourceRegistry::WriteBuffer" };
+
+        return WriteVulkanBuffer(m_Device, slot->record, offset, data);
+    }
+
+    void VulkanResourceRegistry::ReleaseBuffer(BufferHandle buffer) noexcept
+    {
+        if (!ResolveBuffer(buffer)) return;
+
+        auto& slot = m_Buffers[buffer.slot.index];
+        slot.releaseRequested = true;
+        if (slot.references == 0) RecycleBuffer(buffer.slot.index);
+    }
+
+    RHIStatus VulkanResourceRegistry::RetainBuffer(BufferHandle buffer) noexcept
+    {
+        if (!ResolveBuffer(buffer))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanResourceRegistry::RetainBuffer" };
+
+        auto& references = m_Buffers[buffer.slot.index].references;
+
+        if (references == std::numeric_limits<uint32_t>::max())
+            return { .code = RHIErrorCode::OutOfMemory, .operation = "VulkanResourceRegistry::RetainBuffer" };
+
+        ++references;
+        return {};
+    }
+
+    void VulkanResourceRegistry::ReleaseBufferReference(BufferHandle buffer) noexcept
+    {
+        const auto* found = FindBuffer(buffer);
+        CAT_CORE_ASSERT(found && found->references != 0, "Buffer has no retained reference!");
+
+        auto& slot = m_Buffers[buffer.slot.index];
+        --slot.references;
+        if (slot.releaseRequested && slot.references == 0) RecycleBuffer(buffer.slot.index);
+    }
+
+    void VulkanResourceRegistry::RecycleBuffer(uint32_t index) noexcept
+    {
+        auto& slot = m_Buffers[index];
+        m_Retirement.RetireBuffer(std::exchange(slot.record, {}));
+        slot.releaseRequested = false;
+
+        if (slot.generation == std::numeric_limits<uint32_t>::max()) return;
+
+        ++slot.generation;
+        slot.nextFree = m_FirstFreeBuffer;
+        m_FirstFreeBuffer = index;
     }
 
 }

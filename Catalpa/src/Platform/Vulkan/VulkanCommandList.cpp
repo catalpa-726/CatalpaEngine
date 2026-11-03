@@ -6,10 +6,11 @@
 #include "VulkanResourceRegistry.h"
 #include "VulkanConversions.h"
 #include "VulkanBarrierCompiler.h"
+#include "RHI/RHIBufferDesc.h"
 
 namespace Catalpa {
 
-    VulkanCommandList::~VulkanCommandList() { ReleaseTextureViews(); ReleasePipelines(); }
+    VulkanCommandList::~VulkanCommandList() { ReleaseTextureViews(); ReleasePipelines(); ReleaseBuffers(); }
 
     RHIStatus VulkanCommandList::Init(VulkanCommandPool& pool)
     {
@@ -256,10 +257,18 @@ namespace Catalpa {
     {
         ReleaseTextureViews();
         ReleasePipelines();
+        ReleaseBuffers();
 
         m_BoundColorFormat = PixelFormat::Unknown;
         m_RenderingColorFormat = PixelFormat::Unknown;
         m_ViewportAndScissorSet = false;
+        m_VertexStride = 0;
+        m_VertexAttributeEnd = 0;
+        m_VertexBufferBytes = 0;
+        m_IndexBufferBytes = 0;
+        m_IndexSize = 0;
+        m_VertexBufferBound = false;
+        m_IndexBufferBound = false;
         m_State = RHICommandListState::Initial;
     }
 
@@ -285,16 +294,217 @@ namespace Catalpa {
 
         vkCmdBindPipeline(m_CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, record->pipeline);
         m_BoundColorFormat = record->colorFormat;
+        m_VertexStride = record->vertexStride;
+        m_VertexAttributeEnd = record->vertexAttributeEnd;
         return {};
     }
 
     RHIStatus VulkanCommandList::Draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
     {
-        if (m_State != RHICommandListState::Rendering || m_BoundColorFormat == PixelFormat::Unknown || m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet)
-            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::Draw" };
+        constexpr const char* operation = "VulkanCommandList::Draw";
+
+        if (m_State != RHICommandListState::Rendering || m_BoundColorFormat == PixelFormat::Unknown ||
+            m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet)
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
+
+        if (m_VertexStride != 0) {
+            if (!m_VertexBufferBound)
+                return { .code = RHIErrorCode::InvalidState, .operation = operation };
+
+            if (vertexCount != 0 && instanceCount != 0) {
+                const uint64_t lastVertex = static_cast<uint64_t>(firstVertex) + vertexCount - 1;
+
+                // lastVertex * stride + attributeEnd <= availableBytes。
+                if (m_VertexAttributeEnd > m_VertexBufferBytes ||
+                    lastVertex > (m_VertexBufferBytes - m_VertexAttributeEnd) / m_VertexStride)
+                    return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            }
+        }
 
         vkCmdDraw(m_CommandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
         return {};
+    }
+
+    RHIStatus VulkanCommandList::DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance)
+    {
+        constexpr const char* operation = "VulkanCommandList::DrawIndexed";
+
+        if (m_State != RHICommandListState::Rendering || m_BoundColorFormat == PixelFormat::Unknown ||
+            m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet || !m_IndexBufferBound ||
+            (m_VertexStride != 0 && !m_VertexBufferBound))
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
+
+        const uint64_t firstByte = static_cast<uint64_t>(firstIndex) * m_IndexSize;
+        const uint64_t byteCount = static_cast<uint64_t>(indexCount) * m_IndexSize;
+
+        if (firstByte > m_IndexBufferBytes || byteCount > m_IndexBufferBytes - firstByte)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        vkCmdDrawIndexed(m_CommandBuffer, indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+        return {};
+    }
+
+    RHIStatus VulkanCommandList::PipelineBarrier(std::span<const RHIBufferBarrier> barriers)
+    {
+        constexpr const char* operation = "VulkanCommandList::PipelineBarrier(Buffer)";
+
+        if (m_State != RHICommandListState::Recording)
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
+
+        if (barriers.empty()) return {};
+
+        if (barriers.size() > std::numeric_limits<uint32_t>::max())
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        const auto& registry = m_Device.GetResourceRegistry();
+        std::vector<VkBufferMemoryBarrier2> nativeBarriers;
+        nativeBarriers.reserve(barriers.size());
+
+        for (const auto& desc : barriers) {
+            VkBufferMemoryBarrier2 native{};
+            if (const RHIStatus status = CompileVulkanBufferBarrier(desc, registry, native); !status.IsSuccess()) return status;
+            nativeBarriers.push_back(native);
+        }
+
+        const size_t first = m_RetainedBuffers.size();
+        m_RetainedBuffers.reserve(first + barriers.size());
+
+        for (const auto& desc : barriers) {
+            if (const RHIStatus status = RetainBuffer(desc.buffer); !status.IsSuccess()) {
+                ReleaseBuffers(first);
+                return status;
+            }
+        }
+
+        const VkDependencyInfo dependencyInfo{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .bufferMemoryBarrierCount = static_cast<uint32_t>(nativeBarriers.size()),
+            .pBufferMemoryBarriers = nativeBarriers.data()
+        };
+
+        vkCmdPipelineBarrier2(m_CommandBuffer, &dependencyInfo);
+        return {};
+    }
+
+    RHIStatus VulkanCommandList::CopyBuffer(BufferHandle source, BufferHandle destination, const RHIBufferCopy& copy)
+    {
+        constexpr const char* operation = "VulkanCommandList::CopyBuffer";
+
+        if (m_State != RHICommandListState::Recording)
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
+
+        auto& registry = m_Device.GetResourceRegistry();
+        const auto* sourceRecord = registry.ResolveBuffer(source);
+        const auto* destinationRecord = registry.ResolveBuffer(destination);
+
+        if (!sourceRecord || !destinationRecord || copy.size == 0)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        if (!HasBufferUsage(sourceRecord->desc.usage, RHIBufferUsage::TransferSource) ||
+            !HasBufferUsage(destinationRecord->desc.usage, RHIBufferUsage::TransferDestination))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        if (copy.sourceOffset > sourceRecord->desc.size || copy.size > sourceRecord->desc.size - copy.sourceOffset ||
+            copy.destinationOffset > destinationRecord->desc.size || copy.size > destinationRecord->desc.size - copy.destinationOffset)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        if (sourceRecord->buffer == destinationRecord->buffer &&
+            copy.sourceOffset < copy.destinationOffset + copy.size &&
+            copy.destinationOffset < copy.sourceOffset + copy.size)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        const VkBuffer sourceBuffer = sourceRecord->buffer;
+        const VkBuffer destinationBuffer = destinationRecord->buffer;
+        const size_t first = m_RetainedBuffers.size();
+        m_RetainedBuffers.reserve(first + 2);
+
+        if (const RHIStatus status = RetainBuffer(source); !status.IsSuccess()) return status;
+
+        if (const RHIStatus status = RetainBuffer(destination); !status.IsSuccess()) {
+            ReleaseBuffers(first);
+            return status;
+        }
+
+        const VkBufferCopy region{
+            .srcOffset = copy.sourceOffset,
+            .dstOffset = copy.destinationOffset,
+            .size = copy.size
+        };
+
+        vkCmdCopyBuffer(m_CommandBuffer, sourceBuffer, destinationBuffer, 1, &region);
+        return {};
+    }
+
+    RHIStatus VulkanCommandList::BindVertexBuffer(uint32_t binding, BufferHandle buffer, uint64_t offset)
+    {
+        constexpr const char* operation = "VulkanCommandList::BindVertexBuffer";
+
+        if (m_State != RHICommandListState::Recording && m_State != RHICommandListState::Rendering)
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
+
+        if (binding != 0)
+            return { .code = RHIErrorCode::Unsupported, .operation = operation };
+
+        const auto* record = m_Device.GetResourceRegistry().ResolveBuffer(buffer);
+
+        if (!record || !HasBufferUsage(record->desc.usage, RHIBufferUsage::Vertex) ||
+            offset >= record->desc.size || offset % 4 != 0)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        const VkBuffer nativeBuffer = record->buffer;
+        const VkDeviceSize nativeOffset = offset;
+        const uint64_t availableBytes = record->desc.size - offset;
+
+        if (const RHIStatus status = RetainBuffer(buffer); !status.IsSuccess()) return status;
+
+        vkCmdBindVertexBuffers(m_CommandBuffer, binding, 1, &nativeBuffer, &nativeOffset);
+        m_VertexBufferBytes = availableBytes;
+        m_VertexBufferBound = true;
+        return {};
+    }
+
+    RHIStatus VulkanCommandList::BindIndexBuffer(BufferHandle buffer, RHIIndexType type, uint64_t offset)
+    {
+        constexpr const char* operation = "VulkanCommandList::BindIndexBuffer";
+
+        if (m_State != RHICommandListState::Recording && m_State != RHICommandListState::Rendering)
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
+
+        VkIndexType nativeType{};
+        uint32_t indexSize = 0;
+
+        switch (type) {
+        case RHIIndexType::UInt16: nativeType = VK_INDEX_TYPE_UINT16; indexSize = 2; break;
+        case RHIIndexType::UInt32: nativeType = VK_INDEX_TYPE_UINT32; indexSize = 4; break;
+        default: return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        }
+
+        const auto* record = m_Device.GetResourceRegistry().ResolveBuffer(buffer);
+
+        if (!record || !HasBufferUsage(record->desc.usage, RHIBufferUsage::Index) ||
+            offset >= record->desc.size || offset % indexSize != 0)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        const VkBuffer nativeBuffer = record->buffer;
+        const uint64_t availableBytes = record->desc.size - offset;
+
+        if (const RHIStatus status = RetainBuffer(buffer); !status.IsSuccess()) return status;
+
+        vkCmdBindIndexBuffer(m_CommandBuffer, nativeBuffer, offset, nativeType);
+        m_IndexBufferBytes = availableBytes;
+        m_IndexSize = indexSize;
+        m_IndexBufferBound = true;
+        return {};
+    }
+
+    RHIStatus VulkanCommandList::RetainBuffer(BufferHandle handle)
+    {
+        if (std::ranges::find(m_RetainedBuffers, handle) != m_RetainedBuffers.end()) return {};
+
+        m_RetainedBuffers.push_back(handle);
+        const RHIStatus status = m_Device.GetResourceRegistry().RetainBuffer(handle);
+        if (!status.IsSuccess()) m_RetainedBuffers.pop_back();
+        return status;
     }
 
     void VulkanCommandList::ReleasePipelines() noexcept
@@ -302,6 +512,14 @@ namespace Catalpa {
         while (!m_RetainedPipelines.empty()) {
             m_Device.GetResourceRegistry().ReleasePipeline(m_RetainedPipelines.back());
             m_RetainedPipelines.pop_back();
+        }
+    }
+
+    void VulkanCommandList::ReleaseBuffers(size_t first) noexcept
+    {
+        while (m_RetainedBuffers.size() > first) {
+            m_Device.GetResourceRegistry().ReleaseBufferReference(m_RetainedBuffers.back());
+            m_RetainedBuffers.pop_back();
         }
     }
 

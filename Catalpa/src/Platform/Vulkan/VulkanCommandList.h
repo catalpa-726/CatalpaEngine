@@ -46,6 +46,12 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus BindGraphicsPipeline(GraphicsPipelineHandle pipeline) override;
         [[nodiscard]] RHIStatus Draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0) override;
 
+        [[nodiscard]] RHIStatus PipelineBarrier(std::span<const RHIBufferBarrier> barriers) override;
+        [[nodiscard]] RHIStatus CopyBuffer(BufferHandle source, BufferHandle destination, const RHIBufferCopy& copy) override;
+        [[nodiscard]] RHIStatus BindVertexBuffer(uint32_t binding, BufferHandle buffer, uint64_t offset = 0) override;
+        [[nodiscard]] RHIStatus BindIndexBuffer(BufferHandle buffer, RHIIndexType type, uint64_t offset = 0) override;
+        [[nodiscard]] RHIStatus DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1, uint32_t firstIndex = 0, int32_t vertexOffset = 0, uint32_t firstInstance = 0) override;
+
     private:
         // 录制期资源引用与状态复位
         [[nodiscard]] RHIStatus RetainTextureView(TextureViewHandle handle);
@@ -61,6 +67,9 @@ namespace Catalpa {
 
         // 在命令池安全重置或销毁后，归还全部管线引用。
         void ReleasePipelines() noexcept;
+
+        [[nodiscard]] RHIStatus RetainBuffer(BufferHandle handle);
+        void ReleaseBuffers(size_t first = 0) noexcept;
 
     private:
         // 帧复用与队列提交负责内部状态变更
@@ -80,6 +89,16 @@ namespace Catalpa {
         PixelFormat m_BoundColorFormat = PixelFormat::Unknown;
         PixelFormat m_RenderingColorFormat = PixelFormat::Unknown;
         bool m_ViewportAndScissorSet = false;
+
+        std::vector<BufferHandle> m_RetainedBuffers;
+
+        uint32_t m_VertexStride = 0;
+        uint32_t m_VertexAttributeEnd = 0;
+        uint64_t m_VertexBufferBytes = 0;
+        uint64_t m_IndexBufferBytes = 0;
+        uint32_t m_IndexSize = 0;
+        bool m_VertexBufferBound = false;
+        bool m_IndexBufferBound = false;
     };
 
 }
