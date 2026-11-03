@@ -48,6 +48,21 @@ namespace Catalpa {
         return flags;
     }
 
+    VkImageUsageFlags ToVulkanTextureUsage(RHITextureUsage usage) noexcept
+    {
+        constexpr RHITextureUsage supported = RHITextureUsage::TransferSource | RHITextureUsage::TransferDestination |
+            RHITextureUsage::Sampled | RHITextureUsage::ColorAttachment;
+
+        if ((static_cast<uint32_t>(usage) & ~static_cast<uint32_t>(supported)) != 0) return 0;
+
+        VkImageUsageFlags flags = 0;
+        if (HasTextureUsage(usage, RHITextureUsage::TransferSource)) flags |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        if (HasTextureUsage(usage, RHITextureUsage::TransferDestination)) flags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if (HasTextureUsage(usage, RHITextureUsage::Sampled)) flags |= VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (HasTextureUsage(usage, RHITextureUsage::ColorAttachment)) flags |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        return flags;
+    }
+
     VkFormat ToVulkanFormat(VertexFormat format) noexcept
     {
         switch (format) {

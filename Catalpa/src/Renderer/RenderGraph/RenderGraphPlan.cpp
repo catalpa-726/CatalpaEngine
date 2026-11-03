@@ -36,6 +36,11 @@ namespace Catalpa {
                             return status;
                         break;
 
+                    case StepKind::TextureUpload:
+                        if (const RHIStatus status = commands.CopyBufferToTexture(step.source, step.destinationView, step.textureCopy); !status.IsSuccess())
+                            return status;
+                        break;
+
                     case StepKind::Draw:
                     {
                         const auto& draw = step.draw;

@@ -25,6 +25,8 @@ namespace Catalpa {
 
         // 登记复制或索引绘制，同时保存访问推导所需的参数。
         [[nodiscard]] RHIStatus AddCopyPass(const char* name, RGBuffer source, RGBuffer destination, const RHIBufferCopy& copy);
+        // 登记整幅、紧密排列的颜色纹理上传。
+        [[nodiscard]] RHIStatus AddTextureUploadPass(const char* name, RGBuffer source, RGTexture destination, const RHIBufferTextureCopy& copy);
         [[nodiscard]] RHIStatus AddDrawPass(const char* name, const RGIndexedDrawDesc& desc);
 
         // 指定最终呈现输出，并结束声明阶段。
@@ -44,12 +46,18 @@ namespace Catalpa {
             RHITextureStateSnapshot snapshot{};
         };
 
+        enum class PassKind { Copy, TextureUpload, Draw };
+
+        // 保存不同 Pass 的声明参数，由 Compile 生成实际命令步骤。
         struct Pass {
             std::string name;
-            bool isDraw = false;
+            PassKind kind = PassKind::Copy;
             RGBuffer source{};
             RGBuffer destination{};
             RHIBufferCopy copy{};
+            RGTexture destinationTexture{};
+            RHIBufferTextureCopy textureCopy{};
+            uint64_t textureBytes = 0;
             RGIndexedDrawDesc draw{};
         };
 

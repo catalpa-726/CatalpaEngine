@@ -4,14 +4,15 @@
 #include "RHI/RHIBufferDesc.h"
 #include "RHI/RHICompletionPoint.h"
 #include "RHI/RHIError.h"
+#include "RHI/RHITextureDesc.h"
 
-// 声明静态 Buffer 上传调度器
+// 声明静态 Buffer 和颜色纹理上传调度器
 namespace Catalpa {
 
     class RHIDevice;
     class RenderGraph;
 
-    // 当前由主线程调用，只负责新建静态顶点/索引 Buffer 的上传。
+    // 当前由主线程调用，负责新建静态顶点/索引 Buffer 和整幅颜色纹理的上传。
     class UploadScheduler {
     public:
         explicit UploadScheduler(RHIDevice& device) : m_Device(device) {}
@@ -22,6 +23,10 @@ namespace Catalpa {
 
         // 立即复制 CPU 数据；目标所有权交给调用方，并须保留至请求提交或调度器关闭。
         [[nodiscard]] RHIStatus CreateBuffer(std::span<const std::byte> data, RHIBufferUsage usage, BufferHandle& buffer);
+
+        // 立即复制 CPU 数据；自动补充 TransferDestination。
+        // 纹理和 View 的所有权交给调用方，须保留至请求提交或调度器关闭。
+        [[nodiscard]] RHIStatus CreateTexture(std::span<const std::byte> data, const RHITextureDesc& desc, TextureHandle& texture, TextureViewHandle& view);
 
         // 冻结本次请求前缀并加入图，复制和屏障由图统一生成。
         [[nodiscard]] RHIStatus AddPasses(RenderGraph& graph);
@@ -43,11 +48,19 @@ namespace Catalpa {
             RHIBufferUsage usage = RHIBufferUsage::None;
         };
 
+        // 保存尚未提交的纹理上传请求；staging owner 由调度器持有。
+        struct PendingTexture {
+            TextureViewHandle destination{};
+            BufferHandle staging{};
+        };
+
         RHIDevice& m_Device;
         std::vector<PendingBuffer> m_Pending;
+        std::vector<PendingTexture> m_PendingTextures;
 
         // 仅加入本帧图的请求前缀属于此次提交。
         size_t m_RecordedCount = 0;
+        size_t m_RecordedTextureCount = 0;
         bool m_Recorded = false;
         RHICompletionPoint m_LastSubmission{};
     };

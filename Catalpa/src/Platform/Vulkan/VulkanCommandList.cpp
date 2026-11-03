@@ -9,6 +9,7 @@
 #include "RHI/RHIBufferDesc.h"
 #include "VulkanDebugUtils.h"
 #include "VulkanResourceStateTracker.h"
+#include "RHI/RHITextureDesc.h"
 
 namespace Catalpa {
 
@@ -56,8 +57,7 @@ namespace Catalpa {
         std::span<const RHIBufferStateUpdate> buffers,
         std::span<const RHITextureStateUpdate> textures)
     {
-        if (m_State != RHICommandListState::Recording ||
-            m_ResourceStatePlanBound || m_ResourceStatePlanCommitted ||
+        if (m_State != RHICommandListState::Recording || m_ResourceStatePlanBound ||
             !m_RetainedBuffers.empty() || !m_RetainedViews.empty() || !m_RetainedPipelines.empty()) {
             Invalidate();
             return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::SetResourceStatePlan" };
@@ -125,11 +125,16 @@ namespace Catalpa {
 
     bool VulkanCommandList::ExportsPresent(TextureViewHandle view) const noexcept
     {
-        return m_State == RHICommandListState::Executable &&
-            m_ResourceStatePlanBound && !m_ResourceStatePlanCommitted &&
-            m_TextureStateUpdates.size() == 1 &&
-            m_TextureStateUpdates.front().view == view &&
-            m_TextureStateUpdates.front().after.access.layout == RHITextureLayout::Present;
+        bool exported = false;
+
+        for (const auto& update : m_TextureStateUpdates) {
+            if (update.after.access.layout != RHITextureLayout::Present) continue;
+
+            if (exported || update.view != view) return false;
+            exported = true;
+        }
+
+        return exported;
     }
 
     // 记录已成功接受的提交，本身不执行提交
@@ -222,7 +227,8 @@ namespace Catalpa {
         for (const auto& attachment : desc.colorAttachments) {
             const auto* record = registry.ResolveTextureView(attachment.view);
 
-            if (!record || right > record->extent.width || bottom > record->extent.height)
+            if (!record || !HasTextureUsage(record->usage, RHITextureUsage::ColorAttachment) ||
+                right > record->extent.width || bottom > record->extent.height)
                 return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
             if (record->sampleCount != 1 || ToVulkanFormat(record->format) == VK_FORMAT_UNDEFINED)
@@ -330,7 +336,7 @@ namespace Catalpa {
     void VulkanCommandList::ReleaseTextureViews(size_t first) noexcept
     {
         while (m_RetainedViews.size() > first) {
-            m_Device.GetResourceRegistry().ReleaseTextureView(m_RetainedViews.back());
+            m_Device.GetResourceRegistry().ReleaseTextureViewReference(m_RetainedViews.back());
             m_RetainedViews.pop_back();
         }
     }
@@ -553,6 +559,68 @@ namespace Catalpa {
         };
 
         vkCmdCopyBuffer(m_CommandBuffer, sourceBuffer, destinationBuffer, 1, &region);
+        return {};
+    }
+
+    RHIStatus VulkanCommandList::CopyBufferToTexture(
+        BufferHandle source, TextureViewHandle destination, const RHIBufferTextureCopy& copy)
+    {
+        constexpr const char* operation = "VulkanCommandList::CopyBufferToTexture";
+
+        if (m_State != RHICommandListState::Recording)
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
+
+        auto& registry = m_Device.GetResourceRegistry();
+        const auto* sourceRecord = registry.ResolveBuffer(source);
+        const auto* destinationRecord = registry.ResolveTextureView(destination);
+
+        if (!sourceRecord || !destinationRecord ||
+            !HasBufferUsage(sourceRecord->desc.usage, RHIBufferUsage::TransferSource) ||
+            !HasTextureUsage(destinationRecord->usage, RHITextureUsage::TransferDestination) ||
+            destinationRecord->presentable || copy.bufferOffset % 4 != 0)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        if (copy.range != RHITextureSubresourceRange{} || destinationRecord->sampleCount != 1)
+            return { .code = RHIErrorCode::Unsupported, .operation = operation };
+
+        uint64_t bytes = 0;
+
+        if (!TryGetTextureUploadByteSize(destinationRecord->extent, destinationRecord->format, bytes))
+            return { .code = RHIErrorCode::Unsupported, .operation = operation };
+
+        if (!IsValidBufferRange(sourceRecord->desc.size, copy.bufferOffset, bytes))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        const VkBuffer sourceBuffer = sourceRecord->buffer;
+        const VkImage destinationImage = destinationRecord->image;
+        const Extent2D extent = destinationRecord->extent;
+        const size_t firstBuffer = m_RetainedBuffers.size();
+
+        if (const RHIStatus status = RetainBuffer(source); !status.IsSuccess()) return status;
+
+        if (const RHIStatus status = RetainTextureView(destination); !status.IsSuccess()) {
+            ReleaseBuffers(firstBuffer);
+            return status;
+        }
+
+        const VkBufferImageCopy region{
+            .bufferOffset = copy.bufferOffset,
+            .bufferRowLength = 0,
+            .bufferImageHeight = 0,
+            .imageSubresource = {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel = copy.range.baseMipLevel,
+                .baseArrayLayer = copy.range.baseArrayLayer,
+                .layerCount = copy.range.layerCount
+            },
+            .imageOffset = { 0, 0, 0 },
+            .imageExtent = { extent.width, extent.height, 1 }
+        };
+
+        vkCmdCopyBufferToImage(
+            m_CommandBuffer, sourceBuffer, destinationImage,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
         return {};
     }
 

@@ -326,4 +326,22 @@ namespace Catalpa {
         return VulkanResourceStateTracker::Query(*m_ResourceRegistry, view, snapshot);
     }
 
+    RHIStatus VulkanDevice::CreateTexture(const RHITextureDesc& desc, TextureHandle& texture)
+    {
+        texture = {};
+        if (!m_DeviceFailure.IsSuccess()) return m_DeviceFailure;
+        return ObserveStatus(m_ResourceRegistry->CreateTexture(desc, texture));
+    }
+
+    RHIStatus VulkanDevice::CreateTextureView(TextureHandle texture, const RHITextureViewDesc& desc, TextureViewHandle& view)
+    {
+        view = {};
+        if (!m_DeviceFailure.IsSuccess()) return m_DeviceFailure;
+        return ObserveStatus(m_ResourceRegistry->CreateTextureView(texture, desc, view));
+    }
+
+    void VulkanDevice::ReleaseTexture(TextureHandle texture) { m_ResourceRegistry->ReleaseTexture(texture); }
+
+    void VulkanDevice::ReleaseTextureView(TextureViewHandle view) { m_ResourceRegistry->ReleaseTextureView(view); }
+
 }

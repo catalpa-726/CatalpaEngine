@@ -25,24 +25,21 @@ namespace Catalpa {
     }
 
     // 当前仅允许单层颜色附件及交换链呈现状态。
-    static bool IsValidTextureState(const RHITextureState& state) noexcept
+    static bool IsValidTextureState(const RHITextureState& state, const VulkanTextureRecord& texture) noexcept
     {
-        const auto& access = state.access;
+        const auto& source = state.access;
+        VkPipelineStageFlags2 stage{};
+        VkAccessFlags2 access{};
+        VkImageLayout layout{};
 
-        switch (access.layout) {
-        case RHITextureLayout::Undefined:
-        case RHITextureLayout::Present:
-            return !state.initialized && access.access == RHIResourceAccess::None &&
-                (access.stage == RHIPipelineStage::None || access.stage == RHIPipelineStage::AllCommands);
-
-        case RHITextureLayout::ColorAttachment:
-            return (access.stage == RHIPipelineStage::ColorAttachmentOutput || access.stage == RHIPipelineStage::AllCommands) &&
-                (access.access == RHIResourceAccess::ColorRead || access.access == RHIResourceAccess::ColorWrite ||
-                    access.access == RHIResourceAccess::ColorReadWrite);
-
-        default:
+        if (!ConvertVulkanTextureAccess(source, texture.desc.usage, texture.presentable, stage, access, layout))
             return false;
-        }
+
+        if (source.layout == RHITextureLayout::Undefined || source.layout == RHITextureLayout::Present)
+            return !state.initialized && source.access == RHIResourceAccess::None &&
+            (source.stage == RHIPipelineStage::None || source.stage == RHIPipelineStage::AllCommands);
+
+        return source.access != RHIResourceAccess::None;
     }
 
     RHIStatus VulkanResourceStateTracker::Query(const VulkanResourceRegistry& registry, BufferHandle buffer, RHIBufferStateSnapshot& snapshot)
@@ -60,18 +57,24 @@ namespace Catalpa {
     RHIStatus VulkanResourceStateTracker::Query(const VulkanResourceRegistry& registry, TextureViewHandle view, RHITextureStateSnapshot& snapshot)
     {
         snapshot = {};
-        const auto* record = registry.ResolveTextureView(view);
+        const auto* viewSlot = registry.FindTextureView(view);
 
-        if (!record)
+        if (!viewSlot || viewSlot->releaseRequested)
             return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanResourceStateTracker::QueryTexture" };
 
-        const auto& slot = registry.m_TextureViews[view.slot.index];
+        // 父 owner 可以已释放；存活的 View 本身仍保留父图像。
+        const auto* textureSlot = registry.FindTexture(viewSlot->record.texture);
+
+        if (!textureSlot)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanResourceStateTracker::QueryTexture" };
 
         snapshot = {
-            .extent = record->extent,
-            .format = record->format,
-            .sampleCount = record->sampleCount,
-            .state = slot.state
+            .extent = viewSlot->record.extent,
+            .format = viewSlot->record.format,
+            .sampleCount = viewSlot->record.sampleCount,
+            .state = textureSlot->state,
+            .usage = textureSlot->record.desc.usage,
+            .presentable = textureSlot->record.presentable
         };
 
         return {};
@@ -106,9 +109,6 @@ namespace Catalpa {
                     return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
             }
 
-            if (update.expectedRevision == 0)
-                return { .code = RHIErrorCode::InvalidState, .operation = operation };
-
             if (update.expectedRevision == std::numeric_limits<uint64_t>::max())
                 return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
 
@@ -123,16 +123,21 @@ namespace Catalpa {
 
         for (size_t i = 0; i < textures.size(); ++i) {
             const auto& update = textures[i];
+            const auto* viewSlot = registry.FindTextureView(update.view);
 
-            if (!registry.ResolveTextureView(update.view))
+            if (!viewSlot || (!requireRetained && viewSlot->releaseRequested))
                 return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
-            const auto& slot = registry.m_TextureViews[update.view.slot.index];
+            const auto* textureSlot = registry.FindTexture(viewSlot->record.texture);
 
-            if (update.expectedRevision != slot.state.revision ||
-                (requireRetained && slot.references == 0))
+            if (!textureSlot)
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+            if (update.expectedRevision != textureSlot->state.revision ||
+                (requireRetained && viewSlot->references == 0))
                 return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
+            // 提交阶段只复核身份、当前版本和命令引用。
             if (requireRetained) continue;
 
             for (size_t previous = 0; previous < i; ++previous) {
@@ -140,13 +145,15 @@ namespace Catalpa {
                     return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
             }
 
-            if (update.expectedRevision == 0)
-                return { .code = RHIErrorCode::InvalidState, .operation = operation };
-
             if (update.expectedRevision == std::numeric_limits<uint64_t>::max())
                 return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
 
-            if (update.after.revision != update.expectedRevision + 1 || !IsValidTextureState(update.after))
+            // 参与提交的交换链图像必须最终回到 Present。
+            if (textureSlot->record.presentable && update.after.access.layout != RHITextureLayout::Present)
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+            if (update.after.revision != update.expectedRevision + 1 ||
+                !IsValidTextureState(update.after, textureSlot->record))
                 return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
         }
 
@@ -170,13 +177,17 @@ namespace Catalpa {
         }
 
         for (auto& update : textures) {
-            auto& slot = registry.m_TextureViews[update.view.slot.index];
+            const auto& viewSlot = registry.m_TextureViews[update.view.slot.index];
+            const TextureHandle texture = viewSlot.record.texture;
+            auto& textureSlot = registry.m_Textures[texture.slot.index];
 
-            CAT_CORE_ASSERT(slot.generation == update.view.slot.generation &&
-                slot.state.revision == update.expectedRevision && slot.references != 0,
+            CAT_CORE_ASSERT(
+                viewSlot.generation == update.view.slot.generation && viewSlot.references != 0 &&
+                textureSlot.generation == texture.slot.generation && textureSlot.references != 0 &&
+                textureSlot.state.revision == update.expectedRevision,
                 "Accepted texture state transaction is no longer valid!");
 
-            std::swap(slot.state, update.after);
+            std::swap(textureSlot.state, update.after);
         }
     }
 

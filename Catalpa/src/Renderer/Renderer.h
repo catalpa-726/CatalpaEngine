@@ -34,12 +34,18 @@ namespace Catalpa {
         // 分别幂等创建静态几何，上传由当前帧统一录制。
         [[nodiscard]] RHIStatus EnsureTriangleGeometry();
 
+        // 幂等创建并安排棋盘纹理上传；后续采样绑定使用其 View。
+        [[nodiscard]] RHIStatus EnsureTriangleTexture();
+
     private:
-        // 持有管线及静态几何的逻辑所有权；设备负责原生资源生命周期。
+        // 持有管线、静态几何和纹理的逻辑所有权；设备负责原生资源生命周期。
         GraphicsPipelineHandle m_TrianglePipeline{};
 
         BufferHandle m_TriangleVertices{};
         BufferHandle m_TriangleIndices{};
+
+        TextureHandle m_TriangleTexture{};
+        TextureViewHandle m_TriangleTextureView{};
 
         // 借用 Runtime 持有的设备和交换链。
         RHIDevice& m_Device;

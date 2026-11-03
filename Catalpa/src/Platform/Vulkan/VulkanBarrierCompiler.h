@@ -4,6 +4,7 @@
 #include "RHI/RHICommandTypes.h"
 #include "RHI/RHIError.h"
 #include "RHI/RHIBufferDesc.h"
+#include "RHI/RHITextureDesc.h"
 
 namespace Catalpa {
 
@@ -20,4 +21,14 @@ namespace Catalpa {
         RHIBufferUsage usage,
         VkPipelineStageFlags2& stage,
         VkAccessFlags2& access) noexcept;
+
+    // 共享纹理访问转换与合法性检查，不推导未声明的依赖。
+    [[nodiscard]] bool ConvertVulkanTextureAccess(
+        const RHITextureAccess& source,
+        RHITextureUsage usage,
+        bool presentable,
+        VkPipelineStageFlags2& stage,
+        VkAccessFlags2& access,
+        VkImageLayout& layout) noexcept;
+
 }

@@ -4,6 +4,7 @@
 #include "RHIBufferDesc.h"
 #include "RHIResourceAccess.h"
 #include "RHITypes.h"
+#include "RHITextureDesc.h"
 #include "Images/PixelFormat.h"
 
 // 定义资源状态快照、待提交更新，以及 Buffer 初始化区间的公共操作
@@ -38,6 +39,8 @@ namespace Catalpa {
         PixelFormat format = PixelFormat::Unknown;
         uint32_t sampleCount = 1;
         RHITextureState state{};
+        RHITextureUsage usage = RHITextureUsage::None;
+        bool presentable = false;
     };
 
     struct RHIBufferStateUpdate {

@@ -2,6 +2,7 @@
 #include "Renderer.h"
 #include "Log/Log.h"
 #include "RHI/RHIDevice.h"
+#include "RHI/RHITextureDesc.h"
 #include "TriangleVertexSpirv.h"
 #include "TriangleFragmentSpirv.h"
 #include "Geometry/VertexLayout.h"
@@ -58,6 +59,8 @@ namespace Catalpa {
     Renderer::~Renderer()
     {
         m_Uploads.Shutdown();
+        m_Device.ReleaseTextureView(m_TriangleTextureView);
+        m_Device.ReleaseTexture(m_TriangleTexture);
         m_Device.ReleaseBuffer(m_TriangleIndices);
         m_Device.ReleaseBuffer(m_TriangleVertices);
         m_Device.ReleaseGraphicsPipeline(m_TrianglePipeline);
@@ -142,6 +145,7 @@ namespace Catalpa {
         if (m_Swapchain.GetInfo().state != RHISwapchainState::Ready) return {};
         if (const RHIStatus status = EnsureTrianglePipeline(); !status.IsSuccess()) return status;
         if (const RHIStatus status = EnsureTriangleGeometry(); !status.IsSuccess()) return status;
+        if (const RHIStatus status = EnsureTriangleTexture(); !status.IsSuccess()) return status;
 
         constexpr uint64_t timeoutNanoseconds = 16'000'000;
         RHIFrameResources frame{};
@@ -225,6 +229,35 @@ namespace Catalpa {
         }
 
         return {};
+    }
+
+    RHIStatus Renderer::EnsureTriangleTexture()
+    {
+        if (m_TriangleTexture.HasValue()) return {};
+
+        constexpr uint32_t side = 8;
+        std::array<std::byte, side* side * 4> pixels{};
+
+        // 生成 RGBA8 黑白棋盘，每格占 2 × 2 像素。
+        for (uint32_t y = 0; y < side; ++y) {
+            for (uint32_t x = 0; x < side; ++x) {
+                const std::byte value = ((x / 2 + y / 2) & 1u) == 0 ? std::byte{ 0 } : std::byte{ 255 };
+                const size_t offset = (static_cast<size_t>(y) * side + x) * 4;
+
+                pixels[offset] = value;
+                pixels[offset + 1] = value;
+                pixels[offset + 2] = value;
+                pixels[offset + 3] = std::byte{ 255 };
+            }
+        }
+
+        const RHITextureDesc desc{
+            .extent = {.width = side, .height = side },
+            .format = PixelFormat::RGBA8_UNorm,
+            .usage = RHITextureUsage::Sampled
+        };
+
+        return m_Uploads.CreateTexture(pixels, desc, m_TriangleTexture, m_TriangleTextureView);
     }
 
 }

@@ -20,6 +20,13 @@ namespace Catalpa {
         uint64_t size = 0;
     };
 
+    // 从 Buffer 上传整幅、紧密排列的二维颜色图像。
+    // 当前仅支持 mip 0、layer 0；不支持部分区域或自定义行跨度。
+    struct RHIBufferTextureCopy {
+        uint64_t bufferOffset = 0;
+        RHITextureSubresourceRange range{};
+    };
+
     struct RHIBufferBarrier {
         BufferHandle buffer{};
         uint64_t offset = 0;

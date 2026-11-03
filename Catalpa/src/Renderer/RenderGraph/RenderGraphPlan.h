@@ -37,7 +37,7 @@ namespace Catalpa {
     private:
         friend class RenderGraph;
 
-        enum class StepKind { Copy, Draw, Transition };
+        enum class StepKind { Copy, TextureUpload, Draw, Transition };
 
         struct Step {
             std::string name;
@@ -47,6 +47,8 @@ namespace Catalpa {
             BufferHandle source{};
             BufferHandle destination{};
             RHIBufferCopy copy{};
+            TextureViewHandle destinationView{};
+            RHIBufferTextureCopy textureCopy{};
             RGIndexedDrawDesc draw{};
             BufferHandle vertices{};
             BufferHandle indices{};

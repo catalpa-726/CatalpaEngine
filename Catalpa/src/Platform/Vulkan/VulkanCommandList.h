@@ -53,6 +53,8 @@ namespace Catalpa {
 
         [[nodiscard]] RHIStatus PipelineBarrier(std::span<const RHIBufferBarrier> barriers) override;
         [[nodiscard]] RHIStatus CopyBuffer(BufferHandle source, BufferHandle destination, const RHIBufferCopy& copy) override;
+        // 录制整幅颜色纹理上传；不隐式生成访问屏障。
+        [[nodiscard]] RHIStatus CopyBufferToTexture(BufferHandle source, TextureViewHandle destination, const RHIBufferTextureCopy& copy) override;
         [[nodiscard]] RHIStatus BindVertexBuffer(uint32_t binding, BufferHandle buffer, uint64_t offset = 0) override;
         [[nodiscard]] RHIStatus BindIndexBuffer(BufferHandle buffer, RHIIndexType type, uint64_t offset = 0) override;
         [[nodiscard]] RHIStatus DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1, uint32_t firstIndex = 0, int32_t vertexOffset = 0, uint32_t firstInstance = 0) override;
@@ -85,7 +87,7 @@ namespace Catalpa {
         // 仅由 Queue 在原生提交成功后发布状态。
         void CommitResourceStatePlan() noexcept;
 
-        // 当前帧必须只导出实际 Acquire 的图像到 Present。
+        // 必须恰好导出当前 Acquire 的图像到 Present；允许同时更新普通纹理。
         bool ExportsPresent(TextureViewHandle view) const noexcept;
 
     private:

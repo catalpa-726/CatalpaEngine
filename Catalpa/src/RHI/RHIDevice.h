@@ -10,6 +10,7 @@
 #include "RHIPipelineDesc.h"
 #include "RHIBufferDesc.h"
 #include "RHIResourceState.h"
+#include "RHITextureDesc.h"
 
 namespace Catalpa {
 
@@ -58,6 +59,15 @@ namespace Catalpa {
 
         // 释放逻辑所有权；已有命令引用继续保留原生资源。
         virtual void ReleaseBuffer(BufferHandle buffer) = 0;
+
+        // 创建图像及其视图；当前每张图像最多保留一个活视图。
+        [[nodiscard]] virtual RHIStatus CreateTexture(const RHITextureDesc& desc, TextureHandle& texture) = 0;
+        [[nodiscard]] virtual RHIStatus CreateTextureView(TextureHandle texture, const RHITextureViewDesc& desc, TextureViewHandle& view) = 0;
+
+        // 释放逻辑所有权；View 保留父图像，命令引用保留 View。
+        // Acquire 返回的交换链借用 View 不由这两个接口释放。
+        virtual void ReleaseTexture(TextureHandle texture) = 0;
+        virtual void ReleaseTextureView(TextureViewHandle view) = 0;
 
         // 返回独立快照；已接受的队列状态不等于 GPU 已执行完成。
         [[nodiscard]] virtual RHIStatus GetBufferState(BufferHandle buffer, RHIBufferStateSnapshot& snapshot) const = 0;

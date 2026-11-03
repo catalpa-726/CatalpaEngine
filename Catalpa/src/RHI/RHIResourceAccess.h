@@ -9,7 +9,7 @@ namespace Catalpa {
         TransferRead, TransferWrite, VertexRead, IndexRead, VertexIndexRead,
         TransferReadWrite, MemoryReadWrite
     };
-    enum class RHITextureLayout { Undefined, ColorAttachment, Present };
+    enum class RHITextureLayout { Undefined, ColorAttachment, Present, TransferDestination };
 
     struct RHITextureAccess {
         RHIPipelineStage stage = RHIPipelineStage::None;

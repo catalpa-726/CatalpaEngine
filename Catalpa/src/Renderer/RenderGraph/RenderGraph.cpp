@@ -1,6 +1,7 @@
 ﻿#include "catpch.h"
 #include "RenderGraph.h"
 #include "RHI/RHIDevice.h"
+#include "RHI/RHITextureDesc.h"
 
 namespace Catalpa {
 
@@ -15,23 +16,23 @@ namespace Catalpa {
             return result;
         }
 
-        // 限定当前颜色附件路径能够处理的布局。
+        // 限定当前颜色附件和上传路径能够处理的布局。
         bool IsSupportedLayout(RHITextureLayout layout) noexcept
         {
             return layout == RHITextureLayout::Undefined ||
                 layout == RHITextureLayout::ColorAttachment ||
+                layout == RHITextureLayout::TransferDestination ||
                 layout == RHITextureLayout::Present;
         }
 
-        // 保守覆盖同一队列此前对颜色附件的访问。
+        // 保守覆盖同一队列此前在对应布局下的访问。
         RHITextureAccess ConservativeTextureBefore(RHITextureLayout layout) noexcept
         {
-            return {
-                .stage = RHIPipelineStage::AllCommands,
-                .access = layout == RHITextureLayout::ColorAttachment ?
-                    RHIResourceAccess::ColorReadWrite : RHIResourceAccess::None,
-                .layout = layout
-            };
+            RHIResourceAccess access = RHIResourceAccess::None;
+            if (layout == RHITextureLayout::ColorAttachment) access = RHIResourceAccess::ColorReadWrite;
+            else if (layout == RHITextureLayout::TransferDestination) access = RHIResourceAccess::TransferWrite;
+
+            return { .stage = RHIPipelineStage::AllCommands, .access = access, .layout = layout };
         }
 
     }
@@ -113,9 +114,10 @@ namespace Catalpa {
             }
         }
 
-        // 当前只导入本帧 Acquire 返回的一张交换链图像。
-        if (!m_Textures.empty())
-            return { .code = RHIErrorCode::Unsupported, .operation = operation };
+        // 允许同时导入普通纹理和交换链图像，限制图内句柄索引及容器容量。
+        if (m_Textures.size() >= GenerationalHandle<RGTextureTag>::InvalidIndex ||
+            m_Textures.size() == m_Textures.max_size())
+            return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
 
         RHITextureStateSnapshot snapshot{};
         if (const RHIStatus status = m_Device.GetTextureState(view, snapshot); !status.IsSuccess()) return status;
@@ -127,8 +129,9 @@ namespace Catalpa {
             !IsSupportedLayout(snapshot.state.access.layout))
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
 
+        const uint32_t index = static_cast<uint32_t>(m_Textures.size());
         m_Textures.push_back({ .handle = view, .snapshot = std::move(snapshot) });
-        resource = { .graph = m_Id, .slot = {.index = 0, .generation = 1 } };
+        resource = { .graph = m_Id, .slot = {.index = index, .generation = 1 } };
         return {};
     }
 
@@ -170,6 +173,52 @@ namespace Catalpa {
         return {};
     }
 
+    RHIStatus RenderGraph::AddTextureUploadPass(
+        const char* name, RGBuffer source, RGTexture destination, const RHIBufferTextureCopy& copy)
+    {
+        constexpr const char* operation = "RenderGraph::AddTextureUploadPass";
+        if (const RHIStatus status = CheckBuilding(operation); !status.IsSuccess()) return status;
+
+        const auto* sourceResource = Resolve(source);
+        const auto* destinationResource = Resolve(destination);
+
+        if (!name || !*name || !sourceResource || !destinationResource)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        const auto& sourceDesc = sourceResource->snapshot.desc;
+        const auto& destinationSnapshot = destinationResource->snapshot;
+
+        if (!HasBufferUsage(sourceDesc.usage, RHIBufferUsage::TransferSource) ||
+            !HasTextureUsage(destinationSnapshot.usage, RHITextureUsage::TransferDestination) ||
+            destinationSnapshot.presentable || copy.bufferOffset % 4 != 0)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        if (copy.range != RHITextureSubresourceRange{})
+            return { .code = RHIErrorCode::Unsupported, .operation = operation };
+
+        uint64_t bytes = 0;
+
+        if (!TryGetTextureUploadByteSize(destinationSnapshot.extent, destinationSnapshot.format, bytes))
+            return { .code = RHIErrorCode::Unsupported, .operation = operation };
+
+        if (!IsValidBufferRange(sourceDesc.size, copy.bufferOffset, bytes))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        if (m_Passes.size() == m_Passes.max_size())
+            return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
+
+        m_Passes.push_back({
+            .name = name,
+            .kind = PassKind::TextureUpload,
+            .source = source,
+            .destinationTexture = destination,
+            .textureCopy = copy,
+            .textureBytes = bytes
+            });
+
+        return {};
+    }
+
     RHIStatus RenderGraph::AddDrawPass(const char* name, const RGIndexedDrawDesc& desc)
     {
         constexpr const char* operation = "RenderGraph::AddDrawPass";
@@ -189,6 +238,9 @@ namespace Catalpa {
             !desc.pipeline.HasValue() || desc.pipeline.device != m_Device.GetDeviceId())
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
+        if (!HasTextureUsage(color->snapshot.usage, RHITextureUsage::ColorAttachment))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
         if ((desc.loadOp != RHILoadOp::Load && desc.loadOp != RHILoadOp::Clear && desc.loadOp != RHILoadOp::DontCare) ||
             (desc.storeOp != RHIStoreOp::Store && desc.storeOp != RHIStoreOp::DontCare))
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
@@ -196,9 +248,9 @@ namespace Catalpa {
         uint32_t indexSize = 0;
 
         switch (desc.indexType) {
-        case RHIIndexType::UInt16: indexSize = 2; break;
-        case RHIIndexType::UInt32: indexSize = 4; break;
-        default: return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            case RHIIndexType::UInt16: indexSize = 2; break;
+            case RHIIndexType::UInt32: indexSize = 4; break;
+            default: return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
         }
 
         const auto& vertexDesc = vertices->snapshot.desc;
@@ -219,7 +271,7 @@ namespace Catalpa {
         if (m_Passes.size() == m_Passes.max_size())
             return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
 
-        m_Passes.push_back({ .name = name, .isDraw = true, .draw = desc });
+        m_Passes.push_back({ .name = name, .kind = PassKind::Draw, .draw = desc });
         return {};
     }
 
@@ -227,7 +279,11 @@ namespace Catalpa {
     {
         constexpr const char* operation = "RenderGraph::ExportPresent";
         if (const RHIStatus status = CheckBuilding(operation); !status.IsSuccess()) return status;
-        if (!Resolve(resource)) return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        const auto* texture = Resolve(resource);
+
+        if (!texture || !texture->snapshot.presentable)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
         m_Present = resource;
         return {};
@@ -279,7 +335,7 @@ namespace Catalpa {
             RenderGraphPlan::Step step;
             step.name = pass.name;
 
-            if (!pass.isDraw) {
+            if (pass.kind == PassKind::Copy) {
                 const uint32_t source = pass.source.slot.index;
                 const uint32_t destination = pass.destination.slot.index;
 
@@ -310,6 +366,42 @@ namespace Catalpa {
                 }
 
                 MarkInitialized(buffers[destination].initialized, pass.copy.destinationOffset, pass.copy.size);
+            }
+            else if (pass.kind == PassKind::TextureUpload) {
+                const uint32_t source = pass.source.slot.index;
+                const uint32_t destination = pass.destinationTexture.slot.index;
+
+                if (!RangeContains(buffers[source].initialized, pass.textureCopy.bufferOffset, pass.textureBytes))
+                    return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedTextureUploadSource" };
+
+                step.kind = RenderGraphPlan::StepKind::TextureUpload;
+                step.source = m_Buffers[source].handle;
+                step.destinationView = m_Textures[destination].handle;
+                step.textureCopy = pass.textureCopy;
+
+                addBufferAccess(step, source, {
+                    .stage = RHIPipelineStage::Transfer,
+                    .access = RHIResourceAccess::TransferRead
+                    });
+
+                auto& destinationState = textures[destination];
+
+                const RHITextureAccess destinationAccess{
+                    .stage = RHIPipelineStage::Transfer,
+                    .access = RHIResourceAccess::TransferWrite,
+                    .layout = RHITextureLayout::TransferDestination
+                };
+
+                step.textureBarriers.push_back({
+                    .view = step.destinationView,
+                    .range = pass.textureCopy.range,
+                    .before = ConservativeTextureBefore(destinationState.access.layout),
+                    .after = destinationAccess
+                    });
+
+                destinationState.access = destinationAccess;
+                destinationState.initialized = true;
+                textureUsed[destination] = 1;
             }
             else {
                 const auto& draw = pass.draw;

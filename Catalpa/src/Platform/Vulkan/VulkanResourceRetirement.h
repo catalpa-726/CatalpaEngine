@@ -2,6 +2,7 @@
 
 #include "VulkanPipeline.h"
 #include "VulkanBuffer.h"
+#include "VulkanTexture.h"
 
 namespace Catalpa {
 
@@ -19,6 +20,12 @@ namespace Catalpa {
 
         // 只接收已无命令引用、允许实际清理的 Buffer。
         void RetireBuffer(VulkanBufferRecord buffer) noexcept;
+
+        // 只接收已经没有 View 引用的图像。
+        void RetireTexture(VulkanTextureRecord texture) noexcept;
+
+        // 只接收已经没有命令引用的 View；返回前完成实际销毁。
+        void RetireTextureView(VulkanTextureViewRecord view) noexcept;
 
     private:
         const VulkanDevice& m_Device;

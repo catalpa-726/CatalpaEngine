@@ -55,6 +55,9 @@ namespace Catalpa {
         [[nodiscard]] virtual RHIStatus PipelineBarrier(std::span<const RHIBufferBarrier> barriers) = 0;
         [[nodiscard]] virtual RHIStatus CopyBuffer(BufferHandle source, BufferHandle destination, const RHIBufferCopy& copy) = 0;
 
+        // 在 rendering scope 外复制整幅颜色纹理；访问屏障由调用方提供。
+        [[nodiscard]] virtual RHIStatus CopyBufferToTexture(BufferHandle source, TextureViewHandle destination, const RHIBufferTextureCopy& copy) = 0;
+
         // 当前支持 binding 0 的单个交错顶点流。
         [[nodiscard]] virtual RHIStatus BindVertexBuffer(uint32_t binding, BufferHandle buffer, uint64_t offset = 0) = 0;
         [[nodiscard]] virtual RHIStatus BindIndexBuffer(BufferHandle buffer, RHIIndexType type, uint64_t offset = 0) = 0;

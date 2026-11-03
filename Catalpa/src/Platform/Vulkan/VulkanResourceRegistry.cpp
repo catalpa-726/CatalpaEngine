@@ -8,92 +8,166 @@ namespace Catalpa {
 
     VulkanResourceRegistry::~VulkanResourceRegistry()
     {
-        // 设备关闭前，帧命令已经销毁。
+        // 设备关闭前，帧命令已经销毁。先销毁 View，再归还父图像引用。
+        for (auto& slot : m_TextureViews) {
+            if (slot.record.view == VK_NULL_HANDLE) continue;
+
+            CAT_CORE_ASSERT(slot.references == 0, "Texture view is still referenced by commands!");
+
+            const TextureHandle texture = slot.record.texture;
+            m_Retirement.RetireTextureView(std::exchange(slot.record, {}));
+            ReleaseTextureReference(texture);
+        }
+
+        for (auto& slot : m_Textures) {
+            CAT_CORE_ASSERT(slot.references == 0, "Texture is still referenced by views!");
+            m_Retirement.RetireTexture(std::exchange(slot.record, {}));
+        }
+
         for (auto& slot : m_Pipelines) {
             CAT_CORE_ASSERT(slot.references == 0, "Pipeline is still referenced by commands!");
             m_Retirement.RetirePipeline(std::exchange(slot.record, {}));
         }
+
         for (auto& slot : m_Buffers) {
             CAT_CORE_ASSERT(slot.references == 0, "Buffer is still referenced by commands!");
             m_Retirement.RetireBuffer(std::exchange(slot.record, {}));
         }
     }
 
-    // 取得空闲槽位，保存信息并返回句柄
-    RHIStatus VulkanResourceRegistry::RegisterBorrowedTextureView(VulkanTextureViewRecord record, TextureViewHandle& handle)
+    RHIStatus VulkanResourceRegistry::CreateTexture(const RHITextureDesc& desc, TextureHandle& texture)
     {
-        handle = {};
+        texture = {};
 
-        if (record.image == VK_NULL_HANDLE || record.view == VK_NULL_HANDLE) {
-            CAT_CORE_ASSERT(false, "Texture view registration requires valid native objects!");
-            return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanResourceRegistry::RegisterBorrowedTextureView" };
+        if (m_FirstFreeTexture == InvalidIndex) {
+            if (m_Textures.size() >= InvalidIndex)
+                return { .code = RHIErrorCode::OutOfMemory, .operation = "VulkanResourceRegistry::CreateTexture" };
+
+            m_Textures.reserve(m_Textures.size() + 1);
         }
 
-        // 当前一个底层图像只登记一个视图，避免同一图像拥有两份独立状态。
-        if (std::any_of(m_TextureViews.begin(), m_TextureViews.end(), [&](const auto& slot) {
-            return slot.record.view != VK_NULL_HANDLE && slot.record.image == record.image;
-            }))
-            return { .code = RHIErrorCode::Unsupported, .operation = "VulkanResourceRegistry::RegisterBorrowedTextureView" };
+        VulkanTextureRecord record{};
+        if (const RHIStatus status = CreateVulkanTexture(m_Device, desc, record); !status.IsSuccess()) return status;
 
-        uint32_t index = m_FirstFree;
+        uint32_t index = m_FirstFreeTexture;
 
-        if (index != InvalidIndex) {
-            m_FirstFree = m_TextureViews[index].nextFree;
-        } else {
-            if (m_TextureViews.size() >= InvalidIndex)
-                return { .code = RHIErrorCode::OutOfMemory, .operation = "VulkanResourceRegistry::RegisterBorrowedTextureView" };
-
-            index = static_cast<uint32_t>(m_TextureViews.size());
-            m_TextureViews.emplace_back();
+        if (index == InvalidIndex) {
+            index = static_cast<uint32_t>(m_Textures.size());
+            m_Textures.emplace_back();
+        }
+        else {
+            m_FirstFreeTexture = m_Textures[index].nextFree;
         }
 
-        auto& slot = m_TextureViews[index];
-        slot.record = record;
-        slot.state = {};
+        auto& slot = m_Textures[index];
         slot.nextFree = InvalidIndex;
         slot.references = 0;
+        slot.releaseRequested = false;
+        slot.record = record;
+        slot.state = {};
 
-        handle = { .device = m_DeviceId, .slot = {.index = index, .generation = slot.generation } };
+        texture = { .device = m_DeviceId, .slot = {.index = index, .generation = slot.generation } };
         return {};
     }
 
-    // 拒绝空句柄、其他设备的句柄、旧代次和已经撤销的登记
-    const VulkanTextureViewRecord* VulkanResourceRegistry::ResolveTextureView(TextureViewHandle handle) const noexcept
+    RHIStatus VulkanResourceRegistry::CreateTextureView(TextureHandle texture, const RHITextureViewDesc& desc, TextureViewHandle& view)
     {
-        if (!handle.HasValue() || handle.device != m_DeviceId || handle.slot.index >= m_TextureViews.size()) return nullptr;
+        constexpr const char* operation = "VulkanResourceRegistry::CreateTextureView";
+        view = {};
 
-        const auto& slot = m_TextureViews[handle.slot.index];
-        return slot.generation == handle.slot.generation && slot.record.view != VK_NULL_HANDLE ? &slot.record : nullptr;
-    }
+        const auto* found = FindTexture(texture);
 
-    // 使当前句柄失效，增加代次后回收槽位；代次达到上限的槽位不再复用，避免回绕
-    void VulkanResourceRegistry::UnregisterBorrowedTextureView(TextureViewHandle handle) noexcept
-    {
-        if (!ResolveTextureView(handle)) return;
+        if (!found || found->releaseRequested || found->record.borrowed)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
-        auto& slot = m_TextureViews[handle.slot.index];
+        // 仍被命令保留的旧 View 也属于活 View。
+        if (found->references != 0)
+            return { .code = RHIErrorCode::Unsupported, .operation = operation };
 
-        if (slot.references != 0) {
-            CAT_CORE_ASSERT(false, "Cannot unregister a texture view still referenced by commands!");
-            std::abort();
+        if (m_FirstFree == InvalidIndex) {
+            if (m_TextureViews.size() >= InvalidIndex)
+                return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
+
+            m_TextureViews.reserve(m_TextureViews.size() + 1);
         }
 
-        slot.record = {};
-        slot.state = {};
+        VulkanTextureViewRecord record{};
+        if (const RHIStatus status = CreateVulkanTextureView(m_Device, texture, found->record, desc, record); !status.IsSuccess())
+            return status;
 
-        if (slot.generation == std::numeric_limits<uint32_t>::max()) return;
+        uint32_t index = m_FirstFree;
 
-        ++slot.generation;
-        slot.nextFree = m_FirstFree;
-        m_FirstFree = handle.slot.index;
+        if (index == InvalidIndex) {
+            index = static_cast<uint32_t>(m_TextureViews.size());
+            m_TextureViews.emplace_back();
+        }
+        else {
+            m_FirstFree = m_TextureViews[index].nextFree;
+        }
+
+        auto& slot = m_TextureViews[index];
+        slot.nextFree = InvalidIndex;
+        slot.references = 0;
+        slot.releaseRequested = false;
+        slot.record = record;
+
+        // 发布 View 时取得父引用；创建失败不会留下引用。
+        ++m_Textures[texture.slot.index].references;
+
+        view = { .device = m_DeviceId, .slot = {.index = index, .generation = slot.generation } };
+        return {};
     }
 
-    RHIStatus VulkanResourceRegistry::RetainTextureView(TextureViewHandle handle) noexcept
+    const VulkanResourceRegistry::TextureSlot* VulkanResourceRegistry::FindTexture(TextureHandle texture) const noexcept
     {
-        if (!ResolveTextureView(handle))
+        if (!texture.HasValue() || texture.device != m_DeviceId || texture.slot.index >= m_Textures.size()) return nullptr;
+
+        const auto& slot = m_Textures[texture.slot.index];
+        return slot.generation == texture.slot.generation && slot.record.image != VK_NULL_HANDLE ? &slot : nullptr;
+    }
+
+    const VulkanResourceRegistry::ViewSlot* VulkanResourceRegistry::FindTextureView(TextureViewHandle view) const noexcept
+    {
+        if (!view.HasValue() || view.device != m_DeviceId || view.slot.index >= m_TextureViews.size()) return nullptr;
+
+        const auto& slot = m_TextureViews[view.slot.index];
+        return slot.generation == view.slot.generation && slot.record.view != VK_NULL_HANDLE ? &slot : nullptr;
+    }
+
+    const VulkanTextureViewRecord* VulkanResourceRegistry::ResolveTextureView(TextureViewHandle view) const noexcept
+    {
+        const auto* slot = FindTextureView(view);
+        return slot && !slot->releaseRequested ? &slot->record : nullptr;
+    }
+
+    void VulkanResourceRegistry::ReleaseTexture(TextureHandle texture) noexcept
+    {
+        const auto* found = FindTexture(texture);
+        if (!found || found->record.borrowed || found->releaseRequested) return;
+
+        auto& slot = m_Textures[texture.slot.index];
+        slot.releaseRequested = true;
+        if (slot.references == 0) RecycleTexture(texture.slot.index);
+    }
+
+    void VulkanResourceRegistry::ReleaseTextureView(TextureViewHandle view) noexcept
+    {
+        const auto* found = FindTextureView(view);
+
+        // Acquire 返回的借用 View 由交换链持有。
+        if (!found || found->record.borrowed || found->releaseRequested) return;
+
+        auto& slot = m_TextureViews[view.slot.index];
+        slot.releaseRequested = true;
+        if (slot.references == 0) RecycleTextureView(view.slot.index);
+    }
+
+    RHIStatus VulkanResourceRegistry::RetainTextureView(TextureViewHandle view) noexcept
+    {
+        if (!ResolveTextureView(view))
             return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanResourceRegistry::RetainTextureView" };
 
-        auto& references = m_TextureViews[handle.slot.index].references;
+        auto& references = m_TextureViews[view.slot.index].references;
 
         if (references == std::numeric_limits<uint32_t>::max())
             return { .code = RHIErrorCode::OutOfMemory, .operation = "VulkanResourceRegistry::RetainTextureView" };
@@ -102,10 +176,162 @@ namespace Catalpa {
         return {};
     }
 
-    void VulkanResourceRegistry::ReleaseTextureView(TextureViewHandle handle) noexcept
+    void VulkanResourceRegistry::ReleaseTextureViewReference(TextureViewHandle view) noexcept
     {
-        CAT_CORE_ASSERT(ResolveTextureView(handle) && m_TextureViews[handle.slot.index].references != 0, "Texture view has no retained reference!");
-        --m_TextureViews[handle.slot.index].references;
+        const auto* found = FindTextureView(view);
+        CAT_CORE_ASSERT(found && found->references != 0, "Texture view has no retained reference!");
+
+        auto& slot = m_TextureViews[view.slot.index];
+        --slot.references;
+        if (slot.releaseRequested && slot.references == 0) RecycleTextureView(view.slot.index);
+    }
+
+    void VulkanResourceRegistry::ReleaseTextureReference(TextureHandle texture) noexcept
+    {
+        const auto* found = FindTexture(texture);
+        CAT_CORE_ASSERT(found && found->references != 0, "Texture has no retained view reference!");
+
+        auto& slot = m_Textures[texture.slot.index];
+        --slot.references;
+        if (slot.releaseRequested && slot.references == 0) RecycleTexture(texture.slot.index);
+    }
+
+    void VulkanResourceRegistry::RecycleTextureView(uint32_t index) noexcept
+    {
+        auto& slot = m_TextureViews[index];
+        CAT_CORE_ASSERT(slot.references == 0, "Cannot recycle a texture view still referenced by commands!");
+
+        const TextureHandle texture = slot.record.texture;
+
+        // 先完成原生 View 销毁，再允许父图像退休。
+        m_Retirement.RetireTextureView(std::exchange(slot.record, {}));
+        ReleaseTextureReference(texture);
+        slot.releaseRequested = false;
+
+        if (slot.generation == std::numeric_limits<uint32_t>::max()) return;
+
+        ++slot.generation;
+        slot.nextFree = m_FirstFree;
+        m_FirstFree = index;
+    }
+
+    void VulkanResourceRegistry::RecycleTexture(uint32_t index) noexcept
+    {
+        auto& slot = m_Textures[index];
+        CAT_CORE_ASSERT(slot.references == 0, "Cannot recycle a texture still referenced by views!");
+
+        m_Retirement.RetireTexture(std::exchange(slot.record, {}));
+        slot.releaseRequested = false;
+        slot.state = {};
+
+        if (slot.generation == std::numeric_limits<uint32_t>::max()) return;
+
+        ++slot.generation;
+        slot.nextFree = m_FirstFreeTexture;
+        m_FirstFreeTexture = index;
+    }
+
+    RHIStatus VulkanResourceRegistry::RegisterBorrowedTextureView(VulkanTextureViewRecord record, TextureViewHandle& handle)
+    {
+        constexpr const char* operation = "VulkanResourceRegistry::RegisterBorrowedTextureView";
+        handle = {};
+
+        if (record.image == VK_NULL_HANDLE || record.view == VK_NULL_HANDLE) {
+            CAT_CORE_ASSERT(false, "Texture view registration requires valid native objects!");
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        }
+
+        // 同一原生图像只能存在一个状态槽。
+        if (std::any_of(m_Textures.begin(), m_Textures.end(), [&](const auto& slot) {
+            return slot.record.image == record.image;
+            }))
+            return { .code = RHIErrorCode::Unsupported, .operation = operation };
+
+        // 发布槽位前，先准备好两个容器的容量。
+        if (m_FirstFreeTexture == InvalidIndex) {
+            if (m_Textures.size() >= InvalidIndex)
+                return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
+
+            m_Textures.reserve(m_Textures.size() + 1);
+        }
+
+        if (m_FirstFree == InvalidIndex) {
+            if (m_TextureViews.size() >= InvalidIndex)
+                return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
+
+            m_TextureViews.reserve(m_TextureViews.size() + 1);
+        }
+
+        uint32_t textureIndex = m_FirstFreeTexture;
+
+        if (textureIndex == InvalidIndex) {
+            textureIndex = static_cast<uint32_t>(m_Textures.size());
+            m_Textures.emplace_back();
+        }
+        else {
+            m_FirstFreeTexture = m_Textures[textureIndex].nextFree;
+        }
+
+        auto& textureSlot = m_Textures[textureIndex];
+        textureSlot.nextFree = InvalidIndex;
+        textureSlot.references = 1;
+
+        // 借用父图像不对外发放 owner，由唯一借用 View 保留至注销。
+        textureSlot.releaseRequested = true;
+        textureSlot.record = {};
+        textureSlot.record.image = record.image;
+        textureSlot.record.desc = {
+            .extent = record.extent,
+            .format = record.format,
+            .usage = RHITextureUsage::ColorAttachment,
+            .sampleCount = record.sampleCount
+        };
+        textureSlot.record.borrowed = true;
+        textureSlot.record.presentable = true;
+        textureSlot.state = {};
+
+        const TextureHandle texture{
+            .device = m_DeviceId,
+            .slot = {.index = textureIndex, .generation = textureSlot.generation }
+        };
+
+        uint32_t viewIndex = m_FirstFree;
+
+        if (viewIndex == InvalidIndex) {
+            viewIndex = static_cast<uint32_t>(m_TextureViews.size());
+            m_TextureViews.emplace_back();
+        }
+        else {
+            m_FirstFree = m_TextureViews[viewIndex].nextFree;
+        }
+
+        record.usage = textureSlot.record.desc.usage;
+        record.presentable = true;
+        record.texture = texture;
+        record.borrowed = true;
+
+        auto& viewSlot = m_TextureViews[viewIndex];
+        viewSlot.nextFree = InvalidIndex;
+        viewSlot.references = 0;
+        viewSlot.releaseRequested = false;
+        viewSlot.record = record;
+
+        handle = { .device = m_DeviceId, .slot = {.index = viewIndex, .generation = viewSlot.generation } };
+        return {};
+    }
+
+    void VulkanResourceRegistry::UnregisterBorrowedTextureView(TextureViewHandle view) noexcept
+    {
+        const auto* found = FindTextureView(view);
+        if (!found || !found->record.borrowed) return;
+
+        if (found->references != 0) {
+            CAT_CORE_ASSERT(false, "Cannot unregister a texture view still referenced by commands!");
+            std::abort();
+        }
+
+        // 借用记录只撤销槽位，原生对象继续由 Swapchain 销毁。
+        RecycleTextureView(view.slot.index);
     }
 
     RHIStatus VulkanResourceRegistry::CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc, GraphicsPipelineHandle& pipeline)
@@ -279,7 +505,7 @@ namespace Catalpa {
         if (found->references != 0)
             return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
-        if (found->record.desc.memory != RHIMemoryDomain::Upload || !found->record.mapped)
+        if (found->record.desc.memory != RHIMemoryDomain::Upload)
             return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
         if (!IsValidBufferRange(found->record.desc.size, offset, static_cast<uint64_t>(data.size())))

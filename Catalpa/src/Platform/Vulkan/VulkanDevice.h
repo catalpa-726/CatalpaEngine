@@ -87,6 +87,12 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus GetBufferState(BufferHandle buffer, RHIBufferStateSnapshot& snapshot) const override;
         [[nodiscard]] RHIStatus GetTextureState(TextureViewHandle view, RHITextureStateSnapshot& snapshot) const override;
 
+        // 自有纹理及 View 的创建和逻辑所有权。
+        [[nodiscard]] RHIStatus CreateTexture(const RHITextureDesc& desc, TextureHandle& texture) override;
+        [[nodiscard]] RHIStatus CreateTextureView(TextureHandle texture, const RHITextureViewDesc& desc, TextureViewHandle& view) override;
+        void ReleaseTexture(TextureHandle texture) override;
+        void ReleaseTextureView(TextureViewHandle view) override;
+
     private:
         // 后端环境与设备句柄
         std::unique_ptr<VulkanBackend> m_Backend;

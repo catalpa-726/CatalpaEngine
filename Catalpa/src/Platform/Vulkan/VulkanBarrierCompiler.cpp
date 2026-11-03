@@ -6,31 +6,74 @@
 namespace Catalpa {
 
     // 显式转换已经声明的访问，不推导未声明的依赖。
-    static bool ConvertTextureAccess(const RHITextureAccess& source, VkPipelineStageFlags2& stage, VkAccessFlags2& access, VkImageLayout& layout) noexcept
+    bool ConvertVulkanTextureAccess(
+        const RHITextureAccess& source,
+        RHITextureUsage usage,
+        bool presentable,
+        VkPipelineStageFlags2& stage,
+        VkAccessFlags2& access,
+        VkImageLayout& layout) noexcept
     {
         switch (source.stage) {
-            case RHIPipelineStage::None: stage = VK_PIPELINE_STAGE_2_NONE; break;
-            case RHIPipelineStage::ColorAttachmentOutput: stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT; break;
-            case RHIPipelineStage::AllCommands: stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; break;
-            default: return false;
-        }
-
-        switch (source.access) {
-            case RHIResourceAccess::None: access = VK_ACCESS_2_NONE; break;
-            case RHIResourceAccess::ColorRead: access = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT; break;
-            case RHIResourceAccess::ColorWrite: access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT; break;
-            case RHIResourceAccess::ColorReadWrite: access = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT; break;
-            default: return false;
+        case RHIPipelineStage::None: stage = VK_PIPELINE_STAGE_2_NONE; break;
+        case RHIPipelineStage::ColorAttachmentOutput: stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT; break;
+        case RHIPipelineStage::AllCommands: stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; break;
+        case RHIPipelineStage::Transfer: stage = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT; break;
+        default: return false;
         }
 
         switch (source.layout) {
-            case RHITextureLayout::Undefined: layout = VK_IMAGE_LAYOUT_UNDEFINED; break;
-            case RHITextureLayout::ColorAttachment: layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL; break;
-            case RHITextureLayout::Present: layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR; break;
-            default: return false;
+        case RHITextureLayout::Undefined:
+            layout = VK_IMAGE_LAYOUT_UNDEFINED;
+            break;
+
+        case RHITextureLayout::ColorAttachment:
+            if (!HasTextureUsage(usage, RHITextureUsage::ColorAttachment)) return false;
+            layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            break;
+
+        case RHITextureLayout::Present:
+            if (!presentable) return false;
+            layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            break;
+
+        case RHITextureLayout::TransferDestination:
+            if (!HasTextureUsage(usage, RHITextureUsage::TransferDestination)) return false;
+            layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            break;
+
+        default:
+            return false;
         }
 
-        return source.access == RHIResourceAccess::None || (source.stage != RHIPipelineStage::None && source.layout == RHITextureLayout::ColorAttachment);
+        switch (source.access) {
+        case RHIResourceAccess::None:
+            access = VK_ACCESS_2_NONE;
+            return true;
+
+        case RHIResourceAccess::ColorRead:
+            access = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT;
+            break;
+
+        case RHIResourceAccess::ColorWrite:
+            access = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            break;
+
+        case RHIResourceAccess::ColorReadWrite:
+            access = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+            break;
+
+        case RHIResourceAccess::TransferWrite:
+            access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+            return source.layout == RHITextureLayout::TransferDestination &&
+                (source.stage == RHIPipelineStage::Transfer || source.stage == RHIPipelineStage::AllCommands);
+
+        default:
+            return false;
+        }
+
+        return source.layout == RHITextureLayout::ColorAttachment &&
+            (source.stage == RHIPipelineStage::ColorAttachmentOutput || source.stage == RHIPipelineStage::AllCommands);
     }
 
     RHIStatus CompileVulkanTextureBarrier(const RHITextureBarrier& desc, const VulkanResourceRegistry& registry, VkImageMemoryBarrier2& barrier) noexcept
@@ -60,8 +103,12 @@ namespace Catalpa {
             }
         };
 
-        if (!ConvertTextureAccess(desc.before, native.srcStageMask, native.srcAccessMask, native.oldLayout) ||
-            !ConvertTextureAccess(desc.after, native.dstStageMask, native.dstAccessMask, native.newLayout))
+        if (!ConvertVulkanTextureAccess(
+            desc.before, record->usage, record->presentable,
+            native.srcStageMask, native.srcAccessMask, native.oldLayout) ||
+            !ConvertVulkanTextureAccess(
+                desc.after, record->usage, record->presentable,
+                native.dstStageMask, native.dstAccessMask, native.newLayout))
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
         barrier = native;
