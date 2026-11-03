@@ -15,8 +15,8 @@ namespace Catalpa {
 
     class VulkanFrameContext {
     public:
-        explicit VulkanFrameContext(const VulkanDevice& device);
-        ~VulkanFrameContext() = default;
+        explicit VulkanFrameContext(VulkanDevice& device);
+        ~VulkanFrameContext();
 
         VulkanFrameContext(const VulkanFrameContext&) = delete;
         VulkanFrameContext& operator=(const VulkanFrameContext&) = delete;

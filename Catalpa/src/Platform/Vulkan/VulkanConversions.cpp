@@ -14,4 +14,23 @@ namespace Catalpa {
         }
     }
 
+    VkAttachmentLoadOp ToVulkanLoadOp(RHILoadOp operation) noexcept
+    {
+        switch (operation) {
+        case RHILoadOp::Load: return VK_ATTACHMENT_LOAD_OP_LOAD;
+        case RHILoadOp::Clear: return VK_ATTACHMENT_LOAD_OP_CLEAR;
+        case RHILoadOp::DontCare: return VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        default: return VK_ATTACHMENT_LOAD_OP_MAX_ENUM;
+        }
+    }
+
+    VkAttachmentStoreOp ToVulkanStoreOp(RHIStoreOp operation) noexcept
+    {
+        switch (operation) {
+        case RHIStoreOp::Store: return VK_ATTACHMENT_STORE_OP_STORE;
+        case RHIStoreOp::DontCare: return VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        default: return VK_ATTACHMENT_STORE_OP_MAX_ENUM;
+        }
+    }
+
 }

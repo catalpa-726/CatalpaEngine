@@ -31,6 +31,11 @@ namespace Catalpa {
         virtual void Shutdown() = 0;
 
         virtual DeviceId GetDeviceId() const = 0;
+
+        // 调用前停止录制和提交，并收尾尚未提交的 Acquire。
+        // 等待设备后，丢弃设备管理的帧命令及其资源引用。
+        // DeviceLost 表示进入失败关闭，不能继续使用该设备。
+        [[nodiscard]] virtual RHIStatus WaitIdleAndDiscardFrameCommands() = 0;
     };
 
 }

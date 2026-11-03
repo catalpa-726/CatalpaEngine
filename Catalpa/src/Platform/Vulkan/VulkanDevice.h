@@ -49,6 +49,8 @@ namespace Catalpa {
         const RHICapabilities& GetCapabilities() const override { return m_Capabilities; }
         RHIFormatSupport GetFormatSupport(PixelFormat format) const override;
 
+        [[nodiscard]] RHIStatus WaitIdleAndDiscardFrameCommands() override;
+
     private:
         std::unique_ptr<VulkanBackend> m_Backend;
         VkDevice m_Device = VK_NULL_HANDLE;
@@ -65,6 +67,8 @@ namespace Catalpa {
         std::unique_ptr<VulkanResourceRegistry> m_ResourceRegistry;
 
         RHICapabilities m_Capabilities{};
+
+        RHIStatus m_DeviceFailure{};
     };
 
 }

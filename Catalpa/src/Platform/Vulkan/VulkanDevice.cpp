@@ -156,6 +156,40 @@ namespace Catalpa {
         };
     }
 
+    DeviceId VulkanDevice::GetDeviceId() const
+    {
+        return m_ResourceRegistry ? m_ResourceRegistry->GetDeviceId() : DeviceId{};
+    }
+
+    RHIStatus VulkanDevice::WaitIdleAndDiscardFrameCommands()
+    {
+        if (!m_DeviceFailure.IsSuccess()) return m_DeviceFailure;
+
+        RHIStatus status = WaitIdle();
+
+        if (status.IsSuccess()) {
+            for (auto& frame : m_Frames) {
+                if (!frame) continue;
+
+                bool ready = false;
+                status = frame->PrepareReuse(0, ready);
+                if (!status.IsSuccess()) break;
+
+                if (!ready) {
+                    status = { .code = RHIErrorCode::InvalidState, .operation = "VulkanDevice::WaitIdleAndDiscardFrameCommands" };
+                    break;
+                }
+            }
+        }
+
+        if (status.code == RHIErrorCode::DeviceLost) {
+            m_DeviceFailure = status;
+            for (auto& frame : m_Frames) frame.reset();
+        }
+
+        return status;
+    }
+
     void VulkanDevice::Shutdown()
     {
         for (auto& frame : m_Frames) frame.reset();
@@ -173,11 +207,6 @@ namespace Catalpa {
 
         m_Backend.reset();
         m_Capabilities = {};
+        m_DeviceFailure = {};
     }
-
-    DeviceId VulkanDevice::GetDeviceId() const
-    {
-        return m_ResourceRegistry ? m_ResourceRegistry->GetDeviceId() : DeviceId{};
-    }
-
 }

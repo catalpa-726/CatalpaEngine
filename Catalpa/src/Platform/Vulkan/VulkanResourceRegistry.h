@@ -34,12 +34,19 @@ namespace Catalpa {
         // 撤销句柄，不销毁原生对象。
         void UnregisterBorrowedTextureView(TextureViewHandle handle) noexcept;
 
+        // 保留一次命令使用；句柄必须仍然有效。
+        [[nodiscard]] RHIStatus RetainTextureView(TextureViewHandle handle) noexcept;
+
+        // 释放一次已经取得的引用，不销毁原生对象。
+        void ReleaseTextureView(TextureViewHandle handle) noexcept;
+
     private:
         static constexpr uint32_t InvalidIndex = GenerationalHandle<RHITextureViewTag>::InvalidIndex;
 
         struct ViewSlot {
             uint32_t generation = 1;
             uint32_t nextFree = InvalidIndex;
+            uint32_t references = 0;
             VulkanTextureViewRecord record{};
         };
 

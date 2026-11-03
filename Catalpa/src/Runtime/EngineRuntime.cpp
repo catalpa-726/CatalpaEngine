@@ -53,7 +53,8 @@ namespace Catalpa {
     {
         // 释放 Runtime 持有的资源之前，先结束设备使用。
         if (m_Device) {
-            const RHIStatus status = m_Device->WaitIdle();
+            // 等待 GPU → 重置帧命令并释放引用 → 注销交换链视图 → 销毁原生视图。
+            const RHIStatus status = m_Device->WaitIdleAndDiscardFrameCommands();
 
             if (!status.IsSuccess() && status.code != RHIErrorCode::DeviceLost) {
                 CAT_CORE_ASSERT(false, "Cannot safely release resources after device wait failed!");
@@ -85,7 +86,7 @@ namespace Catalpa {
 
         if (desc == m_LastSwapchainDesc && !restoring && state != RHISwapchainState::OutOfDate) return {};
 
-        if (const RHIStatus status = m_Device->WaitIdle(); !status.IsSuccess()) return status;
+        if (const RHIStatus status = m_Device->WaitIdleAndDiscardFrameCommands(); !status.IsSuccess()) return status;
 
         const RHIStatus status = m_Swapchain->Recreate(desc);
 

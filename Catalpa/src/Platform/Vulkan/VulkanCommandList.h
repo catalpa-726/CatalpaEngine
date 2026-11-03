@@ -8,11 +8,12 @@ namespace Catalpa {
 
     class VulkanCommandPool;
     class VulkanFrameContext;
+    class VulkanDevice;
 
     class VulkanCommandList : public RHICommandList {
     public:
-        VulkanCommandList() = default;
-        ~VulkanCommandList() override = default;
+        explicit VulkanCommandList(VulkanDevice& device) : m_Device(device) {}
+        ~VulkanCommandList() override;
 
         VulkanCommandList(const VulkanCommandList&) = delete;
         VulkanCommandList& operator=(const VulkanCommandList&) = delete;
@@ -31,16 +32,22 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus PipelineBarrier(const VkDependencyInfo& dependencyInfo);
 
         // 当前支持 flags = 0、viewMask = 0 的普通动态渲染。
-        [[nodiscard]] RHIStatus BeginRendering(const VkRenderingInfo& renderingInfo);
-        [[nodiscard]] RHIStatus EndRendering();
+        [[nodiscard]] RHIStatus BeginRendering(const RHIRenderingDesc& desc) override;
+        [[nodiscard]] RHIStatus EndRendering() override;
 
         // 设置第一个视口和裁剪区域，坐标由调用者明确提供。
         [[nodiscard]] RHIStatus SetViewportAndScissor(const RHIViewport& viewport, const Rect2D& scissor) override;
 
     private:
-        // 	在原生命令池重置成功后同步恢复 Initial
-        void OnPoolReset() { m_State = RHICommandListState::Initial; }
+        [[nodiscard]] RHIStatus RetainTextureView(TextureViewHandle handle);
 
+        // 释放 first 之后追加的引用；默认释放全部。
+        void ReleaseTextureViews(size_t first = 0) noexcept;
+
+        // 只在原生命令池重置成功后调用。
+        void OnPoolReset();
+
+        // 失效不等于 GPU 使用已经结束，因此这里不释放引用。
         void Invalidate() { m_State = RHICommandListState::Invalid; }
 
     private:
@@ -49,6 +56,9 @@ namespace Catalpa {
 
         VkCommandBuffer m_CommandBuffer = VK_NULL_HANDLE;
         RHICommandListState m_State = RHICommandListState::Uninitialized;
+
+        VulkanDevice& m_Device;
+        std::vector<TextureViewHandle> m_RetainedViews;
     };
 
 }

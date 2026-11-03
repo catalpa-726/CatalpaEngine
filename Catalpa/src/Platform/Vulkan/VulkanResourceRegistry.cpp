@@ -30,6 +30,7 @@ namespace Catalpa {
         auto& slot = m_TextureViews[index];
         slot.record = record;
         slot.nextFree = InvalidIndex;
+        slot.references = 0;
 
         handle = { .device = m_DeviceId, .slot = {.index = index, .generation = slot.generation } };
         return {};
@@ -50,6 +51,12 @@ namespace Catalpa {
         if (!ResolveTextureView(handle)) return;
 
         auto& slot = m_TextureViews[handle.slot.index];
+
+        if (slot.references != 0) {
+            CAT_CORE_ASSERT(false, "Cannot unregister a texture view still referenced by commands!");
+            std::abort();
+        }
+
         slot.record = {};
 
         if (slot.generation == std::numeric_limits<uint32_t>::max()) return;
@@ -57,6 +64,26 @@ namespace Catalpa {
         ++slot.generation;
         slot.nextFree = m_FirstFree;
         m_FirstFree = handle.slot.index;
+    }
+
+    RHIStatus VulkanResourceRegistry::RetainTextureView(TextureViewHandle handle) noexcept
+    {
+        if (!ResolveTextureView(handle))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanResourceRegistry::RetainTextureView" };
+
+        auto& references = m_TextureViews[handle.slot.index].references;
+
+        if (references == std::numeric_limits<uint32_t>::max())
+            return { .code = RHIErrorCode::OutOfMemory, .operation = "VulkanResourceRegistry::RetainTextureView" };
+
+        ++references;
+        return {};
+    }
+
+    void VulkanResourceRegistry::ReleaseTextureView(TextureViewHandle handle) noexcept
+    {
+        CAT_CORE_ASSERT(ResolveTextureView(handle) && m_TextureViews[handle.slot.index].references != 0, "Texture view has no retained reference!");
+        --m_TextureViews[handle.slot.index].references;
     }
 
 }

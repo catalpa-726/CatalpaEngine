@@ -6,7 +6,9 @@
 
 namespace Catalpa {
 
-    VulkanFrameContext::VulkanFrameContext(const VulkanDevice& device) : m_Fence(device), m_AcquireSemaphore(device), m_CommandPool(device) {}
+    VulkanFrameContext::VulkanFrameContext(VulkanDevice& device) : m_Fence(device), m_AcquireSemaphore(device), m_CommandPool(device), m_CommandList(device) {}
+
+    VulkanFrameContext::~VulkanFrameContext() { m_CommandPool.Shutdown(); }
 
     RHIStatus VulkanFrameContext::Init(uint32_t queueFamily)
     {

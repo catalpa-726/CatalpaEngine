@@ -2,8 +2,13 @@
 #include "VulkanCommandList.h"
 #include "VulkanCommandPool.h"
 #include "VulkanUtils.h"
+#include "VulkanDevice.h"
+#include "VulkanResourceRegistry.h"
+#include "VulkanConversions.h"
 
 namespace Catalpa {
+
+    VulkanCommandList::~VulkanCommandList() { ReleaseTextureViews(); }
 
     RHIStatus VulkanCommandList::Init(VulkanCommandPool& pool)
     {
@@ -63,15 +68,81 @@ namespace Catalpa {
     }
 
     // 开始渲染段，附件、清除值和渲染区域由 renderingInfo 提供
-    RHIStatus VulkanCommandList::BeginRendering(const VkRenderingInfo& renderingInfo)
+    RHIStatus VulkanCommandList::BeginRendering(const RHIRenderingDesc& desc)
     {
+        constexpr const char* operation = "VulkanCommandList::BeginRendering";
+
         if (m_State != RHICommandListState::Recording) {
             CAT_CORE_ASSERT(false, "Command list must be recording outside a rendering scope!");
-            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::BeginRendering" };
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
         }
 
-        if (renderingInfo.flags != 0 || renderingInfo.viewMask != 0)
-            return { .code = RHIErrorCode::Unsupported, .operation = "VulkanCommandList::BeginRendering" };
+        if (desc.sampleCount != 1)
+            return { .code = RHIErrorCode::Unsupported, .operation = operation };
+
+        const auto& capabilities = m_Device.GetCapabilities();
+        const auto& area = desc.renderArea;
+
+        if (desc.colorAttachments.empty() || desc.colorAttachments.size() > capabilities.maxColorAttachments || area.IsEmpty() || area.offset.x < 0 || area.offset.y < 0)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        const uint64_t right = static_cast<uint64_t>(area.offset.x) + area.extent.width;
+        const uint64_t bottom = static_cast<uint64_t>(area.offset.y) + area.extent.height;
+
+        if (right > capabilities.maxRenderTargetExtent.width || bottom > capabilities.maxRenderTargetExtent.height)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        auto& registry = m_Device.GetResourceRegistry();
+        std::vector<VkRenderingAttachmentInfo> attachments;
+        attachments.reserve(desc.colorAttachments.size());
+
+        for (const auto& attachment : desc.colorAttachments) {
+            const auto* record = registry.ResolveTextureView(attachment.view);
+
+            if (!record || right > record->extent.width || bottom > record->extent.height)
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+            if (record->sampleCount != 1 || ToVulkanFormat(record->format) == VK_FORMAT_UNDEFINED)
+                return { .code = RHIErrorCode::Unsupported, .operation = operation };
+
+            const VkAttachmentLoadOp loadOp = ToVulkanLoadOp(attachment.loadOp);
+            const VkAttachmentStoreOp storeOp = ToVulkanStoreOp(attachment.storeOp);
+
+            if (loadOp == VK_ATTACHMENT_LOAD_OP_MAX_ENUM || storeOp == VK_ATTACHMENT_STORE_OP_MAX_ENUM)
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+            const auto& color = attachment.clearColor;
+
+            attachments.push_back({
+                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                .imageView = record->view,
+                .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .loadOp = loadOp,
+                .storeOp = storeOp,
+                .clearValue = {.color = {.float32 = { color[0], color[1], color[2], color[3] } } }
+                });
+        }
+
+        const size_t first = m_RetainedViews.size();
+        m_RetainedViews.reserve(first + desc.colorAttachments.size());
+
+        for (const auto& attachment : desc.colorAttachments) {
+            if (const RHIStatus status = RetainTextureView(attachment.view); !status.IsSuccess()) {
+                ReleaseTextureViews(first);
+                return status;
+            }
+        }
+
+        const VkRenderingInfo renderingInfo{
+            .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+            .renderArea = {
+                .offset = { area.offset.x, area.offset.y },
+                .extent = { area.extent.width, area.extent.height }
+            },
+            .layerCount = 1,
+            .colorAttachmentCount = static_cast<uint32_t>(attachments.size()),
+            .pColorAttachments = attachments.data()
+        };
 
         vkCmdBeginRendering(m_CommandBuffer, &renderingInfo);
         m_State = RHICommandListState::Rendering;
@@ -116,6 +187,33 @@ namespace Catalpa {
         vkCmdSetViewport(m_CommandBuffer, 0, 1, &nativeViewport);
         vkCmdSetScissor(m_CommandBuffer, 0, 1, &nativeScissor);
         return {};
+    }
+
+    VulkanCommandList::~VulkanCommandList() { ReleaseTextureViews(); }
+
+    RHIStatus VulkanCommandList::RetainTextureView(TextureViewHandle handle)
+    {
+        if (std::ranges::find(m_RetainedViews, handle) != m_RetainedViews.end()) return {};
+
+        m_RetainedViews.push_back(handle);
+
+        const RHIStatus status = m_Device.GetResourceRegistry().RetainTextureView(handle);
+        if (!status.IsSuccess()) m_RetainedViews.pop_back();
+        return status;
+    }
+
+    void VulkanCommandList::ReleaseTextureViews(size_t first) noexcept
+    {
+        while (m_RetainedViews.size() > first) {
+            m_Device.GetResourceRegistry().ReleaseTextureView(m_RetainedViews.back());
+            m_RetainedViews.pop_back();
+        }
+    }
+
+    void VulkanCommandList::OnPoolReset()
+    {
+        ReleaseTextureViews();
+        m_State = RHICommandListState::Initial;
     }
 
 }
