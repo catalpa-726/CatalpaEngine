@@ -2,17 +2,6 @@
 
 CatalpaEngine 是一个使用 **C++20** 开发的引擎项目，当前主要面向 **Windows / Visual Studio 2022**，采用 **Premake** 管理工程生成。
 
-## 当前进度
-
-当前处于 **窗口与 Vulkan 设备初始化** 阶段，已接通以下流程：
-
-- GLFW 窗口创建、事件处理、framebuffer 像素尺寸查询与窗口关闭。
-- GLAD 分阶段加载 Vulkan 函数，创建 instance 与 window surface，选择物理设备并创建逻辑设备及队列。
-- 最小 RHI 设备接口、后端标识、错误状态和显式注册的后端工厂。
-- `Application → EngineRuntime → RHIBackendFactory → Vulkan` 的初始化调用与所有权清理；设备及 surface 先于窗口释放。
-
-目前已能运行到 Vulkan 设备创建成功。
-
 ## 构建与运行
 
 以下命令在**项目根目录**执行。
@@ -22,44 +11,35 @@ CatalpaEngine 是一个使用 **C++20** 开发的引擎项目，当前主要面�
 需要以下环境：
 
 - Git。
-- Visual Studio 2022 的 C++ 桌面开发工具（MSVC v143、Windows SDK）。
-- Vulkan SDK，以及指向 SDK 安装目录的 `VULKAN_SDK` 环境变量。当前 Premake 脚本使用其中的 `Include` 目录；安装或修改环境变量后，重新打开终端和 Visual Studio。
-- 支持 Vulkan 1.3、`dynamicRendering`、`synchronization2` 和 `VK_KHR_swapchain` 的设备与驱动，并具备当前窗口 surface 的呈现支持。
-
-GLAD 按 Vulkan 1.4 生成加载代码，**不表示当前引擎要求 Vulkan 1.4 设备**；后端目前按 Vulkan 1.3 选择并创建设备。
+- Visual Studio 2022 （如果不是需手动配置premake5.lua）
+- Vulkan SDK， 需支持 Vulkan 1.3 及以上
 
 首次获取仓库时使用：
 
-```powershell
+```cmd
 git clone --recurse-submodules https://github.com/catalpa-726/CatalpaEngine.git
 cd CatalpaEngine
 ```
 
 如果已克隆主仓库，或者拉取了更新依赖的提交，在项目根目录执行：
 
-```powershell
+```cmd
 git submodule update --init --recursive
 ```
 
-该命令恢复主仓库记录的提交，不自动追踪上游最新版本。访问受限的仓库需要相应的克隆权限。
-
-GLAD 需要按下文选项单独生成。对于迁移前已经包含第三方源码的旧工作目录，先按 [一次性迁移说明](Script/Build/README.md) 处理。
+GLAD （待更新。。。）
 
 ### 生成 Visual Studio 工程
 
-PowerShell：
-
-```powershell
+```cmd
 .\Script\premake\premake5.exe vs2022
 ```
 
 也可以运行现有批处理：
 
-```powershell
+```cmd
 .\build_project.bat
 ```
-
-批处理只负责调用 Premake 并暂停，不等于已经完成 C++ 编译。缺少依赖或 GLAD 生成文件时，Premake 会报告对应路径。
 
 ### 在 Visual Studio 中构建
 
@@ -68,32 +48,9 @@ PowerShell：
 3. 将 `CatalpaBox` 设为启动项目。
 4. 生成解决方案，再启动 `CatalpaBox`。
 
-根据当前 Premake 配置，调试程序输出路径为：
-
-```text
-bin/windows-x86_64/Debug/CatalpaBox/CatalpaBox.exe
-```
-
-构建成功后，可以在 PowerShell 中运行：
-
-```powershell
-.\bin\windows-x86_64\Debug\CatalpaBox\CatalpaBox.exe
-```
-
-正常启动时，核心日志依次包含：
-
-```text
-Vulkan instance created.
-Selected Vulkan device: <device name>
-Vulkan backend initialized.
-Vulkan device created.
-```
-
-这些日志表示初始化流程已到达逻辑设备创建阶段，不代表已经提交或呈现图像。窗口关闭后，由 `Application` 先释放 Runtime 及其设备，再销毁窗口。
-
 ## 第三方依赖
 
-GLFW、Dear ImGui、spdlog 使用正式 **Git submodule**：主仓库的 gitlink 固定提交，`.gitmodules` 记录获取地址。README 中的链接供查阅，不能替代这两部分配置。参见 [Git 官方说明](https://git-scm.com/docs/git-submodule)。
+待更新。。。
 
 | 依赖 | 当前用途 | 上游与迁移基线 |
 |---|---|---|
@@ -101,29 +58,3 @@ GLFW、Dear ImGui、spdlog 使用正式 **Git submodule**：主仓库的 gitlink
 | Dear ImGui | 编辑与调试 UI，目前集成未完成 | [ocornut/imgui](https://github.com/ocornut/imgui)，docking [d88f238d](https://github.com/ocornut/imgui/commit/d88f238d1d363ef387382b2e29ad12cf96f826ac) |
 | spdlog | 日志，当前使用头文件 | [gabime/spdlog](https://github.com/gabime/spdlog)，[6d9805df](https://github.com/gabime/spdlog/commit/6d9805df3f588402b17073dcd13eb569ceda864d) |
 | GLAD | Vulkan 1.4 函数加载代码 | [Dav1dde/glad](https://github.com/Dav1dde/glad)，按下列选项本地生成 |
-
-自定义 Premake 脚本由主仓库的 `Script/Build` 管理，不依赖上游仓库提供同名脚本。第三方生成工程放在 `out/projects`，编译结果统一输出到根目录的 `bin`、`bin-int`。许可证随各上游源码保留。
-
-后续引入 ECS、音频、物理等源码依赖时可沿用此方式：锁定提交，构建适配放在主仓库，验证后再更新 gitlink。修改第三方源码时，应提交到可访问的 fork 并调整 `.gitmodules`，不能只保留未提交的本地改动。
-
-### GLAD 生成选项
-
-当前文件头记录的生成器版本为 **glad 2.0.8**。在 [GLAD 生成页面](https://glad.sh/#api=vulkan%3D1.4&extensions=VK_EXT_debug_utils%2CVK_KHR_surface%2CVK_KHR_swapchain&generator=c&options=LOADER) 核对以下设置，再生成并下载：
-
-| 设置 | 值 |
-|---|---|
-| Generator | C/C++ |
-| API | Vulkan 1.4 |
-| Extensions | `VK_EXT_debug_utils`、`VK_KHR_surface`、`VK_KHR_swapchain`，共 3 项 |
-| Loader | 开启 |
-| Alias / Debug / Header Only / MX / On Demand | 全部关闭 |
-
-将压缩包内的 `include`、`src` 放到 `Catalpa/third_party/glad`，保留包内目录结构。当前构建所需文件为：
-
-```text
-Catalpa/third_party/glad/
-├── include/
-│   ├── glad/vulkan.h
-│   └── vk_platform.h
-└── src/vulkan.c
-```
