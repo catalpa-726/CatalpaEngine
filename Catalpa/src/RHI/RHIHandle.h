@@ -21,4 +21,7 @@ namespace Catalpa {
     using TextureHandle = RHIHandle<RHITextureTag>;
     using TextureViewHandle = RHIHandle<RHITextureViewTag>;
 
+    struct RHIGraphicsPipelineTag;
+    using GraphicsPipelineHandle = RHIHandle<RHIGraphicsPipelineTag>;
+
 }

@@ -9,7 +9,7 @@
 
 namespace Catalpa {
 
-    VulkanCommandList::~VulkanCommandList() { ReleaseTextureViews(); }
+    VulkanCommandList::~VulkanCommandList() { ReleaseTextureViews(); ReleasePipelines(); }
 
     RHIStatus VulkanCommandList::Init(VulkanCommandPool& pool)
     {
@@ -134,6 +134,8 @@ namespace Catalpa {
         std::vector<VkRenderingAttachmentInfo> attachments;
         attachments.reserve(desc.colorAttachments.size());
 
+        PixelFormat colorFormat = PixelFormat::Unknown;
+
         for (const auto& attachment : desc.colorAttachments) {
             const auto* record = registry.ResolveTextureView(attachment.view);
 
@@ -142,6 +144,8 @@ namespace Catalpa {
 
             if (record->sampleCount != 1 || ToVulkanFormat(record->format) == VK_FORMAT_UNDEFINED)
                 return { .code = RHIErrorCode::Unsupported, .operation = operation };
+
+            colorFormat = record->format;
 
             const VkAttachmentLoadOp loadOp = ToVulkanLoadOp(attachment.loadOp);
             const VkAttachmentStoreOp storeOp = ToVulkanStoreOp(attachment.storeOp);
@@ -183,6 +187,7 @@ namespace Catalpa {
         };
 
         vkCmdBeginRendering(m_CommandBuffer, &renderingInfo);
+        m_RenderingColorFormat = desc.colorAttachments.size() == 1 ? colorFormat : PixelFormat::Unknown;
         m_State = RHICommandListState::Rendering;
         return {};
     }
@@ -224,6 +229,7 @@ namespace Catalpa {
 
         vkCmdSetViewport(m_CommandBuffer, 0, 1, &nativeViewport);
         vkCmdSetScissor(m_CommandBuffer, 0, 1, &nativeScissor);
+        m_ViewportAndScissorSet = true;
         return {};
     }
 
@@ -249,7 +255,54 @@ namespace Catalpa {
     void VulkanCommandList::OnPoolReset()
     {
         ReleaseTextureViews();
+        ReleasePipelines();
+
+        m_BoundColorFormat = PixelFormat::Unknown;
+        m_RenderingColorFormat = PixelFormat::Unknown;
+        m_ViewportAndScissorSet = false;
         m_State = RHICommandListState::Initial;
+    }
+
+    RHIStatus VulkanCommandList::BindGraphicsPipeline(GraphicsPipelineHandle pipeline)
+    {
+        if (m_State != RHICommandListState::Recording && m_State != RHICommandListState::Rendering)
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::BindGraphicsPipeline" };
+
+        auto& registry = m_Device.GetResourceRegistry();
+        const auto* record = registry.ResolveGraphicsPipeline(pipeline);
+
+        if (!record)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanCommandList::BindGraphicsPipeline" };
+
+        if (std::ranges::find(m_RetainedPipelines, pipeline) == m_RetainedPipelines.end()) {
+            m_RetainedPipelines.push_back(pipeline);
+
+            if (const RHIStatus status = registry.RetainPipeline(pipeline); !status.IsSuccess()) {
+                m_RetainedPipelines.pop_back();
+                return status;
+            }
+        }
+
+        vkCmdBindPipeline(m_CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, record->pipeline);
+        m_BoundColorFormat = record->colorFormat;
+        return {};
+    }
+
+    RHIStatus VulkanCommandList::Draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
+    {
+        if (m_State != RHICommandListState::Rendering || m_BoundColorFormat == PixelFormat::Unknown || m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet)
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::Draw" };
+
+        vkCmdDraw(m_CommandBuffer, vertexCount, instanceCount, firstVertex, firstInstance);
+        return {};
+    }
+
+    void VulkanCommandList::ReleasePipelines() noexcept
+    {
+        while (!m_RetainedPipelines.empty()) {
+            m_Device.GetResourceRegistry().ReleasePipeline(m_RetainedPipelines.back());
+            m_RetainedPipelines.pop_back();
+        }
     }
 
 }

@@ -3,10 +3,17 @@
 #include "Log/Log.h"
 #include "RHI/RHIDevice.h"
 #include "RHI/RHICommandList.h"
+#include "TriangleVertexSpirv.h"
+#include "TriangleFragmentSpirv.h"
 
 namespace Catalpa {
 
-    RHIStatus Renderer::RecordClear(RHICommandList& commands, const RHIAcquireResult& acquired)
+    Renderer::~Renderer()
+    {
+        m_Device.ReleaseGraphicsPipeline(m_TrianglePipeline);
+    }
+
+    RHIStatus Renderer::RecordFrame(RHICommandList& commands, const RHIAcquireResult& acquired)
     {
         if (const RHIStatus status = commands.Begin(); !status.IsSuccess()) return status;
 
@@ -16,7 +23,6 @@ namespace Catalpa {
             .layout = RHITextureLayout::ColorAttachment
         };
 
-        // 整张图像会被清除，因此丢弃上次内容；等待 Acquire 后才能转换布局。
         const RHITextureBarrier toColor{
             .view = acquired.view,
             .before = {.stage = RHIPipelineStage::AllCommands, .layout = RHITextureLayout::Undefined },
@@ -24,6 +30,8 @@ namespace Catalpa {
         };
 
         if (const RHIStatus status = commands.PipelineBarrier({ &toColor, 1 }); !status.IsSuccess()) return status;
+
+        const Extent2D extent = m_Swapchain.GetInfo().extent;
 
         const RHIColorAttachment color{
             .view = acquired.view,
@@ -34,10 +42,16 @@ namespace Catalpa {
 
         const RHIRenderingDesc rendering{
             .colorAttachments = { &color, 1 },
-            .renderArea = {.extent = m_Swapchain.GetInfo().extent }
+            .renderArea = {.extent = extent }
         };
 
+        const RHIViewport viewport{ .width = static_cast<float>(extent.width), .height = static_cast<float>(extent.height) };
+        const Rect2D scissor{ .extent = extent };
+
         if (const RHIStatus status = commands.BeginRendering(rendering); !status.IsSuccess()) return status;
+        if (const RHIStatus status = commands.BindGraphicsPipeline(m_TrianglePipeline); !status.IsSuccess()) return status;
+        if (const RHIStatus status = commands.SetViewportAndScissor(viewport, scissor); !status.IsSuccess()) return status;
+        if (const RHIStatus status = commands.Draw(3); !status.IsSuccess()) return status;
         if (const RHIStatus status = commands.EndRendering(); !status.IsSuccess()) return status;
 
         const RHITextureBarrier toPresent{
@@ -71,6 +85,7 @@ namespace Catalpa {
     RHIStatus Renderer::Render()
     {
         if (m_Swapchain.GetInfo().state != RHISwapchainState::Ready) return {};
+        if (const RHIStatus status = EnsureTrianglePipeline(); !status.IsSuccess()) return status;
 
         constexpr uint64_t timeoutNanoseconds = 16'000'000;
         RHIFrameResources frame{};
@@ -83,7 +98,7 @@ namespace Catalpa {
         status = m_Swapchain.Acquire(frame.token, timeoutNanoseconds, acquired);
         if (!status.IsSuccess() || !acquired.HasImage()) return status;
 
-        status = RecordClear(*frame.commands, acquired);
+        status = RecordFrame(*frame.commands, acquired);
         if (!status.IsSuccess()) return CancelFrame(acquired, status);
 
         const RHISubmission submission{
@@ -101,6 +116,26 @@ namespace Catalpa {
 
         RHIPresentOutcome outcome{};
         return m_Swapchain.Present(acquired, outcome);
+    }
+
+    RHIStatus Renderer::EnsureTrianglePipeline()
+    {
+        const PixelFormat format = m_Swapchain.GetInfo().format;
+        if (m_TrianglePipeline.HasValue() && m_TriangleFormat == format) return {};
+
+        const RHIGraphicsPipelineDesc desc{
+            .vertex = {.bytecode = TriangleVertexSpirv, .stage = RHIShaderStage::Vertex, .entryPoint = "vertexMain" },
+            .fragment = {.bytecode = TriangleFragmentSpirv, .stage = RHIShaderStage::Fragment, .entryPoint = "fragmentMain" },
+            .colorFormat = format
+        };
+
+        GraphicsPipelineHandle pipeline{};
+        if (const RHIStatus status = m_Device.CreateGraphicsPipeline(desc, pipeline); !status.IsSuccess()) return status;
+
+        const GraphicsPipelineHandle previous = std::exchange(m_TrianglePipeline, pipeline);
+        m_TriangleFormat = format;
+        m_Device.ReleaseGraphicsPipeline(previous);
+        return {};
     }
 
 }

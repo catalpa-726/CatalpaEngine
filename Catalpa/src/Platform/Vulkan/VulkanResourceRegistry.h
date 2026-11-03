@@ -4,9 +4,13 @@
 #include "RHI/RHIHandle.h"
 #include "RHI/RHIError.h"
 #include "Images/PixelFormat.h"
+#include "VulkanPipeline.h"
+#include "VulkanResourceRetirement.h"
 
 // 登记表保存视图信息，并校验设备身份、槽位和代次。
 namespace Catalpa {
+
+    class VulkanDevice;
 
     struct VulkanTextureViewRecord {
         VkImage image = VK_NULL_HANDLE;
@@ -18,7 +22,8 @@ namespace Catalpa {
 
     class VulkanResourceRegistry {
     public:
-        explicit VulkanResourceRegistry(DeviceId device) : m_DeviceId(device) {}
+        VulkanResourceRegistry(VulkanDevice& device, DeviceId id) : m_Device(device), m_DeviceId(id), m_Retirement(device) {}
+        ~VulkanResourceRegistry();
 
         VulkanResourceRegistry(const VulkanResourceRegistry&) = delete;
         VulkanResourceRegistry& operator=(const VulkanResourceRegistry&) = delete;
@@ -40,6 +45,34 @@ namespace Catalpa {
         // 释放一次已经取得的引用，不销毁原生对象。
         void ReleaseTextureView(TextureViewHandle handle) noexcept;
 
+        [[nodiscard]] RHIStatus CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc, GraphicsPipelineHandle& pipeline);
+
+        // 只解析仍允许新使用的管线。
+        const VulkanPipelineRecord* ResolveGraphicsPipeline(GraphicsPipelineHandle pipeline) const noexcept;
+
+        // 提出所有者释放请求；有命令引用时延迟退休。
+        void ReleaseGraphicsPipeline(GraphicsPipelineHandle pipeline) noexcept;
+
+        // 命令录制取得和归还引用。
+        [[nodiscard]] RHIStatus RetainPipeline(GraphicsPipelineHandle pipeline) noexcept;
+        void ReleasePipeline(GraphicsPipelineHandle pipeline) noexcept;
+
+    private:
+        struct PipelineSlot {
+            uint32_t generation = 1;
+            uint32_t nextFree = InvalidIndex;
+            uint32_t references = 0;
+            bool releaseRequested = false;
+            VulkanPipelineRecord record{};
+        };
+
+        // 内部查询允许找到已请求释放、但仍被命令保留的记录。
+        const PipelineSlot* FindPipeline(GraphicsPipelineHandle pipeline) const noexcept;
+
+        // 移交原生载荷给退休入口，再回收槽位。
+        void RecyclePipeline(uint32_t index) noexcept;
+
+
     private:
         static constexpr uint32_t InvalidIndex = GenerationalHandle<RHITextureViewTag>::InvalidIndex;
 
@@ -50,9 +83,14 @@ namespace Catalpa {
             VulkanTextureViewRecord record{};
         };
 
+        VulkanDevice& m_Device;
         const DeviceId m_DeviceId;
         std::vector<ViewSlot> m_TextureViews;
         uint32_t m_FirstFree = InvalidIndex;
-    };
 
+        VulkanResourceRetirement m_Retirement;
+        std::vector<PipelineSlot> m_Pipelines;
+        uint32_t m_FirstFreePipeline = InvalidIndex;
+
+    };
 }

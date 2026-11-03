@@ -1,5 +1,12 @@
 outputdir = "%{cfg.system}-%{cfg.architecture}/%{cfg.buildcfg}"
 local vulkanSDK = os.getenv("VULKAN_SDK")
+local shaderCompiler = path.join(vulkanSDK, "Bin/slangc.exe")
+-- 临时
+local triangleShader = path.join(_MAIN_SCRIPT_DIR, "Catalpa/Resources/Shaders/Triangle.slang")
+local generatedShaders = path.join(_MAIN_SCRIPT_DIR, "bin-int", outputdir, "Shaders")
+local shaderCommand = '"' .. shaderCompiler .. '" "' .. triangleShader ..
+    '" -target spirv -profile spirv_1_5 -fvk-use-entrypoint-name -source-embed-style u32'
+
 IncludeDir = {}
 IncludeDir["GLFW"] = "Catalpa/third_party/glfw/include"
 IncludeDir["GLAD"] = "Catalpa/third_party/glad/include"
@@ -78,7 +85,8 @@ project "Catalpa"
     files {
         "Catalpa/src/**.h",
         "Catalpa/src/**.hpp",
-        "Catalpa/src/**.cpp"
+        "Catalpa/src/**.cpp",
+        "Catalpa/Resources/Shaders/**.slang"
     }
 
     includedirs { 
@@ -87,7 +95,8 @@ project "Catalpa"
         "%{IncludeDir.GLFW}",
         "%{IncludeDir.GLAD}",
         "%{IncludeDir.imgui}",
-        "%{IncludeDir.VulkanSDK}"
+        "%{IncludeDir.VulkanSDK}",
+        generatedShaders
     }
 
     links { 
@@ -106,9 +115,16 @@ project "Catalpa"
             "IMGUI_IMPL_VULKAN_NO_PROTOTYPES"
 		}
 
+        -- 编译 C++ 前，先生成 shader 头文件。
+        prebuildcommands {
+            '{MKDIR} "' .. generatedShaders .. '"',
+            shaderCommand .. ' -entry vertexMain -stage vertex -source-embed-name TriangleVertexSpirv -o "' .. path.join(generatedShaders, "TriangleVertexSpirv.h") .. '" || exit /b 1',
+            shaderCommand .. ' -entry fragmentMain -stage fragment -source-embed-name TriangleFragmentSpirv -o "' .. path.join(generatedShaders, "TriangleFragmentSpirv.h") .. '" || exit /b 1'
+        }
+
 		postbuildcommands {
             ("{MKDIR} ../bin/" .. outputdir .. "/CatalpaBox"),
-            ("{COPYFILE} %{cfg.buildtarget.relpath} ../bin/" ..outputdir .. "/CatalpaBox/Catalpa.dll")
+            ("{COPYFILE} %{cfg.buildtarget.relpath} ../bin/" ..outputdir .. "/CatalpaBox/Catalpa.dll"),
         }
 
 

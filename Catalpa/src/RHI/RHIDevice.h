@@ -7,6 +7,7 @@
 #include "RHITypes.h"
 #include "RHICapabilities.h"
 #include "RHIQueue.h"
+#include "RHIPipelineDesc.h"
 
 namespace Catalpa {
 
@@ -43,6 +44,12 @@ namespace Catalpa {
 
         // 等待指定帧槽，再重置它的命令资源；超时通过 ready == false 表示。
         [[nodiscard]] virtual RHIStatus PrepareFrame(uint32_t slot, uint64_t timeoutNanoseconds, RHIFrameResources& frame, bool& ready) = 0;
+
+        // 同步创建管线；成功后由设备管理原生资源。
+        [[nodiscard]] virtual RHIStatus CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc, GraphicsPipelineHandle& pipeline) = 0;
+
+        // 释放逻辑所有权；已有命令引用会继续保留原生管线。
+        virtual void ReleaseGraphicsPipeline(GraphicsPipelineHandle pipeline) = 0;
     };
 
 }

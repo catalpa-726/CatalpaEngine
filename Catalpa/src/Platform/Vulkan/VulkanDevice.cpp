@@ -107,7 +107,7 @@ namespace Catalpa {
         };
 
         m_Backend = std::move(backend);
-        m_ResourceRegistry = std::make_unique<VulkanResourceRegistry>(AllocateDeviceId());
+        m_ResourceRegistry = std::make_unique<VulkanResourceRegistry>(*this, AllocateDeviceId());
         m_GraphicsQueue = std::make_unique<VulkanQueue>(*this, graphicsQueue, m_GraphicsQueueFamily, QueueId{ 1 });
 
         for (uint32_t slot = 0; slot < FramesInFlight; ++slot) {
@@ -249,4 +249,17 @@ namespace Catalpa {
         if (status.IsSuccess() && ready) resources = { .token = frame.GetToken(), .commands = &frame.GetCommandList() };
         return status;
     }
+
+    RHIStatus VulkanDevice::CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc, GraphicsPipelineHandle& pipeline)
+    {
+        pipeline = {};
+        if (!m_DeviceFailure.IsSuccess()) return m_DeviceFailure;
+        return ObserveStatus(m_ResourceRegistry->CreateGraphicsPipeline(desc, pipeline));
+    }
+
+    void VulkanDevice::ReleaseGraphicsPipeline(GraphicsPipelineHandle pipeline)
+    {
+        m_ResourceRegistry->ReleaseGraphicsPipeline(pipeline);
+    }
+
 }

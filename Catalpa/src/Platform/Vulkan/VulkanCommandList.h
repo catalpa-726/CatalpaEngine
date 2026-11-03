@@ -2,6 +2,7 @@
 
 #include "VulkanHeaders.h"
 #include "RHI/RHICommandList.h"
+#include "Images/PixelFormat.h"
 
 // 实现 Vulkan 命令录制，借用命令池分配的缓冲
 namespace Catalpa {
@@ -38,6 +39,9 @@ namespace Catalpa {
         // 设置第一个视口和裁剪区域，坐标由调用者明确提供。
         [[nodiscard]] RHIStatus SetViewportAndScissor(const RHIViewport& viewport, const Rect2D& scissor) override;
 
+        [[nodiscard]] RHIStatus BindGraphicsPipeline(GraphicsPipelineHandle pipeline) override;
+        [[nodiscard]] RHIStatus Draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0) override;
+
     private:
         [[nodiscard]] RHIStatus RetainTextureView(TextureViewHandle handle);
 
@@ -50,6 +54,9 @@ namespace Catalpa {
         // 失效不等于 GPU 使用已经结束，因此这里不释放引用。
         void Invalidate() { m_State = RHICommandListState::Invalid; }
 
+        // 在命令池安全重置或销毁后，归还全部管线引用。
+        void ReleasePipelines() noexcept;
+
     private:
         friend class VulkanFrameContext;
         friend class VulkanQueue;
@@ -59,6 +66,11 @@ namespace Catalpa {
 
         VulkanDevice& m_Device;
         std::vector<TextureViewHandle> m_RetainedViews;
+
+        std::vector<GraphicsPipelineHandle> m_RetainedPipelines;
+        PixelFormat m_BoundColorFormat = PixelFormat::Unknown;
+        PixelFormat m_RenderingColorFormat = PixelFormat::Unknown;
+        bool m_ViewportAndScissorSet = false;
     };
 
 }

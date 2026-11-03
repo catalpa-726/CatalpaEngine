@@ -31,6 +31,12 @@ namespace Catalpa {
         // 仅在渲染段之外调用；当前一批中每张图像最多出现一次。
         // 录制不代表转换已经执行，调用者负责正确的状态基线与提交顺序。
         [[nodiscard]] virtual RHIStatus PipelineBarrier(std::span<const RHITextureBarrier> barriers) = 0;
+
+        // 录制管线绑定，并保留其命令引用。
+        [[nodiscard]] virtual RHIStatus BindGraphicsPipeline(GraphicsPipelineHandle pipeline) = 0;
+
+        // 当前支持无顶点缓冲的非索引绘制。
+        [[nodiscard]] virtual RHIStatus Draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0) = 0;
     };
 
 }

@@ -62,6 +62,9 @@ namespace Catalpa {
 
         [[nodiscard]] RHIStatus WaitIdleAndDiscardFrameCommands() override;
 
+        [[nodiscard]] RHIStatus CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc, GraphicsPipelineHandle& pipeline) override;
+        void ReleaseGraphicsPipeline(GraphicsPipelineHandle pipeline) override;
+
     private:
         std::unique_ptr<VulkanBackend> m_Backend;
         VkDevice m_Device = VK_NULL_HANDLE;
