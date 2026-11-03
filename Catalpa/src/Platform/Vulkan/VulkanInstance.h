@@ -18,8 +18,12 @@ namespace Catalpa {
 
         VkInstance GetHandle() const { return m_Instance; }
 
+        bool IsSurfaceMaintenanceEnabled() const { return m_SurfaceMaintenanceEnabled; }
+
     private:
         VkInstance m_Instance = VK_NULL_HANDLE;
+
+        bool m_SurfaceMaintenanceEnabled = false;
     };
 
 }

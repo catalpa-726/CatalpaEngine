@@ -10,6 +10,7 @@ namespace Catalpa {
     class VulkanDevice;
     class VulkanBinarySemaphore;
     class VulkanFrameContext;
+    class VulkanFence;
 
     class VulkanSwapchain : public RHISwapchain {
     public:
@@ -43,6 +44,8 @@ namespace Catalpa {
         // 图像已转换到呈现布局，对应呈现信号量的 signal 提交已经成功。
         [[nodiscard]] RHIStatus Present(const RHIAcquireResult& acquired, RHIPresentOutcome& outcome) override;
 
+        [[nodiscard]] RHIStatus WaitForPresentCompletion() override;
+
         // 请求后续重建，不立即销毁资源，也不覆盖 SurfaceLost 等状态。
         void RequestRecreate() { if (m_Info.state == RHISwapchainState::Ready) m_Info.state = RHISwapchainState::OutOfDate; }
 
@@ -65,6 +68,7 @@ namespace Catalpa {
         RHISwapchainInfo m_Info{};
 
         std::vector<std::unique_ptr<VulkanBinarySemaphore>> m_PresentSemaphores;
+        std::vector<std::unique_ptr<VulkanFence>> m_PresentFences;
     };
 
 }

@@ -36,7 +36,7 @@ namespace Catalpa {
         return VK_SUCCESS;
     }
 
-    bool VulkanPhysicalDevice::Init(VkInstance instance, VkSurfaceKHR surface)
+    bool VulkanPhysicalDevice::Init(VkInstance instance, VkSurfaceKHR surface, bool surfaceMaintenanceEnabled)
     {
         CAT_CORE_ASSERT(m_PhysicalDevice == VK_NULL_HANDLE, "Physical device already selected!");
 
@@ -55,18 +55,6 @@ namespace Catalpa {
             vkGetPhysicalDeviceProperties(device, &properties);
             if (properties.apiVersion < VK_API_VERSION_1_3) continue;
 
-            VkPhysicalDeviceVulkan13Features features13{
-                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES
-            };
-
-            VkPhysicalDeviceFeatures2 features{
-                .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-                .pNext = &features13
-            };
-
-            vkGetPhysicalDeviceFeatures2(device, &features);
-            if (!features13.dynamicRendering || !features13.synchronization2) continue;
-
             std::vector<VkExtensionProperties> extensions;
             const VkResult extensionResult = EnumerateVulkan(extensions, [device](uint32_t* count, VkExtensionProperties* data) {
                 return vkEnumerateDeviceExtensionProperties(device, nullptr, count, data);
@@ -77,11 +65,22 @@ namespace Catalpa {
                 return false;
             }
 
-            const bool supportsSwapchain = std::ranges::any_of(extensions, [](const VkExtensionProperties& extension) {
-                return std::string_view(extension.extensionName) == VK_KHR_SWAPCHAIN_EXTENSION_NAME;
-                });
+            const auto supportsExtension = [&](const char* name) {
+                return std::ranges::any_of(extensions, [name](const VkExtensionProperties& extension) {
+                    return std::string_view(extension.extensionName) == name;
+                    });
+                };
 
-            if (!supportsSwapchain) continue;
+            if (!supportsExtension(VK_KHR_SWAPCHAIN_EXTENSION_NAME)) continue;
+
+            const bool supportsMaintenance = surfaceMaintenanceEnabled && supportsExtension(VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
+
+            VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT };
+            VkPhysicalDeviceVulkan13Features features13{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, .pNext = supportsMaintenance ? &maintenance : nullptr };
+            VkPhysicalDeviceFeatures2 features{ .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &features13 };
+
+            vkGetPhysicalDeviceFeatures2(device, &features);
+            if (!features13.dynamicRendering || !features13.synchronization2) continue;
 
             uint32_t formatCount = 0;
             if (const VkResult result = vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, nullptr); result != VK_SUCCESS) {
@@ -109,12 +108,13 @@ namespace Catalpa {
             m_Properties = properties;
             m_GraphicsQueueFamily = graphicsFamily;
             m_PresentQueueFamily = presentFamily;
+            m_SwapchainMaintenanceSupported = supportsMaintenance && maintenance.swapchainMaintenance1;
 
             CAT_CORE_INFO("Selected Vulkan device: {0}", properties.deviceName);
             return true;
         }
 
-        CAT_CORE_ERROR("No suitable Vulkan physical device found.");
+        CAT_CORE_ERROR("No suitable Vulkan device found: Vulkan 1.3, dynamic rendering, synchronization2 and swapchain support are required.");
         return false;
     }
 

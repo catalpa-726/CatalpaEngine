@@ -54,13 +54,13 @@ namespace Catalpa {
 
     void EngineRuntime::Shutdown()
     {
-        // 释放 Runtime 持有的资源之前，先结束设备使用。
         if (m_Device) {
-            // 等待 GPU → 重置帧命令并释放引用 → 注销交换链视图 → 销毁原生视图。
-            const RHIStatus status = m_Device->WaitIdleAndDiscardFrameCommands();
+            // 兼容路径采用设备空闲收尾；支持呈现 Fence 时追加独立的呈现等待。
+            RHIStatus status = m_Device->WaitIdleAndDiscardFrameCommands();
+            if (status.IsSuccess() && m_Swapchain && m_Device->GetCapabilities().presentFence) status = m_Swapchain->WaitForPresentCompletion();
 
             if (!status.IsSuccess() && status.code != RHIErrorCode::DeviceLost) {
-                CAT_CORE_ASSERT(false, "Cannot safely release resources after device wait failed!");
+                CAT_CORE_ASSERT(false, "Cannot safely release resources after GPU or presentation wait failed!");
                 std::abort();
             }
         }
@@ -97,6 +97,10 @@ namespace Catalpa {
         if (desc == m_LastSwapchainDesc && !restoring && state != RHISwapchainState::OutOfDate) return {};
 
         if (const RHIStatus status = m_Device->WaitIdleAndDiscardFrameCommands(); !status.IsSuccess()) return status;
+
+        if (m_Device->GetCapabilities().presentFence) {
+            if (const RHIStatus status = m_Swapchain->WaitForPresentCompletion(); !status.IsSuccess()) return status;
+        }
 
         const RHIStatus status = m_Swapchain->Recreate(desc);
 

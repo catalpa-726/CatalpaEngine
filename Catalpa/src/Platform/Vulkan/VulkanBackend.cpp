@@ -22,7 +22,7 @@ namespace Catalpa {
 
         if (!m_Instance.Init(extensions) ||
             !m_Surface.Init(m_Instance.GetHandle(), window) ||
-            !m_PhysicalDevice.Init(m_Instance.GetHandle(), m_Surface.GetHandle())) {
+            !m_PhysicalDevice.Init(m_Instance.GetHandle(), m_Surface.GetHandle(), m_Instance.IsSurfaceMaintenanceEnabled())) {
             Shutdown();
             return false;
         }

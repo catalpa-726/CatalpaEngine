@@ -18,6 +18,11 @@ namespace Catalpa {
             return false;
         }
 
+        const bool surfaceMaintenanceEnabled = GLAD_VK_KHR_get_surface_capabilities2 && GLAD_VK_EXT_surface_maintenance1;
+
+        auto enabledExtensions = extensions;
+        if (surfaceMaintenanceEnabled) enabledExtensions.insert(enabledExtensions.end(), { VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME, VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME });
+
         VkApplicationInfo appInfo{
                 .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
                 .pApplicationName = "CatalpaEngine",
@@ -29,8 +34,8 @@ namespace Catalpa {
         VkInstanceCreateInfo createInfo{
                 .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
                 .pApplicationInfo = &appInfo,
-                .enabledExtensionCount = static_cast<uint32_t>(extensions.size()),
-                .ppEnabledExtensionNames = extensions.data()
+                .enabledExtensionCount = static_cast<uint32_t>(enabledExtensions.size()),
+                .ppEnabledExtensionNames = enabledExtensions.data()
         };
         
 
@@ -48,6 +53,7 @@ namespace Catalpa {
         }
 
         m_Instance = instance;
+        m_SurfaceMaintenanceEnabled = surfaceMaintenanceEnabled;
         CAT_CORE_INFO("Vulkan instance created.");
         return true;
     }
@@ -58,6 +64,7 @@ namespace Catalpa {
             vkDestroyInstance(m_Instance, nullptr);
             m_Instance = VK_NULL_HANDLE;
         }
+        m_SurfaceMaintenanceEnabled = false;
     }
 
 }

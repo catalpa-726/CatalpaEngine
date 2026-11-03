@@ -6,6 +6,7 @@
 #include "VulkanResourceRegistry.h"
 #include "VulkanConversions.h"
 #include "VulkanFrameContext.h"
+#include "VulkanFence.h"
 
 namespace Catalpa {
 
@@ -162,6 +163,7 @@ namespace Catalpa {
         m_ImageViews.reserve(m_Images.size());
         m_ImageViewHandles.reserve(m_Images.size());
         m_PresentSemaphores.reserve(m_Images.size());
+        if (m_Device.GetCapabilities().presentFence) m_PresentFences.reserve(m_Images.size());
 
         for (const VkImage image : m_Images) {
             VkImageViewCreateInfo viewInfo{
@@ -191,6 +193,12 @@ namespace Catalpa {
             auto semaphore = std::make_unique<VulkanBinarySemaphore>(m_Device);
             if (const RHIStatus status = semaphore->Init(); !status.IsSuccess()) return status;
             m_PresentSemaphores.push_back(std::move(semaphore));
+
+            if (m_Device.GetCapabilities().presentFence) {
+                auto fence = std::make_unique<VulkanFence>(m_Device);
+                if (const RHIStatus status = fence->Init(); !status.IsSuccess()) return status;
+                m_PresentFences.push_back(std::move(fence));
+            }
         }
 
         m_Info = {
@@ -243,6 +251,23 @@ namespace Catalpa {
         return m_Device.ObserveStatus(frame->Present(*this, acquired, outcome));
     }
 
+    RHIStatus VulkanSwapchain::WaitForPresentCompletion()
+    {
+        if (!m_Device.GetFailure().IsSuccess()) return m_Device.GetFailure();
+        if (!m_Device.GetCapabilities().presentFence) return { .code = RHIErrorCode::Unsupported, .operation = "VulkanSwapchain::WaitForPresentCompletion" };
+
+        for (auto& fence : m_PresentFences) {
+            if (fence->GetState() != VulkanFenceState::Pending) continue;
+
+            bool signaled = false;
+            const RHIStatus status = m_Device.ObserveStatus(fence->Wait(std::numeric_limits<uint64_t>::max(), signaled));
+            if (!status.IsSuccess()) return status;
+            if (!signaled) return { .code = RHIErrorCode::InvalidState, .operation = "VulkanSwapchain::WaitForPresentCompletion" };
+        }
+
+        return {};
+    }
+
     RHIStatus VulkanSwapchain::CancelAcquire(RHIAcquireResult& acquired, RHICompletionPoint& completion)
     {
         completion = {};
@@ -265,6 +290,7 @@ namespace Catalpa {
             m_Device.GetResourceRegistry().UnregisterBorrowedTextureView(handle);
         m_ImageViewHandles.clear();
 
+        m_PresentFences.clear();
         m_PresentSemaphores.clear();
 
         for (const VkImageView view : m_ImageViews) vkDestroyImageView(m_Device.GetHandle(), view, nullptr);
@@ -316,7 +342,8 @@ namespace Catalpa {
         return MakeVulkanStatus(result, "vkAcquireNextImageKHR");
     }
 
-    RHIStatus VulkanSwapchain::PresentNative(const RHIAcquireResult& acquired, RHIPresentOutcome& outcome) {
+    RHIStatus VulkanSwapchain::PresentNative(const RHIAcquireResult& acquired, RHIPresentOutcome& outcome)
+    {
         outcome = RHIPresentOutcome::NotQueued;
 
         if (!acquired.HasImage() || acquired.imageIndex >= m_PresentSemaphores.size()) {
@@ -324,9 +351,29 @@ namespace Catalpa {
             return { .code = RHIErrorCode::InvalidState, .operation = "VulkanSwapchain::Present" };
         }
 
+        auto* fence = m_Device.GetCapabilities().presentFence ? m_PresentFences[acquired.imageIndex].get() : nullptr;
+
+        if (fence) {
+            if (fence->GetState() == VulkanFenceState::Pending) {
+                bool signaled = false;
+                if (const RHIStatus status = fence->Wait(std::numeric_limits<uint64_t>::max(), signaled); !status.IsSuccess()) return status;
+            }
+
+            if (const RHIStatus status = fence->Reset(); !status.IsSuccess()) return status;
+        }
+
+        const VkFence presentFence = fence ? fence->GetHandle() : VK_NULL_HANDLE;
         const VkSemaphore waitSemaphore = GetPresentSemaphore(acquired.imageIndex).GetHandle();
+
+        const VkSwapchainPresentFenceInfoEXT fenceInfo{
+            .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_FENCE_INFO_EXT,
+            .swapchainCount = 1,
+            .pFences = &presentFence
+        };
+
         const VkPresentInfoKHR presentInfo{
             .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+            .pNext = fence ? &fenceInfo : nullptr,
             .waitSemaphoreCount = 1,
             .pWaitSemaphores = &waitSemaphore,
             .swapchainCount = 1,
@@ -339,17 +386,20 @@ namespace Catalpa {
 
         switch (result) {
             case VK_SUCCESS:
+                if (fence) fence->MarkSubmitted();
                 outcome = RHIPresentOutcome::Queued;
                 if (acquired.outcome == RHIAcquireOutcome::Suboptimal) m_Info.state = RHISwapchainState::OutOfDate;
                 return {};
 
             case VK_SUBOPTIMAL_KHR:
             case VK_ERROR_OUT_OF_DATE_KHR:
+                if (fence) fence->MarkSubmitted();
                 outcome = result == VK_SUBOPTIMAL_KHR ? RHIPresentOutcome::Suboptimal : RHIPresentOutcome::OutOfDate;
                 m_Info.state = RHISwapchainState::OutOfDate;
                 return {};
 
             case VK_ERROR_SURFACE_LOST_KHR:
+                if (fence) fence->MarkSubmitted();
                 outcome = RHIPresentOutcome::SurfaceLost;
                 m_Info.state = RHISwapchainState::SurfaceLost;
                 break;
@@ -359,8 +409,12 @@ namespace Catalpa {
                 outcome = RHIPresentOutcome::NotQueued;
                 break;
 
-            default:
+            case VK_ERROR_DEVICE_LOST:
                 break;
+
+            default:
+                CAT_CORE_ERROR("Unexpected vkQueuePresentKHR result: {0}; presentation lifetime is unknown.", static_cast<int>(result));
+                std::abort();
         }
 
         return MakeVulkanStatus(result, "vkQueuePresentKHR");

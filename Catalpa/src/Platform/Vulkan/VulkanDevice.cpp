@@ -53,13 +53,22 @@ namespace Catalpa {
             };
         }
 
+        const bool maintenanceEnabled = physicalDevice.SupportsSwapchainMaintenance();
+
+        VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance{
+            .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT,
+            .swapchainMaintenance1 = VK_TRUE
+        };
+
         VkPhysicalDeviceVulkan13Features enabledFeatures{
             .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES,
+            .pNext = maintenanceEnabled ? &maintenance : nullptr,
             .synchronization2 = VK_TRUE,
             .dynamicRendering = VK_TRUE
         };
 
-        constexpr std::array extensions{ VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+        std::vector<const char*> extensions{ VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+        if (maintenanceEnabled) extensions.push_back(VK_EXT_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME);
 
         VkDeviceCreateInfo createInfo{
             .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -103,7 +112,8 @@ namespace Catalpa {
             .maxUniformBufferRange = limits.maxUniformBufferRange,
             .maxStorageBufferRange = limits.maxStorageBufferRange,
             .minUniformBufferOffsetAlignment = limits.minUniformBufferOffsetAlignment,
-            .minStorageBufferOffsetAlignment = limits.minStorageBufferOffsetAlignment
+            .minStorageBufferOffsetAlignment = limits.minStorageBufferOffsetAlignment,
+            .presentFence = maintenanceEnabled
         };
 
         m_Backend = std::move(backend);
@@ -120,6 +130,7 @@ namespace Catalpa {
             }
         }
 
+        CAT_CORE_INFO("Vulkan presentation synchronization: {0}.", maintenanceEnabled ? "EXT maintenance present fences" : "WaitIdle compatibility fallback");
         CAT_CORE_INFO("Vulkan device created.");
         return true;
     }
