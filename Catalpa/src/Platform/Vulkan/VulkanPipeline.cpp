@@ -237,7 +237,7 @@ namespace Catalpa {
             };
 
             const VkPipelineColorBlendAttachmentState attachment{
-                .blendEnable = desc.blendMode == RHIBlendMode::StraightAlpha ? VK_TRUE : VK_FALSE,
+                .blendEnable = static_cast<VkBool32>(desc.blendMode == RHIBlendMode::StraightAlpha),
                 .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
                 .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
                 .colorBlendOp = VK_BLEND_OP_ADD,
