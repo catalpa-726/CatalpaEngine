@@ -21,6 +21,19 @@ namespace Catalpa {
         static_assert(offsetof(TriangleVertex, position) == 0);
         static_assert(offsetof(TriangleVertex, color) == 8);
 
+        // 与 Slang 中两个 float4 对应。
+        // transform.xy 为缩放，transform.zw 为平移。
+        struct alignas(16) TriangleDrawParameters {
+            std::array<float, 4> transform{};
+            std::array<float, 4> tint{};
+        };
+
+        static_assert(std::is_standard_layout_v<TriangleDrawParameters>);
+        static_assert(std::is_trivially_copyable_v<TriangleDrawParameters>);
+        static_assert(sizeof(TriangleDrawParameters) == 32);
+        static_assert(offsetof(TriangleDrawParameters, transform) == 0);
+        static_assert(offsetof(TriangleDrawParameters, tint) == 16);
+
         constexpr std::array<TriangleVertex, 3> TriangleVertices{ {
             { { 0.0f, -0.6f }, { 1.0f, 0.0f, 1.0f } },
             { { 0.6f,  0.5f }, { 0.0f, 1.0f, 0.0f } },
@@ -33,6 +46,12 @@ namespace Catalpa {
             {.location = 0, .format = VertexFormat::Float2, .offset = static_cast<uint32_t>(offsetof(TriangleVertex, position)) },
             {.location = 1, .format = VertexFormat::Float3, .offset = static_cast<uint32_t>(offsetof(TriangleVertex, color)) }
         } };
+
+        void SetTriangleDrawParameters(RGIndexedDrawDesc& draw, const TriangleDrawParameters& parameters)
+        {
+            const auto bytes = std::as_bytes(std::span{ &parameters, 1 });
+            draw.pushConstants.assign(bytes.begin(), bytes.end());
+        }
 
     }
 
@@ -57,7 +76,7 @@ namespace Catalpa {
 
         const Extent2D extent = m_Swapchain.GetInfo().extent;
 
-        const RGIndexedDrawDesc draw{
+        RGIndexedDrawDesc draw{
             .vertices = vertices,
             .indices = indices,
             .color = color,
@@ -76,7 +95,24 @@ namespace Catalpa {
             .scissor = {.extent = extent }
         };
 
-        if (const RHIStatus status = graph.AddDrawPass("Triangle DrawIndexed", draw); !status.IsSuccess()) return status;
+        constexpr TriangleDrawParameters left{
+            .transform = { 0.60f, 0.60f, -0.42f, 0.0f },
+            .tint = { 1.0f, 1.0f, 1.0f, 1.0f }
+        };
+
+        constexpr TriangleDrawParameters right{
+            .transform = { 0.45f, 0.45f, 0.45f, 0.10f },
+            .tint = { 0.4f, 0.8f, 1.0f, 1.0f }
+        };
+
+        SetTriangleDrawParameters(draw, left);
+        if (const RHIStatus status = graph.AddDrawPass("Left Triangle - Clear", draw); !status.IsSuccess()) return status;
+
+        // 首个 Pass 已保存自己的副本；此处修改不会覆盖它。
+        draw.loadOp = RHILoadOp::Load;
+        SetTriangleDrawParameters(draw, right);
+
+        if (const RHIStatus status = graph.AddDrawPass("Right Triangle - Load", draw); !status.IsSuccess()) return status;
         return graph.ExportPresent(color);
     }
 
@@ -154,12 +190,16 @@ namespace Catalpa {
         if (m_TrianglePipeline.HasValue() && m_TriangleFormat == format) return {};
 
         const RHIGraphicsPipelineDesc desc{
-            .vertex = { .bytecode = TriangleVertexSpirv, .stage = RHIShaderStage::Vertex, .entryPoint = "vertexMain" },
-            .fragment = { .bytecode = TriangleFragmentSpirv, .stage = RHIShaderStage::Fragment, .entryPoint = "fragmentMain" },
+            .vertex = {.bytecode = TriangleVertexSpirv, .stage = RHIShaderStage::Vertex, .entryPoint = "vertexMain" },
+            .fragment = {.bytecode = TriangleFragmentSpirv, .stage = RHIShaderStage::Fragment, .entryPoint = "fragmentMain" },
             .colorFormat = format,
             .vertexLayout = {
                 .stride = static_cast<uint32_t>(sizeof(TriangleVertex)),
                 .attributes = TriangleAttributes
+            },
+            .pushConstants = {
+                .size = static_cast<uint32_t>(sizeof(TriangleDrawParameters)),
+                .visibility = RHIShaderVisibility::VertexFragment
             }
         };
 

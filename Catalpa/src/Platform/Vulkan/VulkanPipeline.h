@@ -16,6 +16,8 @@ namespace Catalpa {
         uint32_t sampleCount = 1;
         uint32_t vertexStride = 0;
         uint32_t vertexAttributeEnd = 0; // 所有属性 offset + 字节数的最大值。
+        uint32_t pushConstantBytes = 0;
+        VkShaderStageFlags pushConstantStages = 0;
     };
 
     [[nodiscard]] RHIStatus CreateVulkanGraphicsPipeline(VulkanDevice& device, const RHIGraphicsPipelineDesc& desc, VulkanPipelineRecord& pipeline);

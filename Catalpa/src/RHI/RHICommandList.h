@@ -43,6 +43,11 @@ namespace Catalpa {
         // 录制管线绑定，并保留其命令引用。
         [[nodiscard]] virtual RHIStatus BindGraphicsPipeline(GraphicsPipelineHandle pipeline) = 0;
 
+        // 写入当前图形管线的完整参数块，偏移固定为 0。
+        // 每次成功绑定含参数块的管线后，必须重新写入。
+        // 数据只在本次调用期间借用，字节数须与管线声明完全一致。
+        [[nodiscard]] virtual RHIStatus SetGraphicsPushConstants(std::span<const std::byte> data) = 0;
+
         // 非索引绘制；管线有顶点输入时检查绑定与读取范围。
         [[nodiscard]] virtual RHIStatus Draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0) = 0;
 

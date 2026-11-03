@@ -90,9 +90,10 @@ namespace Catalpa {
     {
         if (!m_Failure.IsSuccess()) return m_Failure;
 
-        if (commands && commands->GetState() != RHICommandListState::Executable) {
-            CAT_CORE_ASSERT(false, "Command list must be executable before submission!");
-            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanQueue::Submit" };
+        // nullptr 是取消 Acquire 的纯同步提交，不包含资源状态更新。
+        if (commands) {
+            if (const RHIStatus status = commands->ValidateResourceStatePlan(); !status.IsSuccess())
+                return status;
         }
 
         if (m_Submitted == std::numeric_limits<uint64_t>::max())
@@ -118,12 +119,6 @@ namespace Catalpa {
             .signalSemaphoreInfoCount = static_cast<uint32_t>(signals.size()),
             .pSignalSemaphoreInfos = signals.data()
         };
-
-        // nullptr 是取消 Acquire 的纯同步提交，不包含资源状态更新。
-        if (commands) {
-            if (const RHIStatus status = commands->ValidateResourceStatePlan(); !status.IsSuccess())
-                return status;
-        }
 
         if (const RHIStatus status = fence.Reset(); !status.IsSuccess()) return m_Device.ObserveStatus(status);
 

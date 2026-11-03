@@ -55,6 +55,10 @@ namespace Catalpa {
 
                         if (const RHIStatus status = commands.BeginRendering(rendering); !status.IsSuccess()) return status;
                         if (const RHIStatus status = commands.BindGraphicsPipeline(draw.pipeline); !status.IsSuccess()) return status;
+                        if (!draw.pushConstants.empty()) {
+                            if (const RHIStatus status = commands.SetGraphicsPushConstants(draw.pushConstants); !status.IsSuccess())
+                                return status;
+                        }
                         if (const RHIStatus status = commands.BindVertexBuffer(0, step.vertices, draw.vertexOffset); !status.IsSuccess()) return status;
                         if (const RHIStatus status = commands.BindIndexBuffer(step.indices, draw.indexType, draw.indexOffset); !status.IsSuccess()) return status;
                         if (const RHIStatus status = commands.SetViewportAndScissor(draw.viewport, draw.scissor); !status.IsSuccess()) return status;

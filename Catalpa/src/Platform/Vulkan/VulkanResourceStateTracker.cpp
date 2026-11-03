@@ -88,21 +88,25 @@ namespace Catalpa {
         for (size_t i = 0; i < buffers.size(); ++i) {
             const auto& update = buffers[i];
 
-            for (size_t previous = 0; previous < i; ++previous) {
-                if (buffers[previous].buffer == update.buffer)
-                    return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-            }
-
             // 已录制资源允许 owner 已释放，但命令引用必须仍然存在。
             const auto* slot = registry.FindBuffer(update.buffer);
 
             if (!slot || (!requireRetained && slot->releaseRequested))
                 return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
-            if (requireRetained && slot->references == 0)
+            if (update.expectedRevision != slot->state.revision ||
+                (requireRetained && slot->references == 0))
                 return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
-            if (update.expectedRevision == 0 || update.expectedRevision != slot->state.revision)
+            // 提交阶段只复核可能变化的状态。
+            if (requireRetained) continue;
+
+            for (size_t previous = 0; previous < i; ++previous) {
+                if (buffers[previous].buffer == update.buffer)
+                    return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            }
+
+            if (update.expectedRevision == 0)
                 return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
             if (update.expectedRevision == std::numeric_limits<uint64_t>::max())
@@ -120,20 +124,23 @@ namespace Catalpa {
         for (size_t i = 0; i < textures.size(); ++i) {
             const auto& update = textures[i];
 
-            for (size_t previous = 0; previous < i; ++previous) {
-                if (textures[previous].view == update.view)
-                    return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-            }
-
             if (!registry.ResolveTextureView(update.view))
                 return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
             const auto& slot = registry.m_TextureViews[update.view.slot.index];
 
-            if (requireRetained && slot.references == 0)
+            if (update.expectedRevision != slot.state.revision ||
+                (requireRetained && slot.references == 0))
                 return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
-            if (update.expectedRevision == 0 || update.expectedRevision != slot.state.revision)
+            if (requireRetained) continue;
+
+            for (size_t previous = 0; previous < i; ++previous) {
+                if (textures[previous].view == update.view)
+                    return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            }
+
+            if (update.expectedRevision == 0)
                 return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
             if (update.expectedRevision == std::numeric_limits<uint64_t>::max())

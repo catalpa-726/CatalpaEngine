@@ -26,6 +26,7 @@ namespace Catalpa {
         std::array<float, 4> clearColor{ 0.0f, 0.0f, 0.0f, 1.0f };
         RHIViewport viewport{};
         Rect2D scissor{};
+        std::vector<std::byte> pushConstants;                           // 自有字节副本；空数组表示本次绘制未提供 push constants。
     };
 
 }

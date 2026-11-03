@@ -14,7 +14,8 @@ namespace Catalpa {
         [[nodiscard]] static RHIStatus Query(const VulkanResourceRegistry& registry, BufferHandle buffer, RHIBufferStateSnapshot& snapshot);
         [[nodiscard]] static RHIStatus Query(const VulkanResourceRegistry& registry, TextureViewHandle view, RHITextureStateSnapshot& snapshot);
 
-        // 核对句柄、版本、范围与访问；提交前还要求资源已由命令保留。
+        // false：对尚未绑定的计划做完整校验。
+        // true：只复核提交时资源；计划须已完整校验，并由命令独占保存且未经修改。
         [[nodiscard]] static RHIStatus Validate(
             const VulkanResourceRegistry& registry,
             std::span<const RHIBufferStateUpdate> buffers,

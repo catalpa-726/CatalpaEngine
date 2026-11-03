@@ -48,6 +48,7 @@ namespace Catalpa {
 
         // 管线绑定与绘制
         [[nodiscard]] RHIStatus BindGraphicsPipeline(GraphicsPipelineHandle pipeline) override;
+        [[nodiscard]] RHIStatus SetGraphicsPushConstants(std::span<const std::byte> data) override;
         [[nodiscard]] RHIStatus Draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0) override;
 
         [[nodiscard]] RHIStatus PipelineBarrier(std::span<const RHIBufferBarrier> barriers) override;
@@ -102,6 +103,12 @@ namespace Catalpa {
         VulkanDevice& m_Device;
         std::vector<TextureViewHandle> m_RetainedViews;
         std::vector<GraphicsPipelineHandle> m_RetainedPipelines;
+
+        // 通过命令引用保活的管线布局，并记录参数是否准备好
+        VkPipelineLayout m_BoundPipelineLayout = VK_NULL_HANDLE;
+        uint32_t m_PushConstantBytes = 0;
+        VkShaderStageFlags m_PushConstantStages = 0;
+        bool m_PushConstantsSet = false;
 
         // 当前管线、渲染附件与动态状态
         PixelFormat m_BoundColorFormat = PixelFormat::Unknown;

@@ -61,16 +61,6 @@ namespace Catalpa {
 
     RHIStatus WriteVulkanBuffer(const VulkanDevice& device, const VulkanBufferRecord& record, uint64_t offset, std::span<const std::byte> data)
     {
-        constexpr const char* operation = "WriteVulkanBuffer";
-
-        if (record.desc.memory != RHIMemoryDomain::Upload || !record.mapped)
-            return { .code = RHIErrorCode::InvalidState, .operation = operation };
-
-        if (offset > record.desc.size || data.size() > record.desc.size - offset)
-            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-
-        if (data.empty()) return {};
-
         std::memcpy(record.mapped + static_cast<size_t>(offset), data.data(), data.size());
 
         // offset 相对于 allocation 内容，不叠加底层 VkDeviceMemory 偏移。

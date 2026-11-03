@@ -175,6 +175,12 @@ namespace Catalpa {
         constexpr const char* operation = "RenderGraph::AddDrawPass";
         if (const RHIStatus status = CheckBuilding(operation); !status.IsSuccess()) return status;
 
+        if (desc.pushConstants.size() % 4 != 0)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        if (desc.pushConstants.size() > m_Device.GetCapabilities().maxPushConstantBytes)
+            return { .code = RHIErrorCode::Unsupported, .operation = operation };
+
         const auto* vertices = Resolve(desc.vertices);
         const auto* indices = Resolve(desc.indices);
         const auto* color = Resolve(desc.color);

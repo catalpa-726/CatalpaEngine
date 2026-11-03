@@ -21,6 +21,17 @@ namespace Catalpa {
         const auto& capabilities = device.GetCapabilities();
         const bool hasVertexInput = !vertexLayout.attributes.empty();
 
+        const auto& pushConstants = desc.pushConstants;
+        const VkShaderStageFlags pushConstantStages = ToVulkanShaderStages(pushConstants.visibility);
+
+        if (pushConstants.size % 4 != 0 ||
+            (pushConstants.size == 0 && pushConstants.visibility != RHIShaderVisibility::None) ||
+            (pushConstants.size != 0 && pushConstantStages == 0))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanGraphicsPipeline" };
+
+        if (pushConstants.size > capabilities.maxPushConstantBytes)
+            return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
+
         if ((!hasVertexInput && vertexLayout.stride != 0) ||
             (hasVertexInput && (vertexLayout.stride == 0 || vertexLayout.stride % 4 != 0)))
             return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanGraphicsPipeline" };
@@ -72,7 +83,18 @@ namespace Catalpa {
             return status;
         }
 
-        const VkPipelineLayoutCreateInfo layoutInfo{ .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        const VkPushConstantRange pushConstantRange{
+            .stageFlags = pushConstantStages,
+            .offset = 0,
+            .size = pushConstants.size
+        };
+
+        const VkPipelineLayoutCreateInfo layoutInfo{
+            .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+            .pushConstantRangeCount = pushConstants.size != 0 ? 1u : 0u,
+            .pPushConstantRanges = pushConstants.size != 0 ? &pushConstantRange : nullptr
+        };
+
         status = MakeVulkanStatus(vkCreatePipelineLayout(device.GetHandle(), &layoutInfo, nullptr, &pipeline.layout), "vkCreatePipelineLayout");
 
         if (status.IsSuccess()) {
@@ -176,6 +198,8 @@ namespace Catalpa {
         pipeline.sampleCount = desc.sampleCount;
         pipeline.vertexStride = vertexLayout.stride;
         pipeline.vertexAttributeEnd = vertexAttributeEnd;
+        pipeline.pushConstantBytes = pushConstants.size;
+        pipeline.pushConstantStages = pushConstantStages;
         return {};
     }
 

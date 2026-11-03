@@ -58,4 +58,15 @@ namespace Catalpa {
         }
     }
 
+    VkShaderStageFlags ToVulkanShaderStages(RHIShaderVisibility visibility) noexcept
+    {
+        switch (visibility) {
+        case RHIShaderVisibility::None: return 0;
+        case RHIShaderVisibility::Vertex: return VK_SHADER_STAGE_VERTEX_BIT;
+        case RHIShaderVisibility::Fragment: return VK_SHADER_STAGE_FRAGMENT_BIT;
+        case RHIShaderVisibility::VertexFragment: return VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        default: return 0;
+        }
+    }
+
 }

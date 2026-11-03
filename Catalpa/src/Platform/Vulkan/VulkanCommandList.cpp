@@ -90,9 +90,6 @@ namespace Catalpa {
         for (const auto& update : textureUpdates)
             if (const RHIStatus status = RetainTextureView(update.view); !status.IsSuccess()) return fail(status);
 
-        if (const RHIStatus status = VulkanResourceStateTracker::Validate(registry, bufferUpdates, textureUpdates, true); !status.IsSuccess())
-            return fail(status);
-
         m_BufferStateUpdates.swap(bufferUpdates);
         m_TextureStateUpdates.swap(textureUpdates);
         m_ResourceStatePlanBound = true;
@@ -105,21 +102,10 @@ namespace Catalpa {
         if (m_State != RHICommandListState::Executable || !m_ResourceStatePlanBound || m_ResourceStatePlanCommitted)
             return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::ValidateResourceStatePlan" };
 
+        // Set 已保留全部声明资源；之后只追加引用或撤销本次追加的后缀。
         if (m_RetainedBuffers.size() != m_BufferStateUpdates.size() ||
             m_RetainedViews.size() != m_TextureStateUpdates.size())
             return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::UndeclaredResource" };
-
-        for (const BufferHandle buffer : m_RetainedBuffers) {
-            if (std::none_of(m_BufferStateUpdates.begin(), m_BufferStateUpdates.end(),
-                [&](const auto& update) { return update.buffer == buffer; }))
-                return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::UndeclaredBuffer" };
-        }
-
-        for (const TextureViewHandle view : m_RetainedViews) {
-            if (std::none_of(m_TextureStateUpdates.begin(), m_TextureStateUpdates.end(),
-                [&](const auto& update) { return update.view == view; }))
-                return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::UndeclaredTexture" };
-        }
 
         return VulkanResourceStateTracker::Validate(
             m_Device.GetResourceRegistry(), m_BufferStateUpdates, m_TextureStateUpdates, true);
@@ -360,6 +346,11 @@ namespace Catalpa {
         m_ResourceStatePlanBound = false;
         m_ResourceStatePlanCommitted = false;
 
+        m_BoundPipelineLayout = VK_NULL_HANDLE;
+        m_PushConstantBytes = 0;
+        m_PushConstantStages = 0;
+        m_PushConstantsSet = false;
+
         m_BoundColorFormat = PixelFormat::Unknown;
         m_RenderingColorFormat = PixelFormat::Unknown;
         m_ViewportAndScissorSet = false;
@@ -395,9 +386,37 @@ namespace Catalpa {
         }
 
         vkCmdBindPipeline(m_CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, record->pipeline);
+
+        m_BoundPipelineLayout = record->layout;
+        m_PushConstantBytes = record->pushConstantBytes;
+        m_PushConstantStages = record->pushConstantStages;
+
+        // RHI 当前要求每次成功绑定后重新提供该次绘制参数。
+        m_PushConstantsSet = m_PushConstantBytes == 0;
+
         m_BoundColorFormat = record->colorFormat;
         m_VertexStride = record->vertexStride;
         m_VertexAttributeEnd = record->vertexAttributeEnd;
+        return {};
+    }
+
+    RHIStatus VulkanCommandList::SetGraphicsPushConstants(std::span<const std::byte> data)
+    {
+        constexpr const char* operation = "VulkanCommandList::SetGraphicsPushConstants";
+
+        // 设置失败后，不允许下一次 Draw 静默沿用此前的参数。
+        if (m_BoundPipelineLayout != VK_NULL_HANDLE) m_PushConstantsSet = false;
+
+        if ((m_State != RHICommandListState::Recording && m_State != RHICommandListState::Rendering) ||
+            m_BoundPipelineLayout == VK_NULL_HANDLE)
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
+
+        if (m_PushConstantBytes == 0 || data.size() != m_PushConstantBytes)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        vkCmdPushConstants(m_CommandBuffer, m_BoundPipelineLayout, m_PushConstantStages, 0, m_PushConstantBytes, data.data());
+
+        m_PushConstantsSet = true;
         return {};
     }
 
@@ -406,7 +425,7 @@ namespace Catalpa {
         constexpr const char* operation = "VulkanCommandList::Draw";
 
         if (m_State != RHICommandListState::Rendering || m_BoundColorFormat == PixelFormat::Unknown ||
-            m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet)
+            m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet || !m_PushConstantsSet)
             return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
         if (m_VertexStride != 0) {
@@ -432,8 +451,8 @@ namespace Catalpa {
         constexpr const char* operation = "VulkanCommandList::DrawIndexed";
 
         if (m_State != RHICommandListState::Rendering || m_BoundColorFormat == PixelFormat::Unknown ||
-            m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet || !m_IndexBufferBound ||
-            (m_VertexStride != 0 && !m_VertexBufferBound))
+            m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet || !m_PushConstantsSet ||
+            !m_IndexBufferBound || (m_VertexStride != 0 && !m_VertexBufferBound))
             return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
         const uint64_t firstByte = static_cast<uint64_t>(firstIndex) * m_IndexSize;

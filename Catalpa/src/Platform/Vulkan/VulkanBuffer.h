@@ -17,6 +17,8 @@ namespace Catalpa {
     };
 
     [[nodiscard]] RHIStatus CreateVulkanBuffer(VulkanDevice& device, const RHIBufferDesc& desc, VulkanBufferRecord& record);
+    
+    // 仅由 Registry 在验证 Upload 映射、写入范围和非空数据后调用。
     [[nodiscard]] RHIStatus WriteVulkanBuffer(const VulkanDevice& device, const VulkanBufferRecord& record, uint64_t offset, std::span<const std::byte> data);
 
     // 仅用于尚未发布的失败记录，或退休系统已确认可销毁的记录。
