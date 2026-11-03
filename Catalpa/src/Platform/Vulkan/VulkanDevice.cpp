@@ -11,6 +11,7 @@
 #include "VulkanResourceRegistry.h"
 #include "VulkanConversions.h"
 #include "VulkanMemoryAllocator.h"
+#include "VulkanDebugUtils.h"
 
 namespace Catalpa {
 
@@ -121,6 +122,14 @@ namespace Catalpa {
         };
 
         m_Backend = std::move(backend);
+        const auto& debug = GetDebugUtils();
+        debug.NameObject(device, VK_OBJECT_TYPE_DEVICE, VulkanHandleToUint64(device), "Catalpa Device");
+        debug.NameObject(device, VK_OBJECT_TYPE_QUEUE, VulkanHandleToUint64(graphicsQueue),
+            graphicsQueue == presentQueue ? "Graphics/Present Queue" : "Graphics Queue");
+
+        if (graphicsQueue != presentQueue)
+            debug.NameObject(device, VK_OBJECT_TYPE_QUEUE, VulkanHandleToUint64(presentQueue), "Present Queue");
+
         m_MemoryAllocator = std::make_unique<VulkanMemoryAllocator>();
 
         if (const RHIStatus status = m_MemoryAllocator->Init(instance, m_PhysicalDevice, m_Device); !status.IsSuccess()) {
@@ -176,6 +185,8 @@ namespace Catalpa {
             .transferDestination = (features & VK_FORMAT_FEATURE_TRANSFER_DST_BIT) != 0
         };
     }
+
+    const VulkanDebugUtils& VulkanDevice::GetDebugUtils() const { return m_Backend->GetInstance().GetDebugUtils(); }
 
     DeviceId VulkanDevice::GetDeviceId() const { return m_ResourceRegistry ? m_ResourceRegistry->GetDeviceId() : DeviceId{}; }
 

@@ -61,6 +61,10 @@ namespace Catalpa {
         m_Recorded = true;
         m_RecordedCount = m_Pending.size();
 
+        if (m_RecordedCount == 0) return {};
+
+        RHICommandLabelScope uploadLabel(commands, "Static Buffer Uploads", { 0.2f, 0.8f, 0.3f, 1.0f });
+
         for (size_t i = 0; i < m_RecordedCount; ++i) {
             const auto& pending = m_Pending[i];
             const RHIBufferCopy copy{ .size = pending.size };

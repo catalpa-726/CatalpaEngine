@@ -18,16 +18,16 @@ namespace Catalpa {
         m_Registry->creators.insert_or_assign(backend, create);
     }
 
-    std::unique_ptr<RHIDevice> RHIBackendFactory::Create(GraphicsBackend backend, Window& window, RHIStatus& status) const
+    std::unique_ptr<RHIDevice> RHIBackendFactory::Create(const RHIBackendDesc& desc, Window& window, RHIStatus& status) const
     {
-        const auto it = m_Registry->creators.find(backend);
+        const auto it = m_Registry->creators.find(desc.backend);
 
         if (it == m_Registry->creators.end()) {
             status = { .code = RHIErrorCode::Unsupported, .operation = "RHIBackendFactory::Create" };
             return nullptr;
         }
 
-        return it->second(window, status);
+        return it->second(window, desc, status);
     }
 
 }

@@ -3,6 +3,7 @@
 #include "VulkanDevice.h"
 #include "VulkanQueue.h"
 #include "VulkanSwapchain.h"
+#include "VulkanDebugUtils.h"
 
 namespace Catalpa {
 
@@ -18,7 +19,21 @@ namespace Catalpa {
         if (const RHIStatus status = m_CommandPool.Init(queueFamily); !status.IsSuccess()) return status;
         if (const RHIStatus status = m_CommandList.Init(m_CommandPool); !status.IsSuccess()) return status;
         if (const RHIStatus status = m_Fence.Init(true); !status.IsSuccess()) return status;
-        return m_AcquireSemaphore.Init();
+        if (const RHIStatus status = m_AcquireSemaphore.Init(); !status.IsSuccess()) return status;
+
+        const auto& debug = m_Device.GetDebugUtils();
+
+        if (debug.IsEnabled()) {
+            const std::string prefix = "Frame[" + std::to_string(m_Slot) + "]";
+            const VkDevice device = m_Device.GetHandle();
+
+            debug.NameObject(device, VK_OBJECT_TYPE_COMMAND_POOL, VulkanHandleToUint64(m_CommandPool.GetHandle()), (prefix + ".CommandPool").c_str());
+            debug.NameObject(device, VK_OBJECT_TYPE_COMMAND_BUFFER, VulkanHandleToUint64(m_CommandList.GetHandle()), (prefix + ".Commands").c_str());
+            debug.NameObject(device, VK_OBJECT_TYPE_FENCE, VulkanHandleToUint64(m_Fence.GetHandle()), (prefix + ".SubmitFence").c_str());
+            debug.NameObject(device, VK_OBJECT_TYPE_SEMAPHORE, VulkanHandleToUint64(m_AcquireSemaphore.GetHandle()), (prefix + ".AcquireReady").c_str());
+        }
+
+        return {};
     }
 
     RHIStatus VulkanFrameContext::PrepareReuse(uint64_t timeoutNanoseconds, bool& ready)

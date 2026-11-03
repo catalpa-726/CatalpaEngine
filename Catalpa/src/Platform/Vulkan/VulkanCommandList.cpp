@@ -7,6 +7,7 @@
 #include "VulkanConversions.h"
 #include "VulkanBarrierCompiler.h"
 #include "RHI/RHIBufferDesc.h"
+#include "VulkanDebugUtils.h"
 
 namespace Catalpa {
 
@@ -40,8 +41,8 @@ namespace Catalpa {
 
     RHIStatus VulkanCommandList::End()
     {
-        if (m_State != RHICommandListState::Recording) {
-            CAT_CORE_ASSERT(false, "End the rendering scope before ending the command list!");
+        if (m_State != RHICommandListState::Recording || m_DebugLabelDepth != 0) {
+            CAT_CORE_ASSERT(false, "End rendering and debug label scopes before ending the command list!");
             return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::End" };
         }
 
@@ -270,6 +271,7 @@ namespace Catalpa {
         m_VertexBufferBound = false;
         m_IndexBufferBound = false;
         m_State = RHICommandListState::Initial;
+        m_DebugLabelDepth = 0;
     }
 
     RHIStatus VulkanCommandList::BindGraphicsPipeline(GraphicsPipelineHandle pipeline)
@@ -521,6 +523,35 @@ namespace Catalpa {
             m_Device.GetResourceRegistry().ReleaseBufferReference(m_RetainedBuffers.back());
             m_RetainedBuffers.pop_back();
         }
+    }
+
+    bool VulkanCommandList::BeginDebugLabel(const char* name, const std::array<float, 4>& color)
+    {
+        if (m_State != RHICommandListState::Recording && m_State != RHICommandListState::Rendering) {
+            CAT_CORE_ASSERT(false, "Debug labels require a recording command list!");
+            return false;
+        }
+
+        if (m_DebugLabelDepth == std::numeric_limits<uint32_t>::max()) {
+            CAT_CORE_ASSERT(false, "Debug label depth exhausted!");
+            return false;
+        }
+
+        if (!m_Device.GetDebugUtils().BeginLabel(m_CommandBuffer, name, color)) return false;
+
+        ++m_DebugLabelDepth;
+        return true;
+    }
+
+    void VulkanCommandList::EndDebugLabel()
+    {
+        if ((m_State != RHICommandListState::Recording && m_State != RHICommandListState::Rendering) || m_DebugLabelDepth == 0) {
+            CAT_CORE_ASSERT(false, "Debug label has no matching begin in the recording command list!");
+            return;
+        }
+
+        m_Device.GetDebugUtils().EndLabel(m_CommandBuffer);
+        --m_DebugLabelDepth;
     }
 
 }

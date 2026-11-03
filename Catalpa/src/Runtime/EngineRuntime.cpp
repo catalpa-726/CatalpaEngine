@@ -28,7 +28,7 @@ namespace Catalpa {
 
     EngineRuntime::~EngineRuntime() { Shutdown(); }
 
-    RHIStatus EngineRuntime::Init(Window& window)
+    RHIStatus EngineRuntime::Init(Window& window, const RHIBackendDesc& backendDesc)
     {
         CAT_CORE_ASSERT(!m_Device, "Engine runtime already initialized!");
 
@@ -36,7 +36,7 @@ namespace Catalpa {
         factory.Register(GraphicsBackend::Vulkan, CreateVulkanDevice);
 
         RHIStatus status;
-        m_Device = factory.Create(GraphicsBackend::Vulkan, window, status);
+        m_Device = factory.Create(backendDesc, window, status);
         if (!status.IsSuccess()) return status;
 
         const RHISwapchainDesc desc = MakeSwapchainDesc(window);

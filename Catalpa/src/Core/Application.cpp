@@ -3,6 +3,7 @@
 #include "Log/Log.h"
 
 #include "Runtime/EngineRuntime.h"
+#include "RHI/RHIBackend.h"
 
 namespace Catalpa {
 
@@ -58,7 +59,14 @@ namespace Catalpa {
 
     void Application::Run()
     {
-        if (const RHIStatus status = m_Runtime->Init(*m_Window); !status.IsSuccess()) {
+        // Debug 默认请求同步验证
+        RHIBackendDesc backendDesc{};
+
+#ifdef CATALPA_DEBUG
+        backendDesc.diagnostics.validation = RHIValidationMode::Synchronization;
+#endif
+
+        if (const RHIStatus status = m_Runtime->Init(*m_Window, backendDesc); !status.IsSuccess()) {
             CAT_CORE_ERROR("Engine initialization failed at {0}. RHI error: {1}", status.operation, static_cast<int>(status.code));
             m_PendingLayers.clear();
             return;

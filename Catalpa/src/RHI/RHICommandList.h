@@ -36,7 +36,7 @@ namespace Catalpa {
         // 录制管线绑定，并保留其命令引用。
         [[nodiscard]] virtual RHIStatus BindGraphicsPipeline(GraphicsPipelineHandle pipeline) = 0;
 
-        // 当前支持无顶点缓冲的非索引绘制。
+        // 非索引绘制；管线有顶点输入时检查绑定与读取范围。
         [[nodiscard]] virtual RHIStatus Draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0) = 0;
 
         // 仅在渲染段之外录制；复制不隐式插入访问屏障。
@@ -50,6 +50,34 @@ namespace Catalpa {
         // 检查索引字节范围；索引值及 vertexOffset 对应的顶点范围由调用方保证。
         [[nodiscard]] virtual RHIStatus DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1, uint32_t firstIndex = 0, int32_t vertexOffset = 0, uint32_t firstInstance = 0) = 0;
 
+        // 仅用于诊断；name 为 UTF-8 终止字符串，color 为 [0, 1] 范围的 RGBA。
+        // 返回 true 才需要配对 End；标签必须在当前命令列表 End 前闭合。
+        [[nodiscard]] virtual bool BeginDebugLabel(const char* name, const std::array<float, 4>& color) = 0;
+        virtual void EndDebugLabel() = 0;
+
+    };
+
+    // 这个类为一段命令自动配对标签，提前返回时也会关闭
+    class RHICommandLabelScope {
+    public:
+        // 只在后端实际开始标签后，承担关闭责任。
+        RHICommandLabelScope(RHICommandList& commands, const char* name, const std::array<float, 4>& color)
+            : m_Commands(commands), m_Active(commands.BeginDebugLabel(name, color)) {
+        }
+
+        ~RHICommandLabelScope() { Close(); }
+
+        RHICommandLabelScope(const RHICommandLabelScope&) = delete;
+        RHICommandLabelScope& operator=(const RHICommandLabelScope&) = delete;
+        RHICommandLabelScope(RHICommandLabelScope&&) = delete;
+        RHICommandLabelScope& operator=(RHICommandLabelScope&&) = delete;
+
+        // 提前关闭当前标签，确保不会跨过 commands.End()。
+        void Close() { if (std::exchange(m_Active, false)) m_Commands.EndDebugLabel(); }
+
+    private:
+        RHICommandList& m_Commands;
+        bool m_Active = false;
     };
 
 }

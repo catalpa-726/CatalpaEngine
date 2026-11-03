@@ -8,7 +8,7 @@ namespace Catalpa {
 
     class RHIBackendFactory {
     public:
-        using CreateFunction = std::unique_ptr<RHIDevice>(*)(Window&, RHIStatus&);
+        using CreateFunction = std::unique_ptr<RHIDevice>(*)(Window&, const RHIBackendDesc&, RHIStatus&);
 
         RHIBackendFactory();
         ~RHIBackendFactory();
@@ -17,7 +17,7 @@ namespace Catalpa {
         RHIBackendFactory& operator=(const RHIBackendFactory&) = delete;
 
         void Register(GraphicsBackend backend, CreateFunction create);
-        [[nodiscard]] std::unique_ptr<RHIDevice> Create(GraphicsBackend backend, Window& window, RHIStatus& status) const;
+        [[nodiscard]] std::unique_ptr<RHIDevice> Create(const RHIBackendDesc& desc, Window& window, RHIStatus& status) const;
 
     private:
         struct Registry;

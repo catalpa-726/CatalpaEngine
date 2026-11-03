@@ -1,6 +1,8 @@
 ﻿#include "catpch.h"
-#include "VulkanResourceRegistry.h"
 #include "Log/Log.h"
+#include "VulkanResourceRegistry.h"
+#include "VulkanDevice.h"
+#include "VulkanDebugUtils.h"
 
 namespace Catalpa {
 
@@ -128,6 +130,15 @@ namespace Catalpa {
         slot.record = record;
 
         pipeline = { .device = m_DeviceId, .slot = {.index = index, .generation = slot.generation } };
+
+        if (const auto& debug = m_Device.GetDebugUtils(); debug.IsEnabled()) {
+            const std::string name = "GraphicsPipeline[" + std::to_string(m_DeviceId.value) + ":" +
+                std::to_string(index) + ":" + std::to_string(slot.generation) + "]";
+
+            debug.NameObject(m_Device.GetHandle(), VK_OBJECT_TYPE_PIPELINE, VulkanHandleToUint64(record.pipeline), name.c_str());
+            debug.NameObject(m_Device.GetHandle(), VK_OBJECT_TYPE_PIPELINE_LAYOUT, VulkanHandleToUint64(record.layout), (name + ".Layout").c_str());
+        }
+
         return {};
     }
 
@@ -222,6 +233,14 @@ namespace Catalpa {
         slot.record = record;
 
         buffer = { .device = m_DeviceId, .slot = {.index = index, .generation = slot.generation } };
+
+        if (const auto& debug = m_Device.GetDebugUtils(); debug.IsEnabled()) {
+            const std::string name = std::string(desc.memory == RHIMemoryDomain::Upload ? "UploadBuffer[" : "DeviceBuffer[") +
+                std::to_string(m_DeviceId.value) + ":" + std::to_string(index) + ":" + std::to_string(slot.generation) + "]";
+
+            debug.NameObject(m_Device.GetHandle(), VK_OBJECT_TYPE_BUFFER, VulkanHandleToUint64(record.buffer), name.c_str());
+        }
+
         return {};
     }
 

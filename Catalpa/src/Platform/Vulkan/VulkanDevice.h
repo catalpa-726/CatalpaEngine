@@ -11,6 +11,7 @@ namespace Catalpa {
     class VulkanQueue;
     class VulkanResourceRegistry;
     class VulkanMemoryAllocator;
+    class VulkanDebugUtils;
 
     class VulkanDevice : public RHIDevice {
     public:
@@ -56,6 +57,9 @@ namespace Catalpa {
         uint32_t GetPresentQueueFamily() const { return m_PresentQueueFamily; }
 
         VulkanFrameContext& GetFrameContext(uint32_t frameSlot) { return *m_Frames[frameSlot]; }
+
+        // 借用所属实例的诊断服务，不接管其生命周期。
+        const VulkanDebugUtils& GetDebugUtils() const;
 
         // 资源登记与设备能力
         DeviceId GetDeviceId() const override;

@@ -47,6 +47,8 @@ namespace Catalpa {
     RHIStatus Renderer::RecordFrame(RHICommandList& commands, const RHIAcquireResult& acquired)
     {
         if (const RHIStatus status = commands.Begin(); !status.IsSuccess()) return status;
+        RHICommandLabelScope frameLabel(commands, "Frame", { 0.2f, 0.4f, 0.8f, 1.0f });
+
         if (const RHIStatus status = m_Uploads.RecordPending(commands); !status.IsSuccess()) return status;
 
         const RHITextureAccess colorAccess{
@@ -80,13 +82,17 @@ namespace Catalpa {
         const RHIViewport viewport{ .width = static_cast<float>(extent.width), .height = static_cast<float>(extent.height) };
         const Rect2D scissor{ .extent = extent };
 
-        if (const RHIStatus status = commands.BeginRendering(rendering); !status.IsSuccess()) return status;
-        if (const RHIStatus status = commands.BindGraphicsPipeline(m_TrianglePipeline); !status.IsSuccess()) return status;
-        if (const RHIStatus status = commands.BindVertexBuffer(0, m_TriangleVertices); !status.IsSuccess()) return status;
-        if (const RHIStatus status = commands.BindIndexBuffer(m_TriangleIndices, RHIIndexType::UInt32); !status.IsSuccess()) return status;
-        if (const RHIStatus status = commands.SetViewportAndScissor(viewport, scissor); !status.IsSuccess()) return status;
-        if (const RHIStatus status = commands.DrawIndexed(static_cast<uint32_t>(TriangleIndices.size())); !status.IsSuccess()) return status;
-        if (const RHIStatus status = commands.EndRendering(); !status.IsSuccess()) return status;
+        {
+            RHICommandLabelScope drawLabel(commands, "Triangle DrawIndexed", { 0.7f, 0.2f, 0.8f, 1.0f });
+
+            if (const RHIStatus status = commands.BeginRendering(rendering); !status.IsSuccess()) return status;
+            if (const RHIStatus status = commands.BindGraphicsPipeline(m_TrianglePipeline); !status.IsSuccess()) return status;
+            if (const RHIStatus status = commands.BindVertexBuffer(0, m_TriangleVertices); !status.IsSuccess()) return status;
+            if (const RHIStatus status = commands.BindIndexBuffer(m_TriangleIndices, RHIIndexType::UInt32); !status.IsSuccess()) return status;
+            if (const RHIStatus status = commands.SetViewportAndScissor(viewport, scissor); !status.IsSuccess()) return status;
+            if (const RHIStatus status = commands.DrawIndexed(static_cast<uint32_t>(TriangleIndices.size())); !status.IsSuccess()) return status;
+            if (const RHIStatus status = commands.EndRendering(); !status.IsSuccess()) return status;
+        }
 
         const RHITextureBarrier toPresent{
             .view = acquired.view,
@@ -95,6 +101,7 @@ namespace Catalpa {
         };
 
         if (const RHIStatus status = commands.PipelineBarrier({ &toPresent, 1 }); !status.IsSuccess()) return status;
+        frameLabel.Close();
         return commands.End();
     }
 

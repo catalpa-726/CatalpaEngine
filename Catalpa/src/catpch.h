@@ -25,5 +25,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstring>
+#include <type_traits>
 
 #include <span>

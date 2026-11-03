@@ -8,7 +8,7 @@
 #include "VulkanResourceRetirement.h"
 #include "VulkanBuffer.h"
 
-// 登记表保存借用视图和自有管线，并校验设备身份、槽位和代次。
+// 登记表保存借用视图、自有管线和 Buffer，并校验设备身份、槽位和代次。
 namespace Catalpa {
 
     class VulkanDevice;
@@ -70,7 +70,7 @@ namespace Catalpa {
         void ReleaseBufferReference(BufferHandle buffer) noexcept;
 
     private:
-        // 管线槽位及其回收
+        // 自有资源槽位及其回收
         struct PipelineSlot {
             uint32_t generation = 1;
             uint32_t nextFree = InvalidIndex;
@@ -113,7 +113,7 @@ namespace Catalpa {
         std::vector<ViewSlot> m_TextureViews;
         uint32_t m_FirstFree = InvalidIndex;
 
-        // 自有管线通过唯一退休入口销毁
+        // 自有资源通过唯一退休入口销毁
         VulkanResourceRetirement m_Retirement;
         std::vector<PipelineSlot> m_Pipelines;
         uint32_t m_FirstFreePipeline = InvalidIndex;

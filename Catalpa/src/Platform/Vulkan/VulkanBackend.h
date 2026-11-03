@@ -19,7 +19,7 @@ namespace Catalpa {
         VulkanBackend& operator=(const VulkanBackend&) = delete;
 
         // 后端环境的创建与逆序释放
-        bool Init(Window& window);
+        [[nodiscard]] RHIStatus Init(Window& window, const RHIDiagnosticsOptions& diagnostics);
         void Shutdown();
 
         // 借用后端持有的对象
@@ -36,6 +36,6 @@ namespace Catalpa {
     };
 
     // 集成 instance -> surface -> physical device 的创建，最后创建 device
-    std::unique_ptr<RHIDevice> CreateVulkanDevice(Window& window, RHIStatus& status);
+    std::unique_ptr<RHIDevice> CreateVulkanDevice(Window& window, const RHIBackendDesc& desc, RHIStatus& status);
 
 }

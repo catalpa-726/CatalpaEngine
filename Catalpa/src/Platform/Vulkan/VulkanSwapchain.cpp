@@ -7,6 +7,7 @@
 #include "VulkanConversions.h"
 #include "VulkanFrameContext.h"
 #include "VulkanFence.h"
+#include "VulkanDebugUtils.h"
 
 namespace Catalpa {
 
@@ -156,6 +157,7 @@ namespace Catalpa {
         result = vkCreateSwapchainKHR(device, &createInfo, nullptr, &swapchain);
         if (result != VK_SUCCESS) return MakeVulkanStatus(result, "vkCreateSwapchainKHR");
         m_Swapchain = swapchain;
+        m_Device.GetDebugUtils().NameObject(device, VK_OBJECT_TYPE_SWAPCHAIN_KHR, VulkanHandleToUint64(m_Swapchain), "Swapchain");
 
         result = EnumerateVulkan(m_Images, [&](uint32_t* count, VkImage* data) { return vkGetSwapchainImagesKHR(device, m_Swapchain, count, data); });
         if (result != VK_SUCCESS) return MakeVulkanStatus(result, "vkGetSwapchainImagesKHR");
@@ -198,6 +200,18 @@ namespace Catalpa {
                 auto fence = std::make_unique<VulkanFence>(m_Device);
                 if (const RHIStatus status = fence->Init(); !status.IsSuccess()) return status;
                 m_PresentFences.push_back(std::move(fence));
+            }
+
+            if (const auto& debug = m_Device.GetDebugUtils(); debug.IsEnabled()) {
+                const size_t imageIndex = m_ImageViews.size() - 1;
+                const std::string prefix = "Swapchain.Image[" + std::to_string(imageIndex) + "]";
+
+                debug.NameObject(device, VK_OBJECT_TYPE_IMAGE, VulkanHandleToUint64(image), prefix.c_str());
+                debug.NameObject(device, VK_OBJECT_TYPE_IMAGE_VIEW, VulkanHandleToUint64(view), (prefix + ".View").c_str());
+                debug.NameObject(device, VK_OBJECT_TYPE_SEMAPHORE, VulkanHandleToUint64(m_PresentSemaphores.back()->GetHandle()), (prefix + ".RenderFinished").c_str());
+
+                if (m_Device.GetCapabilities().presentFence)
+                    debug.NameObject(device, VK_OBJECT_TYPE_FENCE, VulkanHandleToUint64(m_PresentFences.back()->GetHandle()), (prefix + ".PresentFence").c_str());
             }
         }
 

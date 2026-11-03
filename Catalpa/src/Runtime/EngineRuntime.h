@@ -3,6 +3,7 @@
 #include "Core/Base.h"
 #include "RHI/RHIError.h"
 #include "RHI/RHISwapchainDesc.h"
+#include "RHI/RHIBackend.h"
 
 namespace Catalpa {
 
@@ -20,7 +21,7 @@ namespace Catalpa {
         EngineRuntime(const EngineRuntime&) = delete;
         EngineRuntime& operator=(const EngineRuntime&) = delete;
 
-        [[nodiscard]] RHIStatus Init(Window& window);
+        [[nodiscard]] RHIStatus Init(Window& window, const RHIBackendDesc& backendDesc);
         void Shutdown();
 
         // 每轮事件和 Layer 更新后，处理交换链变化并执行绘制。

@@ -8,27 +8,35 @@ namespace Catalpa {
 
     VulkanBackend::~VulkanBackend() { Shutdown(); }
 
-    bool VulkanBackend::Init(Window& window)
+    RHIStatus VulkanBackend::Init(Window& window, const RHIDiagnosticsOptions& diagnostics)
     {
         if (m_Started) {
             CAT_CORE_ASSERT(false, "Vulkan backend already started!");
-            return false;
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanBackend::Init" };
         }
 
         std::vector<const char*> extensions;
-        if (!VulkanSurface::GetRequiredExtensions(extensions)) return false;
+
+        if (!VulkanSurface::GetRequiredExtensions(extensions))
+            return { .code = RHIErrorCode::BackendFailure, .operation = "VulkanSurface::GetRequiredExtensions" };
 
         m_Started = true;
 
-        if (!m_Instance.Init(extensions) ||
-            !m_Surface.Init(m_Instance.GetHandle(), window) ||
-            !m_PhysicalDevice.Init(m_Instance.GetHandle(), m_Surface.GetHandle(), m_Instance.IsSurfaceMaintenanceEnabled())) {
+        RHIStatus status = m_Instance.Init(extensions, diagnostics);
+
+        if (status.IsSuccess() && !m_Surface.Init(m_Instance.GetHandle(), window))
+            status = { .code = RHIErrorCode::BackendFailure, .operation = "VulkanSurface::Init" };
+
+        if (status.IsSuccess() && !m_PhysicalDevice.Init(m_Instance.GetHandle(), m_Surface.GetHandle(), m_Instance.IsSurfaceMaintenanceEnabled()))
+            status = { .code = RHIErrorCode::BackendFailure, .operation = "VulkanPhysicalDevice::Init" };
+
+        if (!status.IsSuccess()) {
             Shutdown();
-            return false;
+            return status;
         }
 
         CAT_CORE_INFO("Vulkan backend initialized.");
-        return true;
+        return {};
     }
 
     void VulkanBackend::Shutdown()
@@ -44,16 +52,13 @@ namespace Catalpa {
         m_Started = false;
     }
 
-    std::unique_ptr<RHIDevice> CreateVulkanDevice(Window& window, RHIStatus& status)
+    std::unique_ptr<RHIDevice> CreateVulkanDevice(Window& window, const RHIBackendDesc& desc, RHIStatus& status)
     {
         status = {};
 
         auto backend = std::make_unique<VulkanBackend>();
-
-        if (!backend->Init(window)) {
-            status = { .code = RHIErrorCode::BackendFailure, .operation = "VulkanBackend::Init" };
-            return nullptr;
-        }
+        status = backend->Init(window, desc.diagnostics);
+        if (!status.IsSuccess()) return nullptr;
 
         auto device = std::make_unique<VulkanDevice>();
 

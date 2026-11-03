@@ -52,6 +52,9 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus BindIndexBuffer(BufferHandle buffer, RHIIndexType type, uint64_t offset = 0) override;
         [[nodiscard]] RHIStatus DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1, uint32_t firstIndex = 0, int32_t vertexOffset = 0, uint32_t firstInstance = 0) override;
 
+        [[nodiscard]] bool BeginDebugLabel(const char* name, const std::array<float, 4>& color) override;
+        void EndDebugLabel() override;
+
     private:
         // 录制期资源引用与状态复位
         [[nodiscard]] RHIStatus RetainTextureView(TextureViewHandle handle);
@@ -79,6 +82,8 @@ namespace Catalpa {
         // 原生命令缓冲及录制状态
         VkCommandBuffer m_CommandBuffer = VK_NULL_HANDLE;
         RHICommandListState m_State = RHICommandListState::Uninitialized;
+
+        uint32_t m_DebugLabelDepth = 0;
 
         // 借用设备，并保留录制所引用的资源。
         VulkanDevice& m_Device;
