@@ -5,6 +5,7 @@
 #include "VulkanDevice.h"
 #include "VulkanResourceRegistry.h"
 #include "VulkanConversions.h"
+#include "VulkanBarrierCompiler.h"
 
 namespace Catalpa {
 
@@ -56,12 +57,49 @@ namespace Catalpa {
     }
 
     // 录制已经给定的依赖，不自行推导资源状态
-    RHIStatus VulkanCommandList::PipelineBarrier(const VkDependencyInfo& dependencyInfo)
+    RHIStatus VulkanCommandList::PipelineBarrier(std::span<const RHITextureBarrier> barriers)
     {
+        constexpr const char* operation = "VulkanCommandList::PipelineBarrier";
+
         if (m_State != RHICommandListState::Recording) {
             CAT_CORE_ASSERT(false, "Pipeline barriers must be recorded outside a rendering scope!");
-            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::PipelineBarrier" };
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
         }
+
+        if (barriers.empty()) return {};
+
+        if (barriers.size() > std::numeric_limits<uint32_t>::max())
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        const auto& registry = m_Device.GetResourceRegistry();
+        std::vector<VkImageMemoryBarrier2> nativeBarriers;
+        nativeBarriers.reserve(barriers.size());
+
+        for (const auto& desc : barriers) {
+            VkImageMemoryBarrier2 native{};
+            if (const RHIStatus status = CompileVulkanTextureBarrier(desc, registry, native); !status.IsSuccess()) return status;
+
+            if (std::ranges::any_of(nativeBarriers, [image = native.image](const auto& existing) { return existing.image == image; }))
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+            nativeBarriers.push_back(native);
+        }
+
+        const size_t first = m_RetainedViews.size();
+        m_RetainedViews.reserve(first + barriers.size());
+
+        for (const auto& desc : barriers) {
+            if (const RHIStatus status = RetainTextureView(desc.view); !status.IsSuccess()) {
+                ReleaseTextureViews(first);
+                return status;
+            }
+        }
+
+        const VkDependencyInfo dependencyInfo{
+            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+            .imageMemoryBarrierCount = static_cast<uint32_t>(nativeBarriers.size()),
+            .pImageMemoryBarriers = nativeBarriers.data()
+        };
 
         vkCmdPipelineBarrier2(m_CommandBuffer, &dependencyInfo);
         return {};
@@ -188,8 +226,6 @@ namespace Catalpa {
         vkCmdSetScissor(m_CommandBuffer, 0, 1, &nativeScissor);
         return {};
     }
-
-    VulkanCommandList::~VulkanCommandList() { ReleaseTextureViews(); }
 
     RHIStatus VulkanCommandList::RetainTextureView(TextureViewHandle handle)
     {

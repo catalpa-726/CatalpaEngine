@@ -16,6 +16,8 @@ namespace Catalpa {
         VulkanQueue(const VulkanQueue&) = delete;
         VulkanQueue& operator=(const VulkanQueue&) = delete;
 
+        const RHIStatus& GetFailure() const { return m_Failure; }
+
         // 主线程调用；命令列表和 Fence 必须来自同一设备，命令池队列族必须匹配。
         [[nodiscard]] RHIStatus Submit(
             VulkanCommandList& commands, 

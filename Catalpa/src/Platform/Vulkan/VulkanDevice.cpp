@@ -167,6 +167,9 @@ namespace Catalpa {
 
         RHIStatus status = WaitIdle();
 
+        if (status.IsSuccess() && m_GraphicsQueue && m_GraphicsQueue->GetFailure().code == RHIErrorCode::DeviceLost)
+            status = m_GraphicsQueue->GetFailure();
+
         if (status.IsSuccess()) {
             for (auto& frame : m_Frames) {
                 if (!frame) continue;

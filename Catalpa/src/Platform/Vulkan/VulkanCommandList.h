@@ -29,7 +29,7 @@ namespace Catalpa {
         void MarkSubmitted();
 
         // 录制调用者提供的同步依赖；当前只允许在渲染段之外调用。
-        [[nodiscard]] RHIStatus PipelineBarrier(const VkDependencyInfo& dependencyInfo);
+        [[nodiscard]] RHIStatus PipelineBarrier(std::span<const RHITextureBarrier> barriers) override;
 
         // 当前支持 flags = 0、viewMask = 0 的普通动态渲染。
         [[nodiscard]] RHIStatus BeginRendering(const RHIRenderingDesc& desc) override;

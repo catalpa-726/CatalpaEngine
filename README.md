@@ -13,50 +13,6 @@ CatalpaEngine 是一个使用 **C++20** 开发的引擎项目，当前主要面�
 
 目前已能运行到 Vulkan 设备创建成功。
 
-## 当前目录概览
-
-以下展示当前主要入口，完整引擎架构仍在逐步实现。
-
-```text
-CatalpaEngine/
-├── Catalpa/
-│   ├── src/
-│   │   ├── Core/
-│   │   ├── Events/
-│   │   ├── Layer/
-│   │   ├── Log/
-│   │   ├── Platform/
-│   │   │   ├── Vulkan/            # Vulkan 后端与统一 VulkanHeaders.h
-│   │   │   └── WindowsWindow/     # 现有 GLFW 窗口适配
-│   │   ├── RHI/                  # API 无关的设备接口、错误与后端工厂
-│   │   ├── Runtime/              # 引擎服务初始化与生命周期编排
-│   │   ├── Renderer/
-│   │   └── Catalpa.h、catpch.h、catpch.cpp
-│   └── third_party/
-│       ├── glad/                  # 本地生成，不提交生成代码
-│       ├── glfw/                  # Git submodule
-│       ├── imgui/                 # Git submodule，docking 版本
-│       └── spdlog/                # Git submodule，当前使用头文件
-├── CatalpaBox/
-│   ├── assets/
-│   └── src/
-│       └── catalpaBox.cpp
-├── Script/
-│   ├── Build/                     # 引擎维护的第三方构建适配
-│   │   ├── GLFW.lua
-│   │   ├── ImGui.lua
-│   │   ├── GLAD.lua
-│   │   └── README.md              # 现有目录的一次性迁移步骤
-│   └── premake/
-│       ├── premake5.exe
-│       └── LICENSE.txt
-├── .gitmodules                   # 子模块路径与上游地址
-├── .gitignore
-├── build_project.bat
-├── premake5.lua
-└── README.md
-```
-
 ## 构建与运行
 
 以下命令在**项目根目录**执行。
