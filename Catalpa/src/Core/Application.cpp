@@ -4,6 +4,7 @@
 
 #include "Runtime/EngineRuntime.h"
 #include "RHI/RHIBackend.h"
+#include "Layer/Imgui/ImGuiLayer.h"
 
 namespace Catalpa {
 
@@ -24,6 +25,7 @@ namespace Catalpa {
     {
         m_LayerStack.Clear();
         m_PendingLayers.clear();
+        m_ImGuiLayer.reset();
         m_Runtime.reset();
         m_Window.reset();
         s_Instance = nullptr;
@@ -36,6 +38,7 @@ namespace Catalpa {
         dispatcher.Dispatch<WindowFramebufferResizeEvent>(CAT_BIND_EVENT_FN(Application::OnWindowSurfaceChanged));
         dispatcher.Dispatch<WindowMinimizeEvent>(CAT_BIND_EVENT_FN(Application::OnWindowSurfaceChanged));
 
+        if (m_ImGuiLayer) m_ImGuiLayer->OnEvent(e);
         for (auto it = m_LayerStack.rbegin(); it != m_LayerStack.rend() && !e.Handled; ++it) (*it)->OnEvent(e);
     }
 
@@ -72,6 +75,20 @@ namespace Catalpa {
             return;
         }
 
+        m_ImGuiLayer = std::make_unique<ImGuiLayer>();
+        m_ImGuiLayer->OnAttach();
+        if (!m_ImGuiLayer->IsReady()) {
+            m_ImGuiLayer.reset();
+            m_PendingLayers.clear();
+            return;
+        }
+        if (const RHIStatus status = m_Runtime->InitUI(m_ImGuiLayer->GetFontPixels(), m_ImGuiLayer->GetFontExtent()); !status.IsSuccess()) {
+            CAT_CORE_ERROR("UI initialization failed at {0}. RHI error: {1}", status.operation, static_cast<int>(status.code));
+            m_ImGuiLayer.reset();
+            m_PendingLayers.clear();
+            return;
+        }
+
         AttachPendingLayers();
 
         using Clock = std::chrono::steady_clock;
@@ -87,7 +104,15 @@ namespace Catalpa {
 
             for (Layer* layer : m_LayerStack) layer->OnUpdate(timestep);
 
-            if (const RHIStatus status = m_Runtime->Update(*m_Window); !status.IsSuccess()) {
+            m_ImGuiLayer->Begin();
+            for (Layer* layer : m_LayerStack) layer->OnImGuiRender();
+            m_ImGuiLayer->OnImGuiRender();
+            if (const RHIStatus status = m_ImGuiLayer->End(); !status.IsSuccess()) {
+                CAT_CORE_ERROR("UI frame failed at {0}. RHI error: {1}", status.operation, static_cast<int>(status.code));
+                break;
+            }
+
+            if (const RHIStatus status = m_Runtime->Update(*m_Window, &m_ImGuiLayer->GetFrameData()); !status.IsSuccess()) {
                 CAT_CORE_ERROR("Engine update failed at {0}. RHI error: {1}", status.operation, static_cast<int>(status.code));
                 break;
             }
@@ -97,6 +122,7 @@ namespace Catalpa {
 
         m_LayerStack.Clear();
         m_PendingLayers.clear();
+        m_ImGuiLayer.reset();
     }
 
     bool Application::OnWindowClose(WindowCloseEvent& e)

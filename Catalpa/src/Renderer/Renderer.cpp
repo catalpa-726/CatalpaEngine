@@ -77,7 +77,7 @@ namespace Catalpa {
         m_Device.ReleaseGraphicsPipeline(m_TrianglePipeline);
     }
 
-    RHIStatus Renderer::BuildFrameGraph(RenderGraph& graph, const RHIAcquireResult& acquired)
+    RHIStatus Renderer::BuildFrameGraph(RenderGraph& graph, const RHIAcquireResult& acquired, const ImGuiFrameData* uiFrame)
     {
         if (const RHIStatus status = m_Uploads.AddPasses(graph); !status.IsSuccess()) return status;
 
@@ -135,6 +135,9 @@ namespace Catalpa {
         SetTriangleDrawParameters(draw, right);
 
         if (const RHIStatus status = graph.AddDrawPass("Right Triangle - Load", draw); !status.IsSuccess()) return status;
+        if (uiFrame) {
+            if (const RHIStatus status = m_UI.AddPasses(graph, color, extent, m_FrameSlot, *uiFrame); !status.IsSuccess()) return status;
+        }
         return graph.ExportPresent(color);
     }
 
@@ -159,7 +162,7 @@ namespace Catalpa {
         return failure;
     }
 
-    RHIStatus Renderer::Render()
+    RHIStatus Renderer::Render(const ImGuiFrameData* uiFrame)
     {
         if (m_Swapchain.GetInfo().state != RHISwapchainState::Ready) return {};
         if (const RHIStatus status = EnsureTrianglePipeline(); !status.IsSuccess()) return status;
@@ -174,6 +177,11 @@ namespace Catalpa {
         RHIStatus status = m_Device.PrepareFrame(m_FrameSlot, timeoutNanoseconds, frame, ready);
         if (!status.IsSuccess() || !ready) return status;
 
+        if (uiFrame) {
+            status = m_UI.Prepare(m_FrameSlot, *uiFrame, m_Swapchain.GetInfo().format);
+            if (!status.IsSuccess()) return status;
+        }
+
         RHIAcquireResult acquired{};
         status = m_Swapchain.Acquire(frame.token, timeoutNanoseconds, acquired);
         if (!status.IsSuccess() || !acquired.HasImage()) return status;
@@ -181,7 +189,7 @@ namespace Catalpa {
         RenderGraph graph(m_Device);
         RenderGraphPlan plan;
 
-        status = BuildFrameGraph(graph, acquired);
+        status = BuildFrameGraph(graph, acquired, uiFrame);
         if (!status.IsSuccess()) return CancelFrame(acquired, status);
 
         status = graph.Compile(plan);

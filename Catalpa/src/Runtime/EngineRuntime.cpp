@@ -72,12 +72,18 @@ namespace Catalpa {
         m_SwapchainDirty = true;
     }
 
+    RHIStatus EngineRuntime::InitUI(std::span<const std::byte> fontPixels, Extent2D fontExtent)
+    {
+        if (!m_Renderer) return { RHIErrorCode::InvalidState, 0, "EngineRuntime::InitUI/Renderer" };
+        return m_Renderer->InitUI(fontPixels, fontExtent);
+    }
+
     // 每轮先根据事件标记、VSync 变化或交换链状态处理更新，再执行绘制。
     // UpdateSwapchain 负责查询和比较请求配置，确实需要时才重建。
-    RHIStatus EngineRuntime::Update(Window& window)
+    RHIStatus EngineRuntime::Update(Window& window, const ImGuiFrameData* uiFrame)
     {
         if (const RHIStatus status = UpdateSwapchain(window); !status.IsSuccess()) return status;
-        return m_Renderer->Render();
+        return m_Renderer->Render(uiFrame);
     }
 
     RHIStatus EngineRuntime::UpdateSwapchain(Window& window)

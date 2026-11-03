@@ -1,4 +1,4 @@
 ﻿#include "catpch.h"
 
-//#include "backends/imgui_impl_vulkan.cpp"
-//#include "backends/imgui_impl_glfw.cpp"
+// 仅编译现有平台适配；GPU 绘制由引擎 RenderGraph/RHI 接管。
+#include "backends/imgui_impl_glfw.cpp"

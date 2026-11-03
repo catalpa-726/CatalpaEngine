@@ -4,6 +4,8 @@
 #include "RHI/RHIError.h"
 #include "RHI/RHISwapchainDesc.h"
 #include "RHI/RHIBackend.h"
+#include <cstddef>
+#include <span>
 
 namespace Catalpa {
 
@@ -11,6 +13,7 @@ namespace Catalpa {
     class Renderer;
     class RHIDevice;
     class RHISwapchain;
+    struct ImGuiFrameData;
 
     // 组装设备、交换链和 Renderer，衔接窗口状态与每帧渲染。
     class EngineRuntime {
@@ -25,7 +28,10 @@ namespace Catalpa {
         void Shutdown();
 
         // 每轮事件和 Layer 更新后，处理交换链变化并执行绘制。
-        [[nodiscard]] RHIStatus Update(Window& window);
+        [[nodiscard]] RHIStatus Update(Window& window, const ImGuiFrameData* uiFrame = nullptr);
+
+        // 初始化 UI 静态字体资源；不暴露设备或后端原生句柄给 Layer。
+        [[nodiscard]] RHIStatus InitUI(std::span<const std::byte> fontPixels, Extent2D fontExtent);
 
         void RequestSwapchainUpdate() { m_SwapchainDirty = true; }
 

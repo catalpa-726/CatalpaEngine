@@ -9,6 +9,7 @@
 namespace Catalpa {
 
 	class EngineRuntime;
+	class ImGuiLayer;
 
 	class CATALPA_API Application {
 	public:
@@ -45,6 +46,8 @@ namespace Catalpa {
 		static Application* s_Instance;
 		std::unique_ptr<Window> m_Window;
 		std::unique_ptr<EngineRuntime> m_Runtime;
+		// UI 上下文先于业务 Layer 创建，晚于业务 Layer 卸载。
+		std::unique_ptr<ImGuiLayer> m_ImGuiLayer;
 
 		// 已挂载的层与待挂载的所有权队列。
 		LayerStack m_LayerStack;

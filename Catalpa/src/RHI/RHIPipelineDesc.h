@@ -7,6 +7,9 @@
 
 namespace Catalpa {
 
+    // StraightAlpha 用于非预乘颜色：RGB = src.rgb * src.a + dst.rgb * (1 - src.a)。
+    enum class RHIBlendMode { Opaque, StraightAlpha };
+
     // 单个从 offset 0 开始的连续参数块，size 单位为字节。
     // size 为 0 时 visibility 必须为 None。
     struct RHIPushConstantDesc {
@@ -21,6 +24,7 @@ namespace Catalpa {
         RHIShaderDesc fragment{ .stage = RHIShaderStage::Fragment };
         PixelFormat colorFormat = PixelFormat::Unknown;
         uint32_t sampleCount = 1;
+        RHIBlendMode blendMode = RHIBlendMode::Opaque;
         VertexLayout vertexLayout{};
         RHIPushConstantDesc pushConstants{};
         RHIBindingLayoutDesc bindingLayout{};

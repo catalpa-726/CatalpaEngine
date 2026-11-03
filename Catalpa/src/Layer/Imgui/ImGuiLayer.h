@@ -1,11 +1,12 @@
 ﻿#pragma once
 
 #include "Layer/Layer.h"
-//#include <vulkan/vulkan.h>
-
-#include "Events/KeyEvent.h"
-#include "Events/MouseEvent.h"
-#include "Events/ApplicationEvent.h"
+#include "Renderer/UI/ImGuiFrameData.h"
+#include "RHI/RHIError.h"
+#include <cstddef>
+#include <limits>
+#include <span>
+#include "RHI/RHITypes.h"
 
 namespace Catalpa {
 
@@ -18,14 +19,22 @@ namespace Catalpa {
 		virtual void OnDetach() override;
 		void OnImGuiRender() override;
 
-		// ImGui 帧入口；平台和渲染后端仍需接入。
+		// 主窗口的平台输入与 CPU 帧转换；GPU 对象由 Renderer 持有。
 		void Begin();
-		void End();
+		[[nodiscard]] RHIStatus End();
+		bool IsReady() const { return m_Ready; }
+		std::span<const std::byte> GetFontPixels() const { return m_FontPixels; }
+		Extent2D GetFontExtent() const { return m_FontExtent; }
+		const ImGuiFrameData& GetFrameData() const { return m_FrameData; }
 
-		void OnEvent(Event& event);
+		void OnEvent(Event& event) override;
 
 	private:
-		float m_Time = 0.0f;
+		bool m_Ready = false;
+		bool m_ContextCreated = false;
+		std::span<const std::byte> m_FontPixels;
+		Extent2D m_FontExtent{};
+		ImGuiFrameData m_FrameData;
 	};
 
 }
