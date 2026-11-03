@@ -10,6 +10,7 @@
 #include "VulkanQueue.h"
 #include "VulkanResourceRegistry.h"
 #include "VulkanConversions.h"
+#include "VulkanMemoryAllocator.h"
 
 namespace Catalpa {
 
@@ -117,6 +118,13 @@ namespace Catalpa {
         };
 
         m_Backend = std::move(backend);
+        m_MemoryAllocator = std::make_unique<VulkanMemoryAllocator>();
+
+        if (const RHIStatus status = m_MemoryAllocator->Init(instance, m_PhysicalDevice, m_Device); !status.IsSuccess()) {
+            Shutdown();
+            return false;
+        }
+
         m_ResourceRegistry = std::make_unique<VulkanResourceRegistry>(*this, AllocateDeviceId());
         m_GraphicsQueue = std::make_unique<VulkanQueue>(*this, graphicsQueue, m_GraphicsQueueFamily, QueueId{ 1 });
 
@@ -210,6 +218,7 @@ namespace Catalpa {
 
         if (m_Device != VK_NULL_HANDLE) {
             m_ResourceRegistry.reset();
+            m_MemoryAllocator.reset();
             vkDestroyDevice(m_Device, nullptr);
             m_Device = VK_NULL_HANDLE;
             m_PhysicalDevice = VK_NULL_HANDLE;

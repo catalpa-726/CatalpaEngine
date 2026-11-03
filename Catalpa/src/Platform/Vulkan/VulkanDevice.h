@@ -10,6 +10,7 @@ namespace Catalpa {
     class VulkanFrameContext;
     class VulkanQueue;
     class VulkanResourceRegistry;
+    class VulkanMemoryAllocator;
 
     class VulkanDevice : public RHIDevice {
     public:
@@ -65,6 +66,9 @@ namespace Catalpa {
         const RHICapabilities& GetCapabilities() const override { return m_Capabilities; }
         RHIFormatSupport GetFormatSupport(PixelFormat format) const override;
 
+        VulkanMemoryAllocator& GetMemoryAllocator() { return *m_MemoryAllocator; }
+        const VulkanMemoryAllocator& GetMemoryAllocator() const { return *m_MemoryAllocator; }
+
         // 关闭前收尾与管线管理
         [[nodiscard]] RHIStatus WaitIdleAndDiscardFrameCommands() override;
 
@@ -86,6 +90,9 @@ namespace Catalpa {
 
         // 帧资源先于登记表和逻辑设备释放
         std::array<std::unique_ptr<VulkanFrameContext>, FramesInFlight> m_Frames{};
+
+        // 登记表内的资源释放完毕后，才能销毁分配器。
+        std::unique_ptr<VulkanMemoryAllocator> m_MemoryAllocator;
 
         std::unique_ptr<VulkanResourceRegistry> m_ResourceRegistry;
 

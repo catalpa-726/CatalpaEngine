@@ -12,6 +12,7 @@ IncludeDir["GLFW"] = "Catalpa/third_party/glfw/include"
 IncludeDir["GLAD"] = "Catalpa/third_party/glad/include"
 IncludeDir["imgui"] = "Catalpa/third_party/imgui"
 IncludeDir["VulkanSDK"] = path.join(vulkanSDK, "Include")
+IncludeDir["VMA"] = "Catalpa/third_party/VulkanMemoryAllocator/include"
 
 -- Submodules and generated GLAD files must be available before project generation.
 local requiredDependencies = {
@@ -20,7 +21,8 @@ local requiredDependencies = {
     "Catalpa/third_party/imgui/imgui.h",
     "Catalpa/third_party/glad/include/glad/vulkan.h",
     "Catalpa/third_party/glad/include/vk_platform.h",
-    "Catalpa/third_party/glad/src/vulkan.c"
+    "Catalpa/third_party/glad/src/vulkan.c",
+    "Catalpa/third_party/VulkanMemoryAllocator/include/vk_mem_alloc.h"
 }
 for _, dependency in ipairs(requiredDependencies) do
     if not os.isfile(path.join(_MAIN_SCRIPT_DIR, dependency)) then
@@ -96,7 +98,8 @@ project "Catalpa"
         "%{IncludeDir.GLAD}",
         "%{IncludeDir.imgui}",
         "%{IncludeDir.VulkanSDK}",
-        generatedShaders
+        generatedShaders,
+        "%{IncludeDir.VMA}",
     }
 
     links { 
@@ -112,7 +115,11 @@ project "Catalpa"
             "GLFW_INCLUDE_NONE",
             "CATALPA_ENABLE_ASSERTS",
             "VK_NO_PROTOTYPES",
-            "IMGUI_IMPL_VULKAN_NO_PROTOTYPES"
+            "IMGUI_IMPL_VULKAN_NO_PROTOTYPES",
+            "VMA_VULKAN_VERSION=1003000",
+            "VMA_STATIC_VULKAN_FUNCTIONS=0",
+            "VMA_DYNAMIC_VULKAN_FUNCTIONS=0",
+            "VMA_BUFFER_DEVICE_ADDRESS=0"
 		}
 
         -- 编译 C++ 前，先生成 shader 头文件。
