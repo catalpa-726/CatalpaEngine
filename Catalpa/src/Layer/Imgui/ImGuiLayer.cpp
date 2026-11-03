@@ -29,7 +29,7 @@ namespace Catalpa {
         io.ConfigFlags &= ~ImGuiConfigFlags_ViewportsEnable;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
         io.BackendRendererName = "Catalpa_RenderGraph";
-        io.IniFilename = nullptr; // S02 由配置服务指定布局的持久化位置。
+        io.IniFilename = nullptr; // 宿主工作区通过内存接口保存布局，不让 ImGui 隐式写入当前目录。
         ImGui::StyleColorsDark();
 
         auto* window = static_cast<GLFWwindow*>(Application::Get().GetWindow().GetNativeWindow());
@@ -149,32 +149,6 @@ namespace Catalpa {
             }
         }
         return {};
-    }
-
-    void ImGuiLayer::OnImGuiRender()
-    {
-        // S01 可操作入口；正式菜单与工作区面板在 S02 接续，不挡住全部原场景。
-        ImGui::SetNextWindowPos(ImVec2(24, 24), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(390, 470), ImGuiCond_FirstUseEver);
-        if (ImGui::Begin("UI Controls###Catalpa.UIControls")) {
-            ImGui::TextUnformatted("Catalpa - main window UI");
-            static char input[128] = "Type here";
-            ImGui::InputText("Text###Input", input, sizeof(input));
-            static int clicks = 0;
-            if (ImGui::Button("Click###Click")) ++clicks;
-            ImGui::SameLine();
-            ImGui::Text("Clicks: %d", clicks);
-            static float value = 0.5f;
-            ImGui::SliderFloat("Value###Value", &value, 0.0f, 1.0f);
-            bool vsync = Application::Get().GetWindow().IsVSync();
-            if (ImGui::Checkbox("VSync###VSync", &vsync)) Application::Get().GetWindow().SetVSync(vsync);
-            ImGui::TextUnformatted("Drag this window by its title bar.");
-            ImGui::Separator();
-            ImGui::BeginChild("ScrollArea", ImVec2(0, 0), ImGuiChildFlags_Borders);
-            for (int row = 1; row <= 60; ++row) ImGui::Text("Scrollable row %02d", row);
-            ImGui::EndChild();
-        }
-        ImGui::End();
     }
 
 }

@@ -17,7 +17,6 @@ namespace Catalpa {
 
 		virtual void OnAttach() override;
 		virtual void OnDetach() override;
-		void OnImGuiRender() override;
 
 		// 主窗口的平台输入与 CPU 帧转换；GPU 对象由 Renderer 持有。
 		void Begin();

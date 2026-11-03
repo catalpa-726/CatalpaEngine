@@ -103,10 +103,10 @@ namespace Catalpa {
             previous = now;
 
             for (Layer* layer : m_LayerStack) layer->OnUpdate(timestep);
+            if (!m_Running) break;
 
             m_ImGuiLayer->Begin();
             for (Layer* layer : m_LayerStack) layer->OnImGuiRender();
-            m_ImGuiLayer->OnImGuiRender();
             if (const RHIStatus status = m_ImGuiLayer->End(); !status.IsSuccess()) {
                 CAT_CORE_ERROR("UI frame failed at {0}. RHI error: {1}", status.operation, static_cast<int>(status.code));
                 break;

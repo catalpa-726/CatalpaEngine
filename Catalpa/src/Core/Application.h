@@ -19,6 +19,9 @@ namespace Catalpa {
 
 		void Run();
 
+		// 请求主循环有序退出，仍由 Application 完成 Layer 与运行时清理。
+		void RequestClose() { m_Running = false; }
+
 		void OnEvent(Event& e);
 
 		// 应用与窗口访问。

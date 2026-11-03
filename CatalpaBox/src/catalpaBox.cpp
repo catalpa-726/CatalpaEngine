@@ -1,5 +1,7 @@
 ﻿#include <Catalpa.h>
 
+#include "Application/EditorWorkspace.h"
+
 class BoxLayer final : public Catalpa::Layer {
 public:
     BoxLayer() : Layer("BoxLayer") {}
@@ -19,7 +21,11 @@ public:
 
 class CatalpaBox : public Catalpa::Application {
 public:
-    CatalpaBox() { PushLayer(std::make_unique<BoxLayer>()); }
+    // CatalpaBox 是唯一启动应用；编辑器静态库只提供由宿主挂载的功能。
+    CatalpaBox() {
+        PushLayer(std::make_unique<BoxLayer>());
+        PushOverlay(std::make_unique<Catalpa::Editor::EditorWorkspace>());
+    }
 
     ~CatalpaBox() {}
 };
