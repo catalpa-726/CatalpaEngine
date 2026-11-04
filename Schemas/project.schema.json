@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://catalpa.local/schemas/project.schema.json",
+  "title": "Catalpa author project version 1",
+  "description": "Paths resolve relative to the explicit project file. ProjectConfig also checks canonical source/output separation, mount names and bounded UTF-8 byte counts. This is author configuration, not a runtime scene or package.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "name", "contentRoot", "externalSourceRoots", "derivedDataRoot", "cookedRoot", "metadata", "buildProfiles", "buildProfile", "targetPlatform", "buildConfiguration"],
+  "properties": {
+    "schemaVersion": {"const": 1, "type": "integer", "description": "The C++ reader additionally requires an integer JSON token, so 1.0 is rejected."},
+    "id": {"$ref": "#/$defs/stableId"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^\u0000]*$"},
+    "contentRoot": {"$ref": "#/$defs/path"},
+    "externalSourceRoots": {
+      "type": "object", "maxProperties": 64,
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_-]{0,62}$", "not": {"enum": ["content", "cooked", "input"]}},
+      "additionalProperties": {"$ref": "#/$defs/path"}
+    },
+    "derivedDataRoot": {"$ref": "#/$defs/path"},
+    "cookedRoot": {"$ref": "#/$defs/path"},
+    "metadata": {"$ref": "#/$defs/path", "description": "Canonical relative path inside contentRoot; traversal, absolute paths and backslashes are rejected by VirtualPath."},
+    "buildProfiles": {"$ref": "#/$defs/path"},
+    "buildProfile": {"type": "string", "maxLength": 64, "pattern": "^[a-z][a-z0-9._-]*$"},
+    "targetPlatform": {"const": "windows"},
+    "buildConfiguration": {"enum": ["Debug", "Release", "Dist"]},
+    "startupScene": {"anyOf": [{"$ref": "#/$defs/stableId"}, {"type": "null"}]},
+    "modules": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"type": "string", "maxLength": 128, "pattern": "^[a-z][a-z0-9._-]*$"}}
+  },
+  "$defs": {
+    "path": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^[^\u0000]*$"},
+    "stableId": {"type": "string", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", "not": {"const": "00000000-0000-0000-0000-000000000000"}}
+  }
+}

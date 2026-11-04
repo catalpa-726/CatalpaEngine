@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "kind": "definition",
+  "family": "catalpa.pbr",
+  "shadingModel": "pbr",
+  "domain": "surface",
+  "alphaMode": "opaque",
+  "shader": "5c35308e-1d0c-9d78-a968-b6dc14e5c915",
+  "vertexEntry": "vertexMain",
+  "fragmentEntry": "fragmentMain",
+  "parameterBlock": "Material",
+  "parameters": [
+    {
+      "id": "base_color",
+      "displayName": "Base color",
+      "type": "float4",
+      "default": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "min": 0,
+      "allowOverride": true
+    },
+    {
+      "id": "metallic",
+      "displayName": "Metallic",
+      "type": "float",
+      "default": 0.0,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "roughness",
+      "displayName": "Roughness",
+      "type": "float",
+      "default": 0.5,
+      "min": 0,
+      "max": 1
+    },
+    {
+      "id": "emissive",
+      "displayName": "Emissive",
+      "type": "float3",
+      "default": [
+        0,
+        0,
+        0
+      ],
+      "min": 0
+    }
+  ],
+  "renderState": {
+    "cull": "none",
+    "depthTest": true,
+    "depthWrite": true,
+    "blend": "opaque"
+  },
+  "allowedStateOverrides": [
+    "cull"
+  ]
+}

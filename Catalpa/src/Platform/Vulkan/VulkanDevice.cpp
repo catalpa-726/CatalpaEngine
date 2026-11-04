@@ -1,4 +1,5 @@
-﻿#include "catpch.h"
+#include "catpch.h"
+#include "VulkanPipelineCache.h"
 #include "Log/Log.h"
 #include "VulkanDevice.h"
 #include "VulkanPhysicalDevice.h"
@@ -138,6 +139,7 @@ namespace Catalpa {
             return false;
         }
 
+        m_PipelineCache = std::make_unique<VulkanPipelineCache>(m_Device, physicalDevice.GetProperties());
         m_ResourceRegistry = std::make_unique<VulkanResourceRegistry>(*this, AllocateDeviceId());
         m_GraphicsQueue = std::make_unique<VulkanQueue>(*this, graphicsQueue, m_GraphicsQueueFamily, QueueId{ 1 });
 
@@ -190,6 +192,8 @@ namespace Catalpa {
 
     const VulkanDebugUtils& VulkanDevice::GetDebugUtils() const { return m_Backend->GetInstance().GetDebugUtils(); }
 
+    VkPipelineCache VulkanDevice::GetPipelineCache() const { return m_PipelineCache ? m_PipelineCache->GetHandle() : VK_NULL_HANDLE; }
+
     DeviceId VulkanDevice::GetDeviceId() const { return m_ResourceRegistry ? m_ResourceRegistry->GetDeviceId() : DeviceId{}; }
 
     RHIStatus VulkanDevice::WaitIdleAndDiscardFrameCommands()
@@ -234,6 +238,7 @@ namespace Catalpa {
 
         if (m_Device != VK_NULL_HANDLE) {
             m_ResourceRegistry.reset();
+            m_PipelineCache.reset();
             m_MemoryAllocator.reset();
             vkDestroyDevice(m_Device, nullptr);
             m_Device = VK_NULL_HANDLE;

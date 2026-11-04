@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "RHI/RHIDevice.h"
 #include "VulkanHeaders.h"
@@ -12,6 +12,7 @@ namespace Catalpa {
     class VulkanResourceRegistry;
     class VulkanMemoryAllocator;
     class VulkanDebugUtils;
+    class VulkanPipelineCache;
 
     class VulkanDevice : public RHIDevice {
     public:
@@ -38,6 +39,7 @@ namespace Catalpa {
         // 原生对象、队列与帧槽
         VkDevice GetHandle() const { return m_Device; }
         VkPhysicalDevice GetPhysicalDevice() const { return m_PhysicalDevice; }
+        VkPipelineCache GetPipelineCache() const;
 
         VkQueue GetPresentQueue() const { return m_PresentQueue; }
         VulkanQueue& GetGraphicsQueue() override { return *m_GraphicsQueue; }
@@ -117,6 +119,7 @@ namespace Catalpa {
         std::unique_ptr<VulkanMemoryAllocator> m_MemoryAllocator;
 
         std::unique_ptr<VulkanResourceRegistry> m_ResourceRegistry;
+        std::unique_ptr<VulkanPipelineCache> m_PipelineCache;
 
         // 已启用能力与终止性设备状态
         RHICapabilities m_Capabilities{};

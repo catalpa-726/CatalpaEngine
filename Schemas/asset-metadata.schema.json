@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://catalpa.local/schemas/asset-metadata.schema.json",
+  "title": "Catalpa asset identity registry version 1",
+  "description": "Registers identity and content versions only. Missing dependencies remain diagnostics. Source provenance and import settings are retained without modifying original data. The loader also rejects duplicate IDs/locators, self dependencies and undeclared mounts.",
+  "type": "object", "additionalProperties": false,
+  "required": ["schemaVersion", "assets"],
+  "properties": {
+    "schemaVersion": {"type": "integer", "const": 1, "description": "The C++ reader additionally requires an integer JSON token, so 1.0 is rejected."},
+    "assets": {"type": "array", "maxItems": 4096, "items": {"$ref": "#/$defs/asset"}}
+  },
+  "$defs": {
+    "stableId": {"type": "string", "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", "not": {"const": "00000000-0000-0000-0000-000000000000"}},
+    "text": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^[^\u0000]*$"},
+    "asset": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "type", "path", "kind", "version"],
+      "properties": {
+        "id": {"$ref": "#/$defs/stableId"},
+        "type": {"type": "string", "maxLength": 128, "pattern": "^[a-z][a-z0-9._-]*$"},
+        "path": {"$ref": "#/$defs/text", "description": "Canonical mount:/relative path; source mounts must be declared in the project, cooked locators use cooked:/ ."},
+        "kind": {"enum": ["source", "cooked"]},
+        "version": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615, "description": "An exact integer JSON token is required; floating point tokens are rejected."},
+        "dependencies": {"type": "array", "maxItems": 1024, "uniqueItems": true, "items": {"$ref": "#/$defs/stableId"}},
+        "contentHash": {"type": "string", "pattern": "^([0-9a-f]{64})?$"},
+        "source": {
+          "type": "object", "additionalProperties": false, "required": ["uri", "license"],
+          "properties": {"uri": {"$ref": "#/$defs/text"}, "license": {"$ref": "#/$defs/text"}, "note": {"$ref": "#/$defs/text"}}
+        },
+        "importSettings": {"type": "object", "description": "Preserved bounded author data; importer-specific validation is performed by the future importer."}
+      }
+    }
+  }
+}

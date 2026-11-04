@@ -1,5 +1,9 @@
 outputdir = "%{cfg.system}-%{cfg.architecture}/%{cfg.buildcfg}"
 local vulkanSDK = os.getenv("VULKAN_SDK")
+if not vulkanSDK or vulkanSDK == "" then error("VULKAN_SDK is required for the locked shader toolchain.") end
+for _, tool in ipairs { "Bin/slangc.exe", "Bin/slang-compiler.dll", "Bin/spirv-val.exe" } do
+    if not os.isfile(path.join(vulkanSDK, tool)) then error("Missing SDK tool: " .. path.join(vulkanSDK, tool)) end
+end
 
 IncludeDir = {}
 IncludeDir["GLFW"] = "Catalpa/third_party/glfw/include"
@@ -10,8 +14,10 @@ IncludeDir["VMA"] = "Catalpa/third_party/VulkanMemoryAllocator/include"
 IncludeDir["JSON"] = "Catalpa/third_party/json/include"
 IncludeDir["GLM"] = "Catalpa/third_party/glm"
 IncludeDir["EnTT"] = "Catalpa/third_party/entt/src"
+IncludeDir["EnkiTS"] = "Catalpa/third_party/enkiTS/src"
+IncludeDir["SPIRVReflect"] = "Catalpa/third_party/SPIRV-Reflect"
 
--- 工程生成前检查子模块、生成的 GLAD 和随源码提供的头文件依赖。
+-- 工程生成前检查外部源码依赖和生成的 GLAD；获取版本见 Dependencies.lock.json。
 local requiredDependencies = {
     "Catalpa/third_party/glfw/include/GLFW/glfw3.h",
     "Catalpa/third_party/spdlog/include/spdlog/spdlog.h",
@@ -24,7 +30,13 @@ local requiredDependencies = {
     "Catalpa/third_party/glm/glm/glm.hpp",
     "Catalpa/third_party/glm/glm/detail/setup.hpp",
     "Catalpa/third_party/entt/src/entt/entity/registry.hpp",
-    "Catalpa/third_party/entt/src/entt/config/version.h"
+    "Catalpa/third_party/entt/src/entt/config/version.h",
+    "Catalpa/third_party/enkiTS/src/TaskScheduler.cpp",
+    "Catalpa/third_party/enkiTS/src/TaskScheduler.h",
+    "Catalpa/third_party/enkiTS/src/LockLessMultiReadPipe.h",
+    "Catalpa/third_party/SPIRV-Reflect/spirv_reflect.c",
+    "Catalpa/third_party/SPIRV-Reflect/spirv_reflect.h",
+    "Catalpa/third_party/SPIRV-Reflect/include/spirv/unified1/spirv.h"
 }
 for _, dependency in ipairs(requiredDependencies) do
     if not os.isfile(path.join(_MAIN_SCRIPT_DIR, dependency)) then
@@ -78,6 +90,9 @@ filter {}
 include "Script/Build/ImGui.lua"
 include "Script/Build/GLFW.lua"
 include "Script/Build/GLAD.lua"
+include "Script/Build/EnkiTS.lua"
+-- SPIR-V反射由Tools私有消费；Runtime只读取cooked ShaderAsset。
+include "Script/Build/SPIRVReflect.lua"
 
 
 project "Catalpa"
@@ -104,17 +119,21 @@ project "Catalpa"
         "%{IncludeDir.JSON}",
         "%{IncludeDir.GLM}",
         "%{IncludeDir.EnTT}",
+        "%{IncludeDir.EnkiTS}",
     }
 
     links { 
         "GLFW",
         "GLAD",
         "imgui",
+        "enkiTS",
     }
 
     include "Script/Build/Slang.lua"
 
     filter "system:windows"
+        -- 系统随机源与Unicode命令行；系统库，不引入第三方源码。
+        links { "bcrypt", "shell32" }
 		defines {
 			"CATALPA_BUILD_DLL",
             "CATALPA_PLATFORM_WINDOW",
@@ -149,12 +168,14 @@ project "CatalpaBox"
         "Catalpa/src",
         "Catalpa/third_party",
         "CatalpaEditor/src",
+        "Tools",
         "%{IncludeDir.GLM}"
     }
 
     links {
         "Catalpa",
-        "CatalpaEditor"
+        "CatalpaEditor",
+        "Tools"
     }
 
     -- 开发配置调用验证库；Dist 的入口由现有 CATALPA_DIST 分支禁用。
@@ -208,6 +229,23 @@ project "CatalpaBox"
         }
         buildoutputs { "%{cfg.targetdir}/Resources/Config/%{file.name}" }
 
+    filter {}
+    CatalpaShaderBuild.AttachHostCook()
+
+-- 共享作者工具核心：项目配置、Shader编译/校验/反射/Cook及命令协议；宿主只转交，不提供main。
+filter {}
+project "Tools"
+    location "Tools"
+    kind "StaticLib"
+
+    files { "Tools/**.h", "Tools/**.cpp" }
+    includedirs { "Tools", "Catalpa/src", "%{IncludeDir.SPIRVReflect}" }
+    -- 反射是Tools的私有实现依赖；最终宿主通过项目引用链接所需静态实现。
+    links { "Catalpa", "SPIRV-Reflect" }
+
+    filter "system:windows"
+        defines { "CATALPA_PLATFORM_WINDOW" }
+
 filter {}
 project "CatalpaEditor"
     location "CatalpaEditor"
@@ -223,13 +261,15 @@ project "CatalpaEditor"
         "Catalpa/third_party/spdlog/include",
         "Catalpa/src",
         "CatalpaEditor/src",
+        "Tools",
         "%{IncludeDir.imgui}",
         "%{IncludeDir.JSON}",
         "%{IncludeDir.GLM}"
     }
 
     links {
-        "Catalpa"
+        "Catalpa",
+        "Tools"
     }
 
     filter "system:windows"
@@ -240,7 +280,7 @@ project "CatalpaEditor"
             "IMGUI_API=__declspec(dllimport)"
         }
 
--- 开发验证功能库：只消费引擎公共接口，不提供进程入口或沙盒实现。
+-- 开发验证功能库：消费引擎、Tools及Editor会话接口，不提供进程入口或沙盒实现。
 filter {}
 project "Tests"
     location "Tests"
@@ -253,14 +293,18 @@ project "Tests"
 
     includedirs {
         "Tests",
+        "Tools",
+        "CatalpaEditor/src",
         "Catalpa/src",
         "Catalpa/third_party/spdlog/include",
         "%{IncludeDir.GLM}"
     }
 
-    links { "Catalpa" }
+    links { "Catalpa", "Tools", "CatalpaEditor" }
 
     filter "system:windows"
+        -- Fixture按__FILE__定位源根；/FC保证从任意cwd运行也得到绝对路径。
+        buildoptions { "/FC" }
         -- Tests 是 Catalpa.dll 的消费者，不定义 CATALPA_BUILD_DLL。
         defines { "CATALPA_PLATFORM_WINDOW" }
 

@@ -6,6 +6,7 @@
 
 namespace Catalpa {
     class SceneManager;
+    class AssetManager;
     struct FrameTime;
     struct RenderFramePacket;
 
@@ -13,7 +14,7 @@ namespace Catalpa {
     class BoxGameplay {
     public:
         // reversedZ只选择本样例的镜头契约；渲染后端根据提取的lens匹配深度状态。
-        bool Attach(SceneManager& scenes, bool reversedZ = false);
+        bool Attach(SceneManager& scenes, AssetManager& assets, bool reversedZ = false, bool errorMaterial = false);
         void Update(const FrameTime& time, const RenderFramePacket& frame);
         void Detach();
 

@@ -1,5 +1,6 @@
 #include "catpch.h"
 #include "EditorWorkspace.h"
+#include "EditorProject.h"
 #include "Platform/WorkspaceFiles.h"
 #include "Core/Application.h"
 #include "Log/Log.h"
@@ -28,7 +29,10 @@ namespace Catalpa::Editor {
         }
     }
 
-    EditorWorkspace::EditorWorkspace() : Layer("EditorWorkspace") {}
+    EditorWorkspace::EditorWorkspace(std::filesystem::path projectFile)
+        : Layer("EditorWorkspace"), m_ProjectFile(std::move(projectFile)) {}
+
+    EditorWorkspace::~EditorWorkspace() = default;
 
     const char* EditorWorkspace::Text(const char* key, const char* fallback) const
     {
@@ -162,6 +166,21 @@ namespace Catalpa::Editor {
         m_SettingsPath = m_ExecutableDirectory / "Saved" / "Workspace.json";
         m_BrowseDirectory = m_ExecutableDirectory / "Resources";
         LoadLanguage();
+        if (!m_ProjectFile.empty()) {
+            auto project = std::make_unique<EditorProject>();
+            if (!project->Load(m_ProjectFile, error)) {
+                m_AutoSave = false;
+                Report("status.project_failed", "Project open failed", error);
+                Application::Get().RequestClose(1);
+                return;
+            }
+            const auto& session = *project->GetSession();
+            m_BrowseDirectory = session.config.contentRoot;
+            CAT_INFO("Project opened: {0} ({1}), {2} registered assets.", session.config.name,
+                session.config.id.ToString(), session.assets.GetRecords().size());
+            for (const auto& diagnostic : session.diagnostics) CAT_WARN("Project: {0}", diagnostic);
+            m_Project = std::move(project);
+        }
         const auto result = LoadWorkspaceSettings(m_SettingsPath, m_Settings, error);
         if (result == WorkspaceLoadResult::Failed) {
             m_AutoSave = false;
@@ -243,6 +262,9 @@ namespace Catalpa::Editor {
     {
         if (!m_Attached) return;
         if (!m_SavedForExit && m_AutoSave && m_FrameSeen && ImGui::GetCurrentContext()) SaveWorkspace();
+        m_Files.clear();
+        m_SelectedFile.clear();
+        m_Project.reset(); // 当前只含同步项目/索引；未来文档与Jobs须先收束再关闭会话。
         m_Attached = false;
     }
 
@@ -323,18 +345,40 @@ namespace Catalpa::Editor {
         ImGui::End();
     }
 
+    bool EditorWorkspace::IsInsideProject(const std::filesystem::path& path) const
+    {
+        if (!m_Project) return true;
+        std::error_code error;
+        const auto actual = std::filesystem::canonical(path, error);
+        if (error) return false;
+        const auto& root = m_Project->GetSession()->config.contentRoot;
+        // 浏览范围用真实路径精确比较，避免Windows可选大小写敏感目录的同名兄弟逃逸。
+        auto component = actual.begin();
+        for (const auto& expected : root) {
+            if (expected.empty()) continue;
+            if (component == actual.end() || *component != expected) return false;
+            ++component;
+        }
+        return true;
+    }
+
     void EditorWorkspace::RefreshFiles()
     {
         m_Files.clear();
         m_FileError.clear();
         if (m_BrowseDirectory.empty()) return;
+        if (!IsInsideProject(m_BrowseDirectory)) {
+            m_FileError = Text("assets.outside_project", "Directory is outside the project content root.");
+            return;
+        }
         std::error_code error;
         std::filesystem::directory_iterator it(m_BrowseDirectory, error), end;
-        while (!error && it != end && m_Files.size() < 512) {
+        size_t visited = 0;
+        while (!error && it != end && visited++ < 512) {
             const auto path = it->path();
             const bool directory = it->is_directory(error);
             if (error) break;
-            m_Files.push_back({ path, DisplayPath(path.filename()), directory });
+            if (IsInsideProject(path)) m_Files.push_back({ path, DisplayPath(path.filename()), directory });
             it.increment(error);
         }
         if (error) m_FileError = error.message();
@@ -350,8 +394,12 @@ namespace Catalpa::Editor {
         if (!m_Settings.showAssets) return;
         if (ImGui::Begin(Label("panel.assets", "Assets", "Catalpa.Assets").c_str(), &m_Settings.showAssets)) {
             ImGui::TextUnformatted(Text("assets.read_only", "Resource files (read-only)"));
+            if (m_Project) {
+                ImGui::Text("%s: %s", Text("assets.project", "Project"), m_Project->GetSession()->config.name.c_str());
+            }
             ImGui::TextWrapped("%s", DisplayPath(m_BrowseDirectory).c_str());
-            if (ImGui::Button(Label("assets.up", "Up", "Up").c_str()) && m_BrowseDirectory.has_parent_path()) {
+            if (ImGui::Button(Label("assets.up", "Up", "Up").c_str()) && m_BrowseDirectory.has_parent_path()
+                && IsInsideProject(m_BrowseDirectory.parent_path())) {
                 m_BrowseDirectory = m_BrowseDirectory.parent_path();
                 RefreshFiles();
             }

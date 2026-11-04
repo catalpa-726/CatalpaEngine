@@ -1,19 +1,18 @@
 #pragma once
 
+#include "catpch.h"
 #include "Layer/Layer.h"
 #include "WorkspaceSettings.h"
-#include <array>
-#include <filesystem>
-#include <string>
-#include <unordered_map>
-#include <vector>
 
 namespace Catalpa::Editor {
+    class EditorProject;
 
     // 编辑工作区由宿主应用挂载；只借用引擎服务和既有 ImGui 上下文。
     class EditorWorkspace final : public Layer {
     public:
-        EditorWorkspace();
+        // 宿主只传递明确项目路径；空路径继续浏览部署资源，不猜测作者项目位置。
+        explicit EditorWorkspace(std::filesystem::path projectFile = {});
+        ~EditorWorkspace() override;
         void OnAttach() override;
         void OnDetach() override;
         void OnUpdate(Deltatime timestep) override;
@@ -42,9 +41,13 @@ namespace Catalpa::Editor {
         void DrawInspector();
         void DrawSettings();
         void RefreshFiles();
+        // 项目模式的只读浏览限制在已解析内容根；VFS读取还会独立核对文件句柄。
+        bool IsInsideProject(const std::filesystem::path& path) const;
         void Report(const char* key, const char* fallback, std::string error = {});
 
         WorkspaceSettings m_Settings;
+        std::filesystem::path m_ProjectFile;
+        std::unique_ptr<EditorProject> m_Project;
         std::filesystem::path m_ExecutableDirectory;
         std::filesystem::path m_SettingsPath;
         std::filesystem::path m_BrowseDirectory;

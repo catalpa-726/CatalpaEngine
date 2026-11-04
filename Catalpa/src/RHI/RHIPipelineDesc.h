@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "RHIShaderDesc.h"
 #include "RHIBindingDesc.h"
@@ -43,4 +43,6 @@ namespace Catalpa {
         RHIFrontFace frontFace = RHIFrontFace::CounterClockwise;
     };
 
+    // 反射接口须与显式GPU布局吻合后才允许交后端。
+    [[nodiscard]] CATALPA_API bool ValidateRHIPipelineShaderInterface(const RHIGraphicsPipelineDesc&, std::string& error);
 }

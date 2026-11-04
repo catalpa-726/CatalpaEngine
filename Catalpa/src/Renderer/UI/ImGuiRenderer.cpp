@@ -4,8 +4,8 @@
 #include "Renderer/RenderGraph/RenderGraph.h"
 #include "Renderer/Uploads/UploadScheduler.h"
 #include "RHI/RHIDevice.h"
-#include "ImGuiVertexSpirv.h"
-#include "ImGuiFragmentSpirv.h"
+#include "Assets/AssetManager.h"
+#include "Shaders/ShaderLibrary.h"
 
 namespace Catalpa {
 
@@ -30,7 +30,8 @@ namespace Catalpa {
         }};
     }
 
-    ImGuiRenderer::ImGuiRenderer(RHIDevice& device) : m_Device(device), m_Frames(device.GetFrameCount()) {}
+    ImGuiRenderer::ImGuiRenderer(RHIDevice& device, AssetManager& assets, TextureGpuCache& textures, PipelineLibrary& pipelines)
+        : m_Device(device), m_Frames(device.GetFrameCount()), m_Assets(assets), m_Textures(textures), m_Pipelines(pipelines) {}
 
     ImGuiRenderer::~ImGuiRenderer()
     {
@@ -38,44 +39,46 @@ namespace Catalpa {
             m_Device.ReleaseBuffer(frame.vertices);
             m_Device.ReleaseBuffer(frame.indices);
         }
-        m_Device.ReleaseGraphicsPipeline(m_Pipeline);
         m_Device.ReleaseSampler(m_Sampler);
-        m_Device.ReleaseTextureView(m_FontView);
-        m_Device.ReleaseTexture(m_Font);
     }
 
-    RHIStatus ImGuiRenderer::InitFont(UploadScheduler& uploads, std::span<const std::byte> pixels, Extent2D extent)
+    RHIStatus ImGuiRenderer::InitFont(const AssetVersionRef<ImageAsset>& version)
     {
-        if (m_Font.HasValue()) return { .code = RHIErrorCode::InvalidState, .operation = "ImGuiRenderer::InitFont" };
-        const RHISamplerDesc sampler{
-            .minFilter = RHIFilter::Linear, .magFilter = RHIFilter::Linear,
-            .addressU = RHISamplerAddressMode::ClampToEdge, .addressV = RHISamplerAddressMode::ClampToEdge
-        };
-        if (!m_Sampler.HasValue()) {
-            if (const RHIStatus status = m_Device.CreateSampler(sampler, m_Sampler); !status.IsSuccess()) return status;
-        }
-        const RHITextureDesc desc{ .extent = extent, .format = PixelFormat::RGBA8_UNorm, .usage = RHITextureUsage::Sampled };
-        return uploads.CreateTexture(pixels, desc, m_Font, m_FontView);
+        if(m_Font) return {.code=RHIErrorCode::InvalidState,.operation="ImGuiRenderer::InitFont"};
+        const RHISamplerDesc sampler{.minFilter=RHIFilter::Linear,.magFilter=RHIFilter::Linear,
+            .addressU=RHISamplerAddressMode::ClampToEdge,.addressV=RHISamplerAddressMode::ClampToEdge};
+        if(!m_Sampler.HasValue())
+            if(const auto status=m_Device.CreateSampler(sampler,m_Sampler);!status.IsSuccess()) return status;
+        return m_Textures.Acquire(version,m_Font);
     }
 
     RHIStatus ImGuiRenderer::EnsurePipeline(PixelFormat format)
     {
-        if (m_Pipeline.HasValue() && m_Format == format) return {};
         // UI 颜色在 shader 中解码，附件负责唯一一次 sRGB 编码与线性混合。
         if (!GetPixelFormatInfo(format).isSRGB)
             return { .code = RHIErrorCode::Unsupported, .operation = "ImGuiRenderer::SRGBAttachmentRequired" };
+        AssetId id; AssetVersionRef<ShaderAsset> shader; bool fallback=false; std::string error;
+        if(!ShaderLibrary::BuiltinId("ImGui.slang",id,error)||!m_Assets.Acquire(id,shader,fallback,error)||fallback)
+            return {.code=RHIErrorCode::InvalidState,.operation="ImGuiRenderer/cooked shader"};
+        if(m_Pipeline&&m_Format==format&&m_Pipeline->vertex.Get()==shader.Get()) return {};
+        const auto* vertex=FindShaderEntry(shader.Get()->metadata,"vertexMain",ShaderStage::Vertex);
+        if(!vertex||vertex->pushConstantBytes!=16||vertex->pushConstantMembers.size()!=1)
+            return {.code=RHIErrorCode::InvalidDescription,.operation="ImGuiRenderer/push ABI"};
+        const auto& transform=vertex->pushConstantMembers.front();
+        if(transform.name!="transform"||transform.offset!=0||transform.size!=16||transform.paddedSize!=16
+            ||transform.type.scalar!=ShaderScalarKind::Float||transform.type.width!=32||transform.type.rows!=1
+            ||transform.type.columns!=4||transform.type.arrayCount!=1||transform.arrayStride||transform.matrixStride||!transform.members.empty())
+            return {.code=RHIErrorCode::InvalidDescription,.operation="ImGuiRenderer/transform ABI"};
         const RHIGraphicsPipelineDesc desc{
-            .vertex = {.bytecode = ImGuiVertexSpirv, .stage = RHIShaderStage::Vertex, .entryPoint = "vertexMain"},
-            .fragment = {.bytecode = ImGuiFragmentSpirv, .stage = RHIShaderStage::Fragment, .entryPoint = "fragmentMain"},
+            .vertex = {.asset = shader, .stage = RHIShaderStage::Vertex, .entryPoint = "vertexMain"},
+            .fragment = {.asset = shader, .stage = RHIShaderStage::Fragment, .entryPoint = "fragmentMain"},
             .colorFormat = format,
             .blendMode = RHIBlendMode::StraightAlpha,
             .vertexLayout = {.stride = sizeof(ImGuiVertex), .attributes = Attributes},
             .pushConstants = {.size = sizeof(ImGuiParameters), .visibility = RHIShaderVisibility::Vertex},
             .bindingLayout = {.entries = Bindings}
         };
-        GraphicsPipelineHandle pipeline{};
-        if (const RHIStatus status = m_Device.CreateGraphicsPipeline(desc, pipeline); !status.IsSuccess()) return status;
-        m_Device.ReleaseGraphicsPipeline(std::exchange(m_Pipeline, pipeline));
+        if (const auto status = m_Pipelines.Acquire(desc, m_Pipeline); !status.IsSuccess()) return status;
         m_Format = format;
         return {};
     }
@@ -101,7 +104,7 @@ namespace Catalpa {
     RHIStatus ImGuiRenderer::Prepare(uint32_t slot, const ImGuiFrameData& frame, PixelFormat format)
     {
         if (frame.draws.empty()) return {};
-        if (slot >= m_Frames.size() || !m_FontView.HasValue() || frame.vertices.empty() || frame.indices.empty())
+        if (slot >= m_Frames.size() || !m_Font || frame.vertices.empty() || frame.indices.empty())
             return { .code = RHIErrorCode::InvalidState, .operation = "ImGuiRenderer::Prepare" };
         if (const RHIStatus status = EnsurePipeline(format); !status.IsSuccess()) return status;
         auto& buffers = m_Frames[slot];
@@ -128,7 +131,7 @@ namespace Catalpa {
         RGTexture font{};
         if (const RHIStatus status = graph.ImportBuffer(m_Frames[slot].vertices, vertices); !status.IsSuccess()) return status;
         if (const RHIStatus status = graph.ImportBuffer(m_Frames[slot].indices, indices); !status.IsSuccess()) return status;
-        if (const RHIStatus status = graph.ImportTexture(m_FontView, font); !status.IsSuccess()) return status;
+        if (const RHIStatus status = graph.ImportTexture(m_Font->view, font); !status.IsSuccess()) return status;
 
         ImGuiParameters parameters{};
         for (int axis = 0; axis < 2; ++axis) {
@@ -136,7 +139,7 @@ namespace Catalpa {
             parameters.transform[axis + 2] = -1.0f - frame.displayPos[axis] * parameters.transform[axis];
         }
         RGIndexedDrawDesc draw{
-            .vertices = vertices, .indices = indices, .color = color, .pipeline = m_Pipeline,
+            .vertices = vertices, .indices = indices, .color = color, .pipeline = m_Pipeline->pipeline,
             .indexType = RHIIndexType::UInt32,
             .loadOp = RHILoadOp::Load, .storeOp = RHIStoreOp::Store,
             .viewport = {.width = static_cast<float>(extent.width), .height = static_cast<float>(extent.height)}

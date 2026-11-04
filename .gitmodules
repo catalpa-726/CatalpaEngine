@@ -15,6 +15,13 @@
 	path = Catalpa/third_party/entt
 	url = https://github.com/skypjack/entt.git
 
-# GLM 1.0.3 and EnTT v4.0.0 currently come from complete upstream archives.
+[submodule "Catalpa/third_party/enkiTS"]
+	path = Catalpa/third_party/enkiTS
+	url = https://github.com/dougbinks/enkiTS.git
+[submodule "Catalpa/third_party/SPIRV-Reflect"]
+	path = Catalpa/third_party/SPIRV-Reflect
+	url = https://github.com/KhronosGroup/SPIRV-Reflect.git
+
+# GLM, EnTT, enkiTS and SPIRV-Reflect currently come from complete upstream archives.
 # These entries declare submodule paths/URLs; gitlink registration is not performed here.
 # Ordinary source files are ignored; acquisition facts remain in Dependencies.lock.json.

@@ -92,4 +92,42 @@ namespace Catalpa::Tests {
         CAT_INFO("[S03.4 CPU] {0} checks, {1} failures.", context.GetCheckCount(), context.GetFailureCount());
         return context.GetFailureCount() == 0 ? 0 : 1;
     }
+
+    int RunS041Tests()
+    {
+        CAT_INFO("[S04.1 CPU/IO] Stable IDs, read-only mounts, asset registry and project sessions. No window/GPU initialization.");
+        TestContext context("S04.1 CPU/IO");
+        try {
+            RunStableIdTests(context);
+            RunVirtualFileSystemTests(context);
+            RunAssetRegistryTests(context);
+            RunProjectConfigTests(context);
+            // 新身份协议也须保留既有World与场景层级行为。
+            RunWorldTests(context);
+            RunTransformHierarchyTests(context);
+        } catch (const std::exception& error) { context.Check(false, error.what()); }
+        catch (...) { context.Check(false, "Unexpected non-standard exception"); }
+        CAT_INFO("[S04.1 CPU/IO] {0} checks, {1} failures.", context.GetCheckCount(), context.GetFailureCount());
+        return context.GetFailureCount() == 0 ? 0 : 1;
+    }
+    int RunS04Tests()
+    {
+        CAT_INFO("[S04 CPU/IO] Unified identity, schemas, cooked shader ABI, owned GPU-cache contracts, jobs and async versions. No window/GPU initialization.");
+        TestContext context("S04 CPU/IO");
+        try {
+            RunWorldTests(context); RunTransformHierarchyTests(context);
+            RunSystemSchedulerTests(context); RunInputRoutingTests(context); RunProjectionFrustumTests(context);
+            RunSimulationPipelineTests(context); RunMeshValidationTests(context); RunGeometrySnapshotTests(context);
+            RunFramePackingTests(context); RunFrustumVisibilityTests(context); RunMultiViewTests(context);
+            RunMultiViewPackingTests(context); RunMultiViewExtractionTests(context);
+            RunRenderGraphHazardTests(context); RunCompletionTests(context); RunFrameLifetimeTests(context);
+            RunStableIdTests(context); RunVirtualFileSystemTests(context); RunAssetRegistryTests(context); RunProjectConfigTests(context);
+            RunComponentRegistryTests(context); RunGeometryAssetTests(context); RunImageValidationTests(context); RunMaterialSchemaTests(context);
+            RunShaderMetadataTests(context); RunGpuCacheTests(context);
+            RunMemoryBudgetTests(context); RunAssetLifecycleTests(context); RunAssetBudgetTests(context);
+        } catch(const std::exception& error) {context.Check(false,error.what());}
+        catch(...) {context.Check(false,"Unexpected non-standard exception");}
+        CAT_INFO("[S04 CPU/IO] {0} checks, {1} failures.",context.GetCheckCount(),context.GetFailureCount());
+        return context.GetFailureCount()==0?0:1;
+    }
 }

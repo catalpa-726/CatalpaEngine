@@ -1,4 +1,4 @@
-﻿#include "catpch.h"
+#include "catpch.h"
 #include "VulkanCommandList.h"
 #include "VulkanBinding.h"
 #include "VulkanCommandPool.h"
@@ -573,6 +573,7 @@ namespace Catalpa {
                     || (localAccess.stage == RHIPipelineStage::FragmentShader && expected->visibility == RHIShaderVisibility::Fragment);
                 if (localAccess.access != RHIResourceAccess::UniformRead || !coversStages)
                     return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+                if (binding.size < expected->minimumBufferBytes) return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
                 if (const auto status = ValidateVulkanUniformBinding(binding, local->snapshot, m_Device.GetCapabilities()); !status.IsSuccess()) return status;
                 buffers[i] = { record->buffer, binding.offset, binding.size };
                 type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;

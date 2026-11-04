@@ -1,4 +1,4 @@
-﻿#include "catpch.h"
+#include "catpch.h"
 #include "VulkanShader.h"
 #include "VulkanDevice.h"
 #include "VulkanUtils.h"
@@ -9,8 +9,10 @@ namespace Catalpa {
     {
         shader = {};
 
-        if (desc.bytecode.empty() || !desc.entryPoint || desc.entryPoint[0] == '\0')
-            return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanShader" };
+        std::string error;
+        if (!ValidateRHIShader(desc, error))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanShader/metadata" };
+        const auto& bytecode = desc.asset.Get()->spirv;
 
         VkShaderStageFlagBits stage{};
 
@@ -22,8 +24,8 @@ namespace Catalpa {
 
         const VkShaderModuleCreateInfo info{
             .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-            .codeSize = desc.bytecode.size_bytes(),
-            .pCode = desc.bytecode.data()
+            .codeSize = bytecode.size() * sizeof(uint32_t),
+            .pCode = bytecode.data()
         };
 
         const RHIStatus status = MakeVulkanStatus(vkCreateShaderModule(device.GetHandle(), &info, nullptr, &shader.module), "vkCreateShaderModule");

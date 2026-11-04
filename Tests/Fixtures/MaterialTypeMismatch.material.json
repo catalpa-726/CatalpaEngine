@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "kind": "definition",
+  "family": "catalpa.unlit",
+  "shadingModel": "unlit",
+  "domain": "surface",
+  "alphaMode": "opaque",
+  "shader": "5c35308e-1d0c-9d78-a968-b6dc14e5c915",
+  "vertexEntry": "vertexMain",
+  "fragmentEntry": "fragmentMain",
+  "parameterBlock": "Material",
+  "parameters": [
+    {
+      "id": "base_color",
+      "displayName": "Base color",
+      "type": "float4",
+      "default": 1,
+      "min": 0,
+      "allowOverride": true
+    }
+  ],
+  "renderState": {
+    "cull": "none",
+    "depthTest": true,
+    "depthWrite": true,
+    "blend": "opaque"
+  },
+  "allowedStateOverrides": [
+    "cull"
+  ]
+}

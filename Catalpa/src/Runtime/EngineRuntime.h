@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "catpch.h"
 
@@ -11,6 +11,9 @@
 #include "Runtime/Input/InputActions.h"
 #include "Renderer/RenderFramePacket.h"
 #include "Renderer/RendererFrameContext.h"
+#include "Assets/AssetManager.h"
+#include "Core/Jobs/JobSystem.h"
+#include "ECS/ComponentRegistry.h"
 
 namespace Catalpa {
 
@@ -33,6 +36,11 @@ namespace Catalpa {
 
         [[nodiscard]] RHIStatus Init(Window& window, const RHIBackendDesc& backendDesc);
         void Shutdown();
+        // 宿主传绝对部署资源根；Runtime不从Box目录或源项目推导路径。
+        [[nodiscard]] bool ConfigureResources(std::filesystem::path absoluteRoot, std::string& error);
+        AssetManager& GetAssets() { return *m_Assets; }
+        const ComponentRegistry* GetComponentSchemas() const noexcept { return m_ComponentSchemas.get(); }
+
 
         // 每轮事件和 Layer 更新后，处理交换链变化并执行绘制。
         [[nodiscard]] RHIStatus Update(Window& window, const ImGuiFrameData* uiFrame = nullptr);
@@ -61,6 +69,12 @@ namespace Catalpa {
         std::unique_ptr<RHISwapchain> m_Swapchain;
         std::unique_ptr<Renderer> m_Renderer;
         SceneManager m_Scenes;
+        JobSystem m_Jobs;
+        std::unique_ptr<AssetManager> m_Assets;
+        std::shared_ptr<const ComponentRegistry> m_ComponentSchemas;
+        std::filesystem::path m_ResourceRoot;
+        [[nodiscard]] bool InitAssets(std::string& error);
+
         SimulationClock m_Clock;
         InputActions m_Input;
         RendererProfile m_RendererProfile;

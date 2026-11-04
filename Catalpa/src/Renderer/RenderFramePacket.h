@@ -1,4 +1,6 @@
 #pragma once
+#include "Geometry/MeshAsset.h"
+#include "Materials/MaterialInstance.h"
 
 #include "catpch.h"
 
@@ -23,6 +25,8 @@ namespace Catalpa {
         Math::Mat3 normalMatrix{ 1.0f };
         Aabb worldBounds;
         Math::Vec4 color{ 1.0f };
+        AssetVersionRef<MeshAsset> meshVersion;
+        std::vector<AssetVersionRef<MaterialInstance>> materials;
     };
 
     // 单线程提取后向渲染方转移所有权，任何字段都不借用可变 World 内存。

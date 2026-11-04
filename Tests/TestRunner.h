@@ -46,4 +46,21 @@ namespace Catalpa::Tests {
     void RunCompletionTests(TestContext& context);
     void RunFrameLifetimeTests(TestContext& context);
     int RunS034Tests();
+    // 身份/VFS/资产登记/作者项目契约；文件用例仅写独占临时目录。
+    void RunStableIdTests(TestContext& context);
+    void RunVirtualFileSystemTests(TestContext& context);
+    void RunAssetRegistryTests(TestContext& context);
+    void RunProjectConfigTests(TestContext& context);
+    int RunS041Tests();
+    // 整章集中入口：包含已有CPU/IO回归、领域schema、真实cooked ABI及异步生命周期。
+    void RunMaterialSchemaTests(TestContext&);
+    void RunImageValidationTests(TestContext&);
+    void RunGeometryAssetTests(TestContext&);
+    void RunComponentRegistryTests(TestContext&);
+    void RunMemoryBudgetTests(TestContext&);
+    void RunAssetLifecycleTests(TestContext&);
+    void RunAssetBudgetTests(TestContext&);
+    void RunShaderMetadataTests(TestContext&);
+    void RunGpuCacheTests(TestContext&);
+    int RunS04Tests();
 }

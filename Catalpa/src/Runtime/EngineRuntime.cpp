@@ -1,4 +1,7 @@
-﻿#include "catpch.h"
+#include "catpch.h"
+#include "Runtime/RuntimeRegistration.h"
+#include "Shaders/ShaderLibrary.h"
+#include "Assets/BuiltinAssets.h"
 #include "EngineRuntime.h"
 
 #include "Log/Log.h"
@@ -35,6 +38,16 @@ namespace Catalpa {
 
     RHIStatus EngineRuntime::Init(Window& window, const RHIBackendDesc& backendDesc)
     {
+        // 重复初始化不得先重建资产服务或拆掉仍在使用的运行时。
+        if (m_Device || m_Assets)
+            return { .code = RHIErrorCode::InvalidState, .operation = "EngineRuntime::Init/AlreadyInitialized" };
+        std::string assetError;
+        if (!InitAssets(assetError)) {
+            CAT_CORE_ERROR("Runtime assets unavailable: {0}", assetError);
+            Shutdown();
+            return { .code=RHIErrorCode::InvalidState,.operation="EngineRuntime::InitAssets" };
+        }
+
         CAT_CORE_ASSERT(!m_Device, "Engine runtime already initialized!");
 
         RHIBackendFactory factory;
@@ -42,7 +55,7 @@ namespace Catalpa {
 
         RHIStatus status;
         m_Device = factory.Create(backendDesc, window, status);
-        if (!status.IsSuccess()) return status;
+        if (!status.IsSuccess()) { Shutdown(); return status; }
 
         const RHISwapchainDesc desc = MakeSwapchainDesc(window);
         m_Swapchain = m_Device->CreateSwapchain(desc, status);
@@ -52,7 +65,7 @@ namespace Catalpa {
             return status;
         }
 
-        m_Renderer = std::make_unique<Renderer>(*m_Device, *m_Swapchain, m_RendererProfile);
+        m_Renderer = std::make_unique<Renderer>(*m_Device, *m_Swapchain, *m_Assets, m_RendererProfile);
         m_SimulationStopped = false;
         m_FrameSequence = 0;
         m_InputSceneIdentity = 0;
@@ -64,7 +77,9 @@ namespace Catalpa {
     void EngineRuntime::Shutdown()
     {
         StopSimulation();
-        // 本步没有异步 World 消费者；先清场景及未提交 CPU 命令。
+        // 停止资产发布并等待CPU任务；旧固定版本仍由场景/渲染快照保活。
+        if (m_Assets) m_Assets->Shutdown();
+        m_Jobs.Shutdown();
         if (const WorldStatus status = m_Scenes.Clear(); !status.IsSuccess()) {
             CAT_CORE_CRITICAL("Cannot shut down while scene data is borrowed: {0}", status.message);
             std::abort();
@@ -83,8 +98,55 @@ namespace Catalpa {
         m_Renderer.reset();
         m_Swapchain.reset();
         m_Device.reset();
+        m_Assets.reset();
         m_LastSwapchainDesc = {};
         m_SwapchainDirty = true;
+    }
+
+    bool EngineRuntime::ConfigureResources(std::filesystem::path absoluteRoot, std::string& error)
+    {
+        if(m_Assets||m_Device||!absoluteRoot.is_absolute()) {error="Resources require an absolute root before initialization";return false;}
+        m_ResourceRoot=std::move(absoluteRoot); error.clear(); return true;
+    }
+    bool EngineRuntime::InitAssets(std::string& error)
+    {
+        try {
+        if(m_Assets||!m_ResourceRoot.is_absolute()) {error="Asset services require configured resources";return false;}
+        auto schemas=std::make_shared<ComponentRegistry>();
+        if(!RegisterRuntimeComponentSchemas(*schemas,error)||!m_Jobs.Start({},error)) return false;
+        const auto shaders=m_ResourceRoot/"Shaders";
+        std::vector<AssetRecord> records;
+        VirtualFileSystem files; AssetRegistry registry;
+        if(!ShaderLibrary::ReadBuiltinCatalog(shaders,"shaders",records,error)
+            ||!registry.Replace(records,error)||!files.MountReadOnly("shaders",shaders,0,error)) return false;
+        m_Assets=std::make_unique<AssetManager>(m_Jobs,std::move(files),std::move(registry));
+        if(!RegisterRuntimeAssetLoaders(*m_Assets,error)) return false;
+        // 启动只等待必须的内置shader。实际读取/解码始终在worker，发布仍在本线程。
+        // 逐项等待避免文件数增长时把队列预算误当可无限并行的承诺。
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(30);
+        for(const auto& record:records) {
+            if(!m_Assets->Request(record.id,error)) return false;
+            for(;;) {
+                m_Assets->Pump();
+                const auto status=m_Assets->GetStatus(record.id);
+                if(status==AssetStatus::Ready) break;
+                if(status==AssetStatus::Failed||status==AssetStatus::Cancelled) {error=m_Assets->GetDiagnostic(record.id);return false;}
+                if(std::chrono::steady_clock::now()>=deadline) {error="Builtin shader load timed out";return false;}
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        }
+        for(const auto name:{"Unlit.slang","Depth.slang","ImGui.slang"}) {
+            AssetId id;AssetVersionRef<ShaderAsset> shader;bool fallback=false;
+            if(!ShaderLibrary::BuiltinId(name,id,error)||!m_Assets->Acquire(id,shader,fallback,error)||fallback) {error="Required cooked builtin shader missing: "+std::string(name);return false;}
+        }
+        AssetId fallbackShader;
+        if(!ShaderLibrary::BuiltinId("Unlit.slang",fallbackShader,error)||!m_Assets->SetFallback<ShaderAsset>(fallbackShader,error)) return false;
+        // 内置材质发布必须晚于shader就绪；固定依赖一次绑定，不修改已经发布的definition。
+        if(!RegisterBuiltinAssets(*m_Assets,error)) return false;
+        if(const auto status=m_Scenes.SetComponentSchemas(schemas);!status.IsSuccess()) {error=status.message;return false;}
+        m_ComponentSchemas=std::move(schemas);
+        error.clear();return true;
+        } catch(const std::exception& exception) {error=exception.what();return false;}
     }
 
     RHIStatus EngineRuntime::ConfigureRendererProfile(std::string_view json)
@@ -147,6 +209,7 @@ namespace Catalpa {
 
     WorldStatus EngineRuntime::UpdateSimulation(double realSeconds, InputCapture capture, uint32_t width, uint32_t height)
     {
+        if (m_Assets) m_Assets->Pump();
         if (m_SimulationStopped || !m_Renderer) return { WorldError::Busy, "Simulation is stopped or renderer is unavailable" };
         if (m_FrameSequence == std::numeric_limits<uint64_t>::max()) return { WorldError::CapacityExceeded, "Presentation frame sequence exhausted" };
         if (!std::isfinite(realSeconds) || realSeconds < 0.0) return { WorldError::InvalidArgument, "Real frame duration must be finite and nonnegative" };

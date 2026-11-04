@@ -132,7 +132,7 @@ namespace Catalpa::Tests {
 
     // 只提供图导入所需的自有状态快照；创建/帧等待/原生对象操作全部Unsupported。
     // 该替身用于编译与录制契约，不提供GPU内存、WSI或引用计数正确性的证明。
-    class FakeDevice final : public RHIDevice {
+    class FakeDevice : public RHIDevice {
     public:
         FakeQueue queue;
         RHICapabilities capabilities{};

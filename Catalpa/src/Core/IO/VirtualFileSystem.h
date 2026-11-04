@@ -1,0 +1,28 @@
+#pragma once
+
+#include "catpch.h"
+#include "Core/Base.h"
+#include "Core/IO/VirtualPath.h"
+
+namespace Catalpa {
+    // Configure on the owning thread; concurrent reads are allowed only while mounts are unchanged.
+    // Roots are explicit absolute directories. No current-directory or sandbox fallback is provided.
+    class CATALPA_API VirtualFileSystem {
+    public:
+        // Higher priority wins. Equal priorities or duplicate roots for a mount are rejected.
+        [[nodiscard]] bool MountReadOnly(std::string_view mount, const std::filesystem::path& absoluteRoot,
+            int priority, std::string& error);
+        // Only a missing file allows fallback; access, alias, escape and size errors stop resolution.
+        // Read into owned bytes, bounded before allocation. Failure preserves output.
+        [[nodiscard]] bool ReadFile(const VirtualPath& path, size_t maxBytes,
+            std::vector<std::byte>& output, std::string& error) const;
+
+    private:
+        struct Mount {
+            std::string name;
+            std::filesystem::path root;
+            int priority = 0;
+        };
+        std::vector<Mount> m_Mounts;
+    };
+}

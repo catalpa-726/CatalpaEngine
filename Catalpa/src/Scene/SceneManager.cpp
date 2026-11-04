@@ -51,6 +51,14 @@ namespace Catalpa {
         return {};
     }
 
+    WorldStatus SceneManager::SetComponentSchemas(std::shared_ptr<const ComponentRegistry> schemas)
+    {
+        if(const auto status=CanMutate();!status.IsSuccess())return status;
+        if(!schemas)return {WorldError::InvalidArgument,"Component schemas require a shared immutable owner"};
+        for(const auto& slot:m_Slots)if(slot.scene)return {WorldError::Busy,"Cannot replace component schemas while scenes exist"};
+        m_ComponentSchemas=std::move(schemas);return {};
+    }
+
     WorldStatus SceneManager::CreateScene(std::string name, SceneHandle& output)
     {
         if (const WorldStatus status = CanMutate(); !status.IsSuccess()) return status;
@@ -63,7 +71,7 @@ namespace Catalpa {
         if (index == invalid && m_Slots.size() >= invalid) return { WorldError::CapacityExceeded, "Scene slot capacity exhausted" };
         try {
             // 场景构造和槽位分配均完成后发布句柄；失败保留调用方output和已有场景。
-            auto scene = std::make_unique<Scene>(std::move(name));
+            auto scene = std::make_unique<Scene>(std::move(name), m_ComponentSchemas);
             if (index == invalid) {
                 index = static_cast<uint32_t>(m_Slots.size());
                 m_Slots.emplace_back();

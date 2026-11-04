@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include "Core/Base.h"
 #include "RHI/RHIHandle.h"
 #include "RHI/RHIBufferDesc.h"
 #include "RHI/RHICompletionPoint.h"
@@ -13,7 +14,8 @@ namespace Catalpa {
     class RenderGraph;
 
     // 当前由主线程调用，负责新建静态顶点/索引 Buffer 和整幅颜色纹理的上传。
-    class UploadScheduler {
+    // 导出统一上传服务，供DLL外的GPU缓存契约测试复用同一实现与关闭路径。
+    class CATALPA_API UploadScheduler {
     public:
         explicit UploadScheduler(RHIDevice& device) : m_Device(device) {}
         ~UploadScheduler();

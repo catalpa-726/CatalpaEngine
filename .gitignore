@@ -19,6 +19,8 @@
 # 第三方源码沿用外部依赖管理；暂不作为主仓库普通文件加入
 /Catalpa/third_party/glm/
 /Catalpa/third_party/entt/
+/Catalpa/third_party/enkiTS/
+/Catalpa/third_party/SPIRV-Reflect/
 # GLAD 按 README 的选项在本地生成，构建适配由 Script/Build/GLAD.lua 管理
 /Catalpa/third_party/glad/
 /DerivedDataCache/
@@ -43,6 +45,7 @@
 /CatalpaEditor/CatalpaEditor.vcxproj*
 /CatalpaPlayer/CatalpaPlayer.vcxproj*
 /Tests/Tests.vcxproj*
+/Tools/Tools.vcxproj*
 /Catalpa/third_party/glad/GLAD.vcxproj*
 /Catalpa/third_party/glfw/GLFW.vcxproj*
 /Catalpa/third_party/imgui/imgui.vcxproj*

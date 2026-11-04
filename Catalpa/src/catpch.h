@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <iostream>
 #include <sstream>
@@ -38,3 +38,14 @@
 #include <new>
 #include <optional>
 #include <thread>
+
+// S04 配置值、文件错误与平台参数转换共享标准头。
+#include <variant>
+#include <system_error>
+#include <cwchar>
+#include <streambuf>
+
+// S04受检领域载荷的运行期类型身份。
+#include <typeindex>
+
+#include <tuple>

@@ -2,6 +2,7 @@
 #include "Renderer/RenderScene.h"
 #include "Camera/CameraProjection.h"
 #include "Geometry/MeshValidation.h"
+#include "Materials/MaterialValidation.h"
 
 
 namespace Catalpa {
@@ -77,6 +78,17 @@ namespace Catalpa {
                     for (int row = 0; row < 4; ++row)
                         if (instance.worldMatrix[column][row] != source->worldMatrix[column][row])
                             return { Math::MathError::OutOfRange, "Mesh instance and transform snapshot disagree" };
+                // 纯CPU旧测试可无资产身份；真实渲染缓存入口要求完整固定版本和槽映射。
+                if (instance.meshVersion.HasValue()) {
+                    std::string error;
+                    if (!ValidateMeshAsset(*instance.meshVersion.Get(), error) || instance.meshVersion.Get()->mesh != instance.mesh
+                        || instance.materials.size() != instance.meshVersion.Get()->materialSlots.size())
+                        return { Math::MathError::OutOfRange, "Mesh version and material slots disagree with snapshot" };
+                    for (const auto& material : instance.materials)
+                        if (!material.HasValue() || !ValidateMaterialInstance(*material.Get(), error))
+                            return { Math::MathError::OutOfRange, "Material snapshot requires a validated fixed version" };
+                } else if (!instance.materials.empty())
+                    return { Math::MathError::OutOfRange, "Material snapshot requires mesh asset identity" };
                 RenderMeshInstance expected;
                 if (const auto status = BuildRenderMeshInstance(instance.id, instance.mesh, instance.worldMatrix, instance.color, expected); !status.IsSuccess()) return status;
                 for (int column = 0; column < 3; ++column)

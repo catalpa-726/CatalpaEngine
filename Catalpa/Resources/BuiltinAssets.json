@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 1,
+  "kind": "builtin_asset_catalog",
+  "notes": [
+    "IDs are explicit stable engine identities, never content hashes.",
+    "sourceSha256 covers exact retained source bytes; cooked container digests are computed independently by the cooker.",
+    "The font atlas image has a reserved ID but is created from the actual current ImGui atlas; its bytes are not a placeholder source image."
+  ],
+  "reservedDynamicAssets": [
+    {
+      "id": "43415441-4c50-4100-0000-000000000004",
+      "type": "image",
+      "name": "font_atlas",
+      "producer": "Actual ImGui atlas RGBA bytes supplied by runtime"
+    }
+  ],
+  "assets": [
+    {
+      "id": "43415441-4c50-4100-0000-000000000001",
+      "type": "image",
+      "version": 1,
+      "source": "Textures/White.png",
+      "sourceSha256": "0cc4acc2e9abb600ff3fa032daa5e68cd6a0be87ec7c9de61dbf366fc87de0fc",
+      "dependencies": [],
+      "origin": "Original mathematical 1x1 RGBA8 values authored for CatalpaEngine; PNG encoded with standard zlib/CRC32 chunks. No downloaded source.",
+      "license": "Project-authored original; follows repository license. No third-party image license.",
+      "import": {
+        "format": "rgba8_unorm",
+        "width": 1,
+        "height": 1,
+        "colorSpace": "linear",
+        "semantic": "color",
+        "alphaMode": "opaque",
+        "rgba8": [
+          255,
+          255,
+          255,
+          255
+        ],
+        "flipY": false,
+        "generateMips": false
+      },
+      "runtime": "RegisterBuiltinAssets publishes the same explicit RGBA bytes as immutable ImageAsset; PNG is the retained original, no runtime PNG decoder is implied."
+    },
+    {
+      "id": "43415441-4c50-4100-0000-000000000002",
+      "type": "image",
+      "version": 1,
+      "source": "Textures/FlatNormal.png",
+      "sourceSha256": "85048b5e320f93b31e975dfbae7c32a454c19af37c7b68b477edc9a6fd3fd665",
+      "dependencies": [],
+      "origin": "Original mathematical 1x1 RGBA8 values authored for CatalpaEngine; PNG encoded with standard zlib/CRC32 chunks. No downloaded source.",
+      "license": "Project-authored original; follows repository license. No third-party image license.",
+      "import": {
+        "format": "rgba8_unorm",
+        "width": 1,
+        "height": 1,
+        "colorSpace": "linear",
+        "semantic": "normal",
+        "alphaMode": "opaque",
+        "rgba8": [
+          128,
+          128,
+          255,
+          255
+        ],
+        "flipY": false,
+        "generateMips": false
+      },
+      "runtime": "RegisterBuiltinAssets publishes the same explicit RGBA bytes as immutable ImageAsset; PNG is the retained original, no runtime PNG decoder is implied."
+    },
+    {
+      "id": "43415441-4c50-4100-0000-000000000003",
+      "type": "image",
+      "version": 1,
+      "source": "Textures/Error.png",
+      "sourceSha256": "d1e180227ac2f063d95895752ff464899bd89a03f521bf0f4f04a40b4860e044",
+      "dependencies": [],
+      "origin": "Original mathematical 1x1 RGBA8 values authored for CatalpaEngine; PNG encoded with standard zlib/CRC32 chunks. No downloaded source.",
+      "license": "Project-authored original; follows repository license. No third-party image license.",
+      "import": {
+        "format": "rgba8_unorm",
+        "width": 1,
+        "height": 1,
+        "colorSpace": "linear",
+        "semantic": "color",
+        "alphaMode": "opaque",
+        "rgba8": [
+          255,
+          0,
+          255,
+          255
+        ],
+        "flipY": false,
+        "generateMips": false
+      },
+      "runtime": "RegisterBuiltinAssets publishes the same explicit RGBA bytes as immutable ImageAsset; PNG is the retained original, no runtime PNG decoder is implied."
+    },
+    {
+      "id": "43415441-4c50-4100-0000-00000000000b",
+      "type": "material_definition",
+      "version": 1,
+      "source": "Materials/DefaultUnlit.material.json",
+      "sourceSha256": "c870820e7876d9affa3fd7f26f80e6782b46c9f8d805898d5b20fb2d5a4a268f",
+      "dependencies": [
+        "5c35308e-1d0c-9d78-a968-b6dc14e5c915"
+      ],
+      "origin": "Project-authored material schema defaults",
+      "license": "Repository license",
+      "runtime": "CreateBuiltinMaterialDefinition; PBR is a domain schema only until lighting implementation."
+    },
+    {
+      "id": "43415441-4c50-4100-0000-00000000000f",
+      "type": "material_instance",
+      "version": 1,
+      "dependencies": [
+        "43415441-4c50-4100-0000-00000000000b"
+      ],
+      "origin": "CreateBuiltinMaterialInstance, sharing the published definition version",
+      "license": "Repository license"
+    },
+    {
+      "id": "43415441-4c50-4100-0000-00000000000c",
+      "type": "material_definition",
+      "version": 1,
+      "source": "Materials/DefaultPbr.material.json",
+      "sourceSha256": "eca4c7d1d6bf76ceed69591a1e3ca6f17884be5af78e850cf18be4d1bdda4c7a",
+      "dependencies": [
+        "5c35308e-1d0c-9d78-a968-b6dc14e5c915"
+      ],
+      "origin": "Project-authored material schema defaults",
+      "license": "Repository license",
+      "runtime": "CreateBuiltinMaterialDefinition; PBR is a domain schema only until lighting implementation."
+    },
+    {
+      "id": "43415441-4c50-4100-0000-000000000010",
+      "type": "material_instance",
+      "version": 1,
+      "dependencies": [
+        "43415441-4c50-4100-0000-00000000000c"
+      ],
+      "origin": "CreateBuiltinMaterialInstance, sharing the published definition version",
+      "license": "Repository license"
+    },
+    {
+      "id": "43415441-4c50-4100-0000-00000000000d",
+      "type": "material_definition",
+      "version": 1,
+      "source": "Materials/Error.material.json",
+      "sourceSha256": "3c021e1450754272c8e1349080d2a3bf5dfa1ccf036fe1010aa767727106c150",
+      "dependencies": [
+        "5c35308e-1d0c-9d78-a968-b6dc14e5c915"
+      ],
+      "origin": "Project-authored material schema defaults",
+      "license": "Repository license",
+      "runtime": "CreateBuiltinMaterialDefinition; PBR is a domain schema only until lighting implementation."
+    },
+    {
+      "id": "43415441-4c50-4100-0000-00000000000e",
+      "type": "material_instance",
+      "version": 1,
+      "dependencies": [
+        "43415441-4c50-4100-0000-00000000000d"
+      ],
+      "origin": "CreateBuiltinMaterialInstance, sharing the published definition version",
+      "license": "Repository license"
+    }
+  ]
+}

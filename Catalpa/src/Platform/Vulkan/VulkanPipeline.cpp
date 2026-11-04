@@ -1,4 +1,4 @@
-﻿#include "catpch.h"
+#include "catpch.h"
 #include "VulkanPipeline.h"
 #include "VulkanShader.h"
 #include "VulkanDevice.h"
@@ -11,6 +11,9 @@ namespace Catalpa {
     RHIStatus CreateVulkanGraphicsPipeline(VulkanDevice& device, const RHIGraphicsPipelineDesc& desc, VulkanPipelineRecord& pipeline)
     {
         pipeline = {};
+        std::string shaderError;
+        if (!ValidateRHIPipelineShaderInterface(desc, shaderError))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanGraphicsPipeline/metadata" };
 
         if (desc.vertex.stage != RHIShaderStage::Vertex || desc.fragment.stage != RHIShaderStage::Fragment)
             return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanGraphicsPipeline" };
@@ -276,7 +279,7 @@ namespace Catalpa {
                 .basePipelineIndex = -1
             };
 
-            status = MakeVulkanStatus(vkCreateGraphicsPipelines(device.GetHandle(), VK_NULL_HANDLE, 1, &info, nullptr, &pipeline.pipeline), "vkCreateGraphicsPipelines");
+            status = MakeVulkanStatus(vkCreateGraphicsPipelines(device.GetHandle(), device.GetPipelineCache(), 1, &info, nullptr, &pipeline.pipeline), "vkCreateGraphicsPipelines");
         }
 
         DestroyVulkanShader(device, fragment);

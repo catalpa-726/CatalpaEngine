@@ -48,6 +48,8 @@ namespace Catalpa {
                             if (const auto result = BuildRenderMeshInstance({ entity.world, entity.index, entity.generation },
                                 renderer.mesh, transform.worldMatrix, renderer.color, instance); !result.IsSuccess())
                                 return { WorldError::InvalidArgument, result.message };
+                            instance.meshVersion = renderer.meshVersion;
+                            instance.materials = renderer.materials;
                             candidate.instances.push_back(std::move(instance));
                         }
                     }

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "RHIHandle.h"
 #include "RHIShaderDesc.h"
@@ -14,6 +14,7 @@ namespace Catalpa {
         uint32_t binding = 0;
         RHIBindingType type = RHIBindingType::SampledTexture;
         RHIShaderVisibility visibility = RHIShaderVisibility::Fragment;
+        uint32_t minimumBufferBytes = 0; // 最终ShaderMetadata中的UBO容量。
     };
 
     // 创建管线时同步复制 entries，调用结束后不再借用此 span。

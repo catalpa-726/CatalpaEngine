@@ -11,6 +11,7 @@
 
 namespace Catalpa {
     class RHIDevice;
+    struct ShaderMetadata;
 
     // 当前单视图路径的显式配置；正式画质分档和能力回退在后续扩展同一配置入口。
     struct RendererProfile {
@@ -45,6 +46,11 @@ namespace Catalpa {
         && offsetof(DrawGpuParameters, color) == 112);
     static_assert(std::is_trivially_copyable_v<FrameGpuParameters> && std::is_trivially_copyable_v<ViewGpuParameters>
         && std::is_trivially_copyable_v<DrawGpuParameters>);
+
+    // 纯CPU核对forward shader的Frame(FS)/View(VS)/Draw(VS+FS)与实际host packing。
+    // 接受直接float4数组或Slang精确的单data成员数组包装；保留原始metadata并严格核对两层布局。
+    [[nodiscard]] CATALPA_API bool ValidateFrameShaderInterface(const ShaderMetadata& metadata,
+        std::string_view vertexEntry, std::string_view fragmentEntry, std::string& error);
 
     // data包含已清零的对齐间隙；每个binding使用自己的精确range，不把整个buffer误作一个UBO。
     struct PackedFrameUniforms {

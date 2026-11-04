@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "6a168b6b-f242-459e-b595-7c3751a7fbb1",
+  "name": "Sandbox",
+  "contentRoot": "Content",
+  "externalSourceRoots": {
+    "archive": "../../CatalpaBox/assets"
+  },
+  "derivedDataRoot": "DerivedDataCache",
+  "cookedRoot": "Cooked",
+  "metadata": "asset_metadata.json",
+  "buildProfiles": "../../Config/AssetBuildProfiles.json",
+  "buildProfile": "desktop-vulkan",
+  "targetPlatform": "windows",
+  "buildConfiguration": "Debug",
+  "startupScene": null,
+  "modules": []
+}

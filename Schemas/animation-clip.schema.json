@@ -1,0 +1,277 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Catalpa animation clip author protocol version 1",
+  "description": "Times and duration are seconds. Translation is meters, scale is dimensionless and rotations use w,x,y,z quaternions. S16 loader checks monotonic times within duration, equal key/value/tangent counts, unique joint/path tracks, joint resolution and quaternion norms; cubic tangent values are derivatives per second. No animation sampler or source normalization is claimed here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "skeleton",
+    "durationSeconds",
+    "timeUnit",
+    "tracks",
+    "rootMotion"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "skeleton": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "durationSeconds": {
+      "type": "number",
+      "minimum": 0
+    },
+    "timeUnit": {
+      "const": "second"
+    },
+    "tracks": {
+      "type": "array",
+      "maxItems": 12288,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "joint",
+          "path",
+          "interpolation",
+          "times",
+          "values"
+        ],
+        "properties": {
+          "joint": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+            "not": {
+              "const": "00000000-0000-0000-0000-000000000000"
+            }
+          },
+          "path": {
+            "enum": [
+              "translation",
+              "rotation",
+              "scale"
+            ]
+          },
+          "interpolation": {
+            "enum": [
+              "step",
+              "linear",
+              "cubicSpline"
+            ]
+          },
+          "times": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1048576,
+            "items": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "values": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1048576
+          },
+          "inTangents": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1048576
+          },
+          "outTangents": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 1048576
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "path": {
+                  "const": "rotation"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "values": {
+                  "items": {
+                    "type": "array",
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "inTangents": {
+                  "items": {
+                    "type": "array",
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "outTangents": {
+                  "items": {
+                    "type": "array",
+                    "minItems": 4,
+                    "maxItems": 4,
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "values": {
+                  "items": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "inTangents": {
+                  "items": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                },
+                "outTangents": {
+                  "items": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": {
+                      "type": "number"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "interpolation": {
+                  "const": "cubicSpline"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "inTangents",
+                "outTangents"
+              ]
+            },
+            "else": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "inTangents"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "outTangents"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    "rootMotion": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "mode": {
+              "const": "none"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "joint"
+          ],
+          "properties": {
+            "mode": {
+              "const": "extract"
+            },
+            "joint": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "events": {
+      "type": "array",
+      "maxItems": 65536,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "timeSeconds",
+          "name"
+        ],
+        "properties": {
+          "timeSeconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          "payload": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}

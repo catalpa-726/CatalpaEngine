@@ -12,18 +12,22 @@
 namespace Catalpa {
 
     class TransformSystem;
+    class ComponentRegistry;
+    struct ArchiveValue;
     struct CameraComponent;
     struct MeshRendererComponent;
 
     // 独占World及其结构命令；本步主线程同步操作，不承担资产加载或GPU资源。
     class CATALPA_API Scene {
     public:
-        explicit Scene(std::string name);
+        explicit Scene(std::string name, std::shared_ptr<const ComponentRegistry> componentSchemas = {});
         ~Scene();
         Scene(const Scene&) = delete;
         Scene& operator=(const Scene&) = delete;
 
         [[nodiscard]] const std::string& GetName() const noexcept { return m_Name; }
+        // 最近一次作者字段schema诊断由Scene持有，不在WorldStatus内借用临时字符串。
+        [[nodiscard]] const std::string& GetLastComponentDiagnostic() const noexcept { return m_ComponentDiagnostic; }
         [[nodiscard]] const World& GetWorld() const noexcept { return m_World; }
         // 调度器由此 Scene 独占；调用方只在场景有效期间短期借用。
         [[nodiscard]] SystemScheduler& GetSystems() noexcept { return m_Systems; }
@@ -59,8 +63,11 @@ namespace Catalpa {
         [[nodiscard]] WorldStatus DestroySubtree(EntityId entity);
         [[nodiscard]] WorldStatus SetLocal(EntityId entity, const Math::TransformTRS& local);
         [[nodiscard]] WorldStatus SetParent(EntityId entity, EntityId parent, bool keepWorld);
+        [[nodiscard]] WorldStatus ValidateComponent(std::string_view type, const ArchiveValue& fields);
 
         std::string m_Name;
+        std::shared_ptr<const ComponentRegistry> m_ComponentSchemas;
+        std::string m_ComponentDiagnostic;
         World m_World;
         SystemScheduler m_Systems;
         EntityCommandBuffer m_Commands;

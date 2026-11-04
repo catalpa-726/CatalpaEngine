@@ -1,4 +1,9 @@
 #include "BoxGameplay.h"
+#include "Assets/AssetManager.h"
+#include "Runtime/RuntimeRegistration.h"
+#include "Materials/MaterialInstance.h"
+#include "Materials/MaterialValidation.h"
+#include "Materials/MaterialAssetLoader.h"
 
 #include "Scene/SceneManager.h"
 #include "Scene/Scene.h"
@@ -40,7 +45,7 @@ namespace Catalpa {
         double pitch = 0.0;
     };
 
-    bool BoxGameplay::Attach(SceneManager& scenes, bool reversedZ)
+    bool BoxGameplay::Attach(SceneManager& scenes, AssetManager& assets, bool reversedZ, bool errorMaterial)
     {
         try {
         m_Scenes = &scenes;
@@ -77,22 +82,62 @@ namespace Catalpa {
         camera.lens.farPlane = 30.0f;
         camera.lens.reversedZ = reversedZ;
         if (status.IsSuccess()) status = scene.QueueSetCamera(scene.Resolve(CameraId), camera);
-        // 三个实体共享一个受检立方体，地面使用一个受检平面；Box只生产CPU样例。
+        // Box只生产示例内容；发布、版本和GPU派生分别交给引擎服务。
+        std::string assetError; bool fallback=false;
+        AssetVersionRef<MaterialInstance> material;
+        if(!assets.Acquire(BuiltinMaterialId(BuiltinMaterialKind::Unlit),material,fallback,assetError)) {
+            CAT_ERROR("Cannot acquire default material: {0}",assetError);Detach();return false;
+        }
+        const auto component=[&](const MeshResourceRef& mesh, AssetId id, const Math::Vec4& color, MeshRendererComponent& output) {
+            const auto& data=mesh->GetData();
+            auto value=std::make_shared<const MeshAsset>(MeshAsset{mesh,{"default"}});
+            size_t resident=sizeof(MeshAsset)+sizeof(MeshResource)+data.vertexData.capacity()+data.indexData.capacity()
+                +data.attributes.capacity()*sizeof(VertexAttribute)+data.submeshes.capacity()*sizeof(Submesh)
+                +value->materialSlots.capacity()*sizeof(std::string);
+            for(const auto& slot:value->materialSlots) resident+=slot.capacity()+1;
+            if(!assets.PublishBuiltin<MeshAsset>(id,1,std::move(value),resident,assetError)) return false;
+            AssetVersionRef<MeshAsset> version;
+            if(!assets.Acquire(id,version,fallback,assetError)) return false;
+            output={mesh,color,true,version,{material}}; return true;
+        };
         MeshData cube;
         MeshResourceRef geometry;
         if (status.IsSuccess()) {
             auto meshStatus = CreateCubeMesh(1.0f, cube);
             if (meshStatus.IsSuccess()) meshStatus = CreateMeshResource(cube, geometry);
             if (!meshStatus.IsSuccess()) { CAT_ERROR("Cannot prepare sandbox geometry: {0}", meshStatus.message); Detach(); return false; }
-            status = scene.QueueSetMeshRenderer(scene.Resolve(ParentId), { geometry, Math::Vec4{ 0.1f, 0.8f, 0.5f, 1.0f }, true });
-            if (status.IsSuccess()) status = scene.QueueSetMeshRenderer(scene.Resolve(ChildId), { geometry, Math::Vec4{ 0.9f, 0.4f, 0.2f, 1.0f }, true });
-            if (status.IsSuccess()) status = scene.QueueSetMeshRenderer(scene.Resolve(ForegroundId), { geometry, Math::Vec4{ 0.55f, 0.25f, 0.85f, 1.0f }, true });
+            MeshRendererComponent cubeRenderer;
+            if(!component(geometry,AssetId::FromWords(0x434154414C504142ULL,1),Math::Vec4{0.1f,0.8f,0.5f,1.0f},cubeRenderer)) {
+                CAT_ERROR("Cannot publish cube: {0}",assetError);Detach();return false;
+            }
+            status=scene.QueueSetMeshRenderer(scene.Resolve(ParentId),cubeRenderer);
+            cubeRenderer.color={0.9f,0.4f,0.2f,1.0f};
+            if(status.IsSuccess()) status=scene.QueueSetMeshRenderer(scene.Resolve(ChildId),cubeRenderer);
+            cubeRenderer.color={0.55f,0.25f,0.85f,1.0f};
+            if(errorMaterial) {
+                // 故障样例只生产一个引用缺失shader的合法材质；回退决策由Renderer统一承担。
+                std::shared_ptr<const MaterialInstance> missing;
+                const auto missingId=AssetId::FromWords(0x434154414C504142ULL,3);
+                if(!CreateBuiltinMaterialInstance(BuiltinMaterialKind::Unlit,AssetId::FromWords(0x434154414C504142ULL,4),1,
+                    AssetId::FromWords(0x434154414C504142ULL,99),missing,assetError)
+                    ||!assets.PublishBuiltin<MaterialInstance>(missingId,1,missing,MaterialInstanceBytes(*missing)+MaterialDefinitionBytes(*missing->definition.Get()),assetError)) {
+                    CAT_ERROR("Cannot prepare error material sample: {0}",assetError);Detach();return false;
+                }
+                AssetVersionRef<MaterialInstance> fixed;
+                if(!assets.Acquire(missingId,fixed,fallback,assetError)) {CAT_ERROR("{0}",assetError);Detach();return false;}
+                cubeRenderer.materials={fixed};
+            }
+            if(status.IsSuccess()) status=scene.QueueSetMeshRenderer(scene.Resolve(ForegroundId),cubeRenderer);
             MeshData plane;
             MeshResourceRef planeGeometry;
             meshStatus = CreatePlaneMesh(12.0f, 12.0f, plane);
             if (meshStatus.IsSuccess()) meshStatus = CreateMeshResource(plane, planeGeometry);
             if (!meshStatus.IsSuccess()) { CAT_ERROR("Cannot prepare ground geometry: {0}", meshStatus.message); Detach(); return false; }
-            if (status.IsSuccess()) status = scene.QueueSetMeshRenderer(scene.Resolve(GroundId), { planeGeometry, Math::Vec4{ 0.18f, 0.2f, 0.22f, 1.0f }, true });
+            MeshRendererComponent planeRenderer;
+            if(!component(planeGeometry,AssetId::FromWords(0x434154414C504142ULL,2),Math::Vec4{0.18f,0.2f,0.22f,1.0f},planeRenderer)) {
+                CAT_ERROR("Cannot publish plane: {0}",assetError);Detach();return false;
+            }
+            if(status.IsSuccess()) status=scene.QueueSetMeshRenderer(scene.Resolve(GroundId),planeRenderer);
         }
         if (status.IsSuccess()) status = scene.CommitPending();
         if (!status.IsSuccess()) { CAT_ERROR("Cannot create sandbox content: {0}", status.message); Detach(); return false; }

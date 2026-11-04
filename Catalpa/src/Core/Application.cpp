@@ -1,4 +1,4 @@
-﻿#include "catpch.h"
+#include "catpch.h"
 #include "Application.h"
 #include "Log/Log.h"
 
@@ -52,6 +52,7 @@ namespace Catalpa {
 
     void Application::PushOverlay(std::unique_ptr<Layer> overlay) { m_PendingLayers.push_back({ .layer = std::move(overlay), .overlay = true }); }
 
+    AssetManager& Application::GetAssets() { return m_Runtime->GetAssets(); }
     SceneManager& Application::GetScenes() { return m_Runtime->GetScenes(); }
     const FrameTime& Application::GetFrameTime() const { return m_Runtime->GetFrameTime(); }
     const RenderFramePacket& Application::GetSceneFrame() const { return m_Runtime->GetSceneFrame(); }
@@ -102,6 +103,9 @@ namespace Catalpa {
         backendDesc.diagnostics.validation = RHIValidationMode::Synchronization;
 #endif
 
+        if (!m_Runtime->ConfigureResources(executableDirectory / "Resources", pathError)) {
+            CAT_CORE_ERROR("Cannot configure resources: {0}", pathError); return;
+        }
         if (const RHIStatus status = m_Runtime->Init(*m_Window, backendDesc); !status.IsSuccess()) {
             CAT_CORE_ERROR("Engine initialization failed at {0}. RHI error: {1}", status.operation, static_cast<int>(status.code));
             m_PendingLayers.clear();

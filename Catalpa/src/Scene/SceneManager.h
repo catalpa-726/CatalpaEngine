@@ -9,6 +9,7 @@
 namespace Catalpa {
 
     class Scene;
+    class ComponentRegistry;
 
     // Runtime唯一拥有的同步场景集合；本步只更新active Scene，后续再接调度/异步资产。
     class CATALPA_API SceneManager {
@@ -17,6 +18,9 @@ namespace Catalpa {
         ~SceneManager();
         SceneManager(const SceneManager&) = delete;
         SceneManager& operator=(const SceneManager&) = delete;
+
+        // 只在创建线程且尚无Scene时安装共享只读schema；现有Scene不会被悄悄换规则。
+        [[nodiscard]] WorldStatus SetComponentSchemas(std::shared_ptr<const ComponentRegistry> schemas);
 
         [[nodiscard]] WorldStatus CreateScene(std::string name, SceneHandle& output);
         // 指针仅借用到下一次Unload/Clear；业务应长期保存SceneHandle。
@@ -44,6 +48,7 @@ namespace Catalpa {
         void ReleaseSlot(uint32_t index) noexcept;
         uint64_t m_Identity = 0;
         std::thread::id m_OwnerThread;
+        std::shared_ptr<const ComponentRegistry> m_ComponentSchemas;
         std::vector<Slot> m_Slots;
         SceneHandle m_Active;
         bool m_Updating = false;

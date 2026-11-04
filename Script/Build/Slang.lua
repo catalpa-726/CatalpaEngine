@@ -1,72 +1,48 @@
--- 递归收集内置Slang；Common只提供共享module，其他文件是当前双入口图形shader。
--- 以后stage自动发现归S04.3；这里没有逐文件硬编码编译清单。
+-- Slang唯一构建入口规则：递归跟踪全部模块，stage/entry由slangc的[shader]属性发现。
+-- Catalpa库不依赖尚未链接的Box；Box链接完成后调用共享Tools命令生成已验证cooked产物。
 local engineRoot = _MAIN_SCRIPT_DIR
 local shaderRoot = path.join(engineRoot, "Catalpa/Resources/Shaders")
-local shaderCompiler = path.join(os.getenv("VULKAN_SDK"), "Bin/slangc.exe")
-local shaderPattern = path.join(shaderRoot, "**.slang")
-local generatedShaders = path.join(engineRoot, "bin-int", outputdir, "Shaders")
-local shaderFiles = os.matchfiles(shaderPattern)
-if #shaderFiles == 0 then error("No Slang shaders found: " .. shaderPattern) end
+local shaderFiles = os.matchfiles(path.join(shaderRoot, "**.slang"))
+if #shaderFiles == 0 then error("No Slang modules found: " .. shaderRoot) end
 table.sort(shaderFiles)
-local modules, entries = {}, {}
-local relativeKeys, symbols = {}, {}
-for _, shaderFile in ipairs(shaderFiles) do
-    local relative = path.getrelative(shaderRoot, shaderFile):gsub("\\", "/")
-    local stem = relative:gsub("%.slang$", "")
-    for component in stem:gmatch("[^/]+") do
-        if not component:match("^[A-Za-z_][A-Za-z0-9_]*$") then
-            error("Shader relative path must contain identifier components: " .. relative)
-        end
-    end
-    local key = relative:lower()
-    if relativeKeys[key] then error("Case-insensitive Slang path collision: " .. relative) end
-    relativeKeys[key] = true
-    if relative:lower():match("^common/") then
-        table.insert(modules, shaderFile)
-    else
-        local symbol = stem:gsub("/", "_")
-        if symbols[symbol:lower()] then error("Slang output symbol collision: " .. relative) end
-        symbols[symbol:lower()] = true
-        table.insert(entries, { file = shaderFile, relative = relative, stem = stem, symbol = symbol })
-    end
+local seen = {}
+for _, source in ipairs(shaderFiles) do
+    local relative = path.getrelative(shaderRoot, source):gsub("\\", "/")
+    if seen[relative:lower()] then error("Case-insensitive Slang path collision: " .. relative) end
+    seen[relative:lower()] = true
 end
-if #entries == 0 then error("No complete Slang entry modules found under " .. shaderRoot) end
-local stages = {
-    { entry = "vertexMain", stage = "vertex", suffix = "VertexSpirv" },
-    { entry = "fragmentMain", stage = "fragment", suffix = "FragmentSpirv" }
-}
-local prebuild = { '{MKDIR} "' .. generatedShaders .. '"' }
 filter {}
-    files { shaderPattern }
-    includedirs { generatedShaders }
-for _, item in ipairs(entries) do
-    local directory = path.join(generatedShaders, path.getdirectory(item.relative))
-    local commands = { '{MKDIR} "' .. directory .. '"' }
-    local outputs = {}
-    local inputs = { item.file }
-    for _, module in ipairs(modules) do table.insert(inputs, module) end
-    local command = '"' .. shaderCompiler .. '" "' .. item.file ..
-        '" -I "' .. shaderRoot .. '" -target spirv -profile spirv_1_5 -fvk-use-entrypoint-name -source-embed-style u32'
-    for _, stage in ipairs(stages) do
-        local symbol = item.symbol .. stage.suffix
-        local output = path.join(generatedShaders, item.stem .. stage.suffix .. ".h")
-        table.insert(outputs, output)
-        table.insert(commands, command .. ' -entry ' .. stage.entry .. ' -stage ' .. stage.stage ..
-            ' -source-embed-name ' .. symbol .. ' -o "' .. output .. '" || exit /b 1')
+    files { path.join(shaderRoot, "**.slang") }
+
+CatalpaShaderBuild = {}
+function CatalpaShaderBuild.AttachHostCook()
+    local stampRoot = path.join(engineRoot, "bin-int", outputdir, "ShaderInputs")
+    files { path.join(shaderRoot, "**.slang") }
+    for _, source in ipairs(shaderFiles) do
+        local relative = path.getrelative(shaderRoot, source)
+        local stamp = path.join(stampRoot, relative .. ".stamp")
+        -- 这里只记录输入改变，不在链接前执行尚不存在的工具宿主。
+        -- 任意公共模块变更使生产步骤重新检查真实内容hash，无C++头生成及全引擎重编译。
+        filter { "system:windows", "files:" .. path.getrelative(os.getcwd(), source) }
+            buildmessage ("Tracking Slang " .. relative)
+            buildinputs(shaderFiles)
+            buildcommands {
+                '{MKDIR} "' .. path.getdirectory(stamp) .. '"',
+                'if errorlevel 1 exit /b 1',
+                'type nul > "' .. stamp .. '"',
+                'if errorlevel 1 exit /b 1'
+            }
+            buildoutputs { stamp }
+            compilebuildoutputs(false)
+            linkbuildoutputs(false)
+        filter {}
     end
-    -- Prebuild确保首次C++编译前头已存在；CustomBuild输入让IDE也跟踪Common变更。
-    for _, line in ipairs(commands) do table.insert(prebuild, line) end
-    -- filter按当前目录保存basedir，实际文件也会转相对路径；避免绝对pattern漏掉CustomBuild。
-    local fileFilter = path.getrelative(os.getcwd(), item.file)
-    filter { "system:windows", "files:" .. fileFilter }
-        buildmessage ("Compiling Slang " .. item.relative)
-        buildinputs (inputs)
-        buildcommands (commands)
-        buildoutputs (outputs)
-        compilebuildoutputs(false)
-        linkbuildoutputs(false)
+    filter "system:windows"
+        postbuildmessage "Validating and cooking changed Slang assets"
+        -- 普通路径token会被Premake改成工程相对路径；!保留工具协议要求的绝对路径。
+        postbuildcommands {
+            '"%{!cfg.buildtarget.abspath}" --cook-shaders --source-root "' .. shaderRoot .. '" --output-root "%{!cfg.targetdir}/Resources/Shaders" --sdk-root "' .. os.getenv("VULKAN_SDK") .. '"',
+            'if errorlevel 1 exit /b 1'
+        }
     filter {}
 end
-filter "system:windows"
-    prebuildcommands(prebuild)
-filter {}

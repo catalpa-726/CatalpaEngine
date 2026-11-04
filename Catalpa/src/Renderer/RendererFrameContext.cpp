@@ -2,6 +2,7 @@
 #include "Renderer/RendererFrameContext.h"
 #include "RHI/RHIDevice.h"
 #include "Camera/CameraProjection.h"
+#include "Shaders/ShaderMetadata.h"
 #include <nlohmann/json.hpp>
 
 namespace Catalpa {
@@ -29,6 +30,90 @@ namespace Catalpa {
             output = (value + alignment - 1) & ~(alignment - 1);
             return true;
         }
+    }
+
+    bool ValidateFrameShaderInterface(const ShaderMetadata& metadata, std::string_view vertexEntry,
+        std::string_view fragmentEntry, std::string& error)
+    {
+        try {
+            if (!ValidateShaderMetadata(metadata, error)) return false;
+            struct ExpectedMember { std::string_view name; uint32_t offset, vectors; };
+            const auto checkNumber = [&](std::string_view path, std::string_view field, uint32_t actual, uint32_t expected) {
+                if (actual == expected) return true;
+                error = std::string(path) + "/" + std::string(field) + ": expected " + std::to_string(expected) + ", reflected " + std::to_string(actual);
+                return false;
+            };
+            const auto checkCommon = [&](const ShaderBlockMember& member, std::string_view path, uint32_t offset, uint32_t bytes) {
+                return checkNumber(path, "offset", member.offset, offset)
+                    && checkNumber(path, "size", member.size, bytes)
+                    && checkNumber(path, "paddedSize", member.paddedSize, bytes)
+                    && checkNumber(path, "matrixStride", member.matrixStride, 0)
+                    && checkNumber(path, "rowMajor", member.rowMajor ? 1u : 0u, 0);
+            };
+            const auto checkFloatVectors = [&](const ShaderBlockMember& member, std::string_view path, uint32_t count) {
+                return checkNumber(path, "scalar", static_cast<uint32_t>(member.type.scalar), static_cast<uint32_t>(ShaderScalarKind::Float))
+                    && checkNumber(path, "scalarWidth", member.type.width, 32)
+                    && checkNumber(path, "rows", member.type.rows, 1)
+                    && checkNumber(path, "columns", member.type.columns, 4)
+                    && checkNumber(path, "arrayCount", member.type.arrayCount, count)
+                    && checkNumber(path, "arrayStride", member.arrayStride, count > 1 ? 16u : 0u)
+                    && checkNumber(path, "nestedMemberCount", static_cast<uint32_t>(member.members.size()), 0);
+            };
+            const auto blockMatches = [&](ShaderStage stage, std::string_view entryName, uint32_t binding,
+                uint32_t bytes, std::span<const ExpectedMember> expected) {
+                const std::string path = "Frame shader ABI/" + std::string(entryName)
+                    + (stage == ShaderStage::Vertex ? "(VS)" : "(FS)") + "/set0/binding" + std::to_string(binding);
+                const auto* entry = FindShaderEntry(metadata, entryName, stage);
+                if (!entry) { error = path + ": required entry is missing"; return false; }
+                const auto found = std::find_if(entry->bindings.begin(), entry->bindings.end(), [&](const auto& value) { return value.set == 0 && value.binding == binding; });
+                if (found == entry->bindings.end()) { error = path + ": required uniform block is missing"; return false; }
+                if (!checkNumber(path, "resourceKind", static_cast<uint32_t>(found->kind), static_cast<uint32_t>(ShaderResourceKind::UniformBuffer))
+                    || !checkNumber(path, "descriptorCount", found->count, 1)
+                    || !checkNumber(path, "blockSize", found->blockSize, bytes)
+                    || !checkNumber(path, "memberCount", static_cast<uint32_t>(found->members.size()), static_cast<uint32_t>(expected.size()))) return false;
+                for (const auto& wanted : expected) {
+                    const auto member = std::find_if(found->members.begin(), found->members.end(), [&](const auto& value) { return value.name == wanted.name; });
+                    const std::string memberPath = path + "/" + std::string(wanted.name);
+                    if (member == found->members.end()) { error = memberPath + ": required member is missing"; return false; }
+                    const uint32_t memberBytes = wanted.vectors * 16;
+                    if (!checkCommon(*member, memberPath, wanted.offset, memberBytes)) return false;
+                    if (member->type.scalar != ShaderScalarKind::Structure) {
+                        if (!checkFloatVectors(*member, memberPath, wanted.vectors)) return false;
+                        continue;
+                    }
+                    // Slang may retain a vector array as a struct containing exactly data[N].
+                    // This is a second precise representation of the same host bytes, never a flattening rule.
+                    if (wanted.vectors == 1) { error = memberPath + ": single float4 must not use an array wrapper"; return false; }
+                    if (!checkNumber(memberPath, "scalarWidth", member->type.width, 0)
+                        || !checkNumber(memberPath, "rows", member->type.rows, 1)
+                        || !checkNumber(memberPath, "columns", member->type.columns, 1)
+                        || !checkNumber(memberPath, "arrayCount", member->type.arrayCount, 1)
+                        || !checkNumber(memberPath, "arrayStride", member->arrayStride, 0)
+                        || !checkNumber(memberPath, "nestedMemberCount", static_cast<uint32_t>(member->members.size()), 1)) return false;
+                    const auto& data = member->members.front();
+                    if (data.name != "data") { error = memberPath + ": array wrapper must contain exactly the named data member"; return false; }
+                    const std::string dataPath = memberPath + "/data";
+                    if (!checkCommon(data, dataPath, 0, memberBytes) || !checkFloatVectors(data, dataPath, wanted.vectors)) return false;
+                }
+                return true;
+            };
+            constexpr std::array<ExpectedMember, 2> frame{{
+                {"time", static_cast<uint32_t>(offsetof(FrameGpuParameters, time)), 1},
+                {"options", static_cast<uint32_t>(offsetof(FrameGpuParameters, options)), 1}}};
+            constexpr std::array<ExpectedMember, 2> view{{
+                {"viewProjectionColumns", static_cast<uint32_t>(offsetof(ViewGpuParameters, viewProjectionColumns)), 4},
+                {"cameraPosition", static_cast<uint32_t>(offsetof(ViewGpuParameters, cameraPosition)), 1}}};
+            constexpr std::array<ExpectedMember, 3> draw{{
+                {"worldColumns", static_cast<uint32_t>(offsetof(DrawGpuParameters, worldColumns)), 4},
+                {"normalColumns", static_cast<uint32_t>(offsetof(DrawGpuParameters, normalColumns)), 3},
+                {"color", static_cast<uint32_t>(offsetof(DrawGpuParameters, color)), 1}}};
+            if (!blockMatches(ShaderStage::Fragment, fragmentEntry, 0, static_cast<uint32_t>(sizeof(FrameGpuParameters)), frame)
+                || !blockMatches(ShaderStage::Vertex, vertexEntry, 1, static_cast<uint32_t>(sizeof(ViewGpuParameters)), view)
+                || !blockMatches(ShaderStage::Vertex, vertexEntry, 2, static_cast<uint32_t>(sizeof(DrawGpuParameters)), draw)
+                || !blockMatches(ShaderStage::Fragment, fragmentEntry, 2, static_cast<uint32_t>(sizeof(DrawGpuParameters)), draw)) return false;
+            error.clear();
+            return true;
+        } catch (const std::exception& exception) { error = exception.what(); return false; }
     }
 
     RHIStatus ParseRendererProfile(std::string_view source, RendererProfile& output)

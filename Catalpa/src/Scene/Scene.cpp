@@ -1,5 +1,7 @@
 #include "catpch.h"
+#include "Materials/MaterialValidation.h"
 #include "Scene/Scene.h"
+#include "ECS/ComponentRegistry.h"
 #include "Core/Math/TransformMath.h"
 #include "ECS/Detail/WorldComponentType.h"
 #include "Runtime/Systems/TransformSystem.h"
@@ -18,7 +20,27 @@ namespace Catalpa {
     const ComponentType& ComponentTraits<CameraComponent>::Get() { return Detail::MakeComponentType<CameraComponent>(); }
     const ComponentType& ComponentTraits<MeshRendererComponent>::Get() { return Detail::MakeComponentType<MeshRendererComponent>(); }
 
-    Scene::Scene(std::string name) : m_Name(std::move(name)) {}
+    namespace {
+        ArchiveValue AuthorVector(std::initializer_list<float> values) {
+            ArchiveValue::Array array;array.reserve(values.size());for(float value:values)array.push_back(ArchiveValue{double(value)});
+            return ArchiveValue{std::move(array)};
+        }
+        ArchiveValue TransformAuthorFields(const Math::TransformTRS& local) {
+            return ArchiveValue{ArchiveValue::Object{
+                {"schemaVersion",ArchiveValue{uint64_t(1)}},
+                {"translation",AuthorVector({local.translation.x,local.translation.y,local.translation.z})},
+                {"rotation",AuthorVector({local.rotation.w,local.rotation.x,local.rotation.y,local.rotation.z})},
+                {"scale",AuthorVector({local.scale.x,local.scale.y,local.scale.z})}}};
+        }
+    }
+    Scene::Scene(std::string name,std::shared_ptr<const ComponentRegistry> schemas)
+        : m_Name(std::move(name)),m_ComponentSchemas(std::move(schemas)) {}
+    WorldStatus Scene::ValidateComponent(std::string_view type,const ArchiveValue& fields) {
+        if(!m_ComponentSchemas)return {};
+        if(!m_ComponentSchemas->Validate(type,fields,m_ComponentDiagnostic))
+            return {WorldError::InvalidArgument,"Component author fields rejected; see Scene component diagnostic"};
+        return {};
+    }
     Scene::~Scene() = default;
 
     WorldStatus Scene::ValidateEntity(EntityId entity) const noexcept {
@@ -29,6 +51,16 @@ namespace Catalpa {
 
     WorldStatus Scene::QueueCreate(PersistentEntityId persistent, std::string_view name, const Math::TransformTRS& local, EntityId parent) {
         try {
+            if(m_ComponentSchemas){
+                ArchiveValue identity{ArchiveValue::Object{{"schemaVersion",ArchiveValue{uint64_t(1)}},
+                    {"persistent_id",ArchiveValue{persistent.ToString()}},{"name",ArchiveValue{std::string(name)}}}};
+                if(const auto status=ValidateComponent("catalpa.identity",identity);!status.IsSuccess())return status;
+                if(const auto status=ValidateComponent("catalpa.transform",TransformAuthorFields(local));!status.IsSuccess())return status;
+                ArchiveValue::Object relationship{{"schemaVersion",ArchiveValue{uint64_t(1)}}};
+                if(parent!=EntityId{}){IdentityComponent parentIdentity;if(const auto status=GetIdentity(parent,parentIdentity);!status.IsSuccess())return status;
+                    relationship.emplace("parent",ArchiveValue{parentIdentity.persistent.ToString()});}
+                if(const auto status=ValidateComponent("catalpa.relationship",ArchiveValue{std::move(relationship)});!status.IsSuccess())return status;
+            }
             return m_Commands.QueueCreate([this, persistent, name = std::string(name), local, parent](World&, EntityId entity) {
                 return InitializeEntity(entity, persistent, name, local, parent);
             });
@@ -41,7 +73,10 @@ namespace Catalpa {
     }
 
     WorldStatus Scene::QueueSetLocal(EntityId entity, const Math::TransformTRS& local) {
-        try { return m_Commands.Enqueue([this, entity, local](World&) { return SetLocal(entity, local); }); }
+        try {
+            if(m_ComponentSchemas)if(const auto status=ValidateComponent("catalpa.transform",TransformAuthorFields(local));!status.IsSuccess())return status;
+            return m_Commands.Enqueue([this, entity, local](World&) { return SetLocal(entity, local); });
+        }
         catch (const std::bad_alloc&) { return { WorldError::AllocationFailed, "Cannot capture local transform" }; }
     }
 
@@ -77,13 +112,32 @@ namespace Catalpa {
 
     WorldStatus Scene::QueueSetMeshRenderer(EntityId entity, const MeshRendererComponent& renderer) {
         if (const auto status = ValidateMeshResource(renderer.mesh); !status.IsSuccess()) return { WorldError::InvalidArgument, status.message };
+        if(renderer.meshVersion.HasValue()) {
+            std::string error;
+            if(!ValidateMeshAsset(*renderer.meshVersion.Get(),error)||renderer.meshVersion.Get()->mesh!=renderer.mesh
+                ||renderer.materials.size()!=renderer.meshVersion.Get()->materialSlots.size())
+                return {WorldError::InvalidArgument,"Mesh asset version/material slots are inconsistent"};
+            for(const auto& material:renderer.materials)
+                if(!material.HasValue()||!ValidateMaterialInstance(*material.Get(),error))
+                    return {WorldError::InvalidArgument,"Material version is invalid"};
+        } else if(!renderer.materials.empty()) return {WorldError::InvalidArgument,"Materials require a mesh asset version"};
         // 本步颜色为线性RGB及[0,1] alpha；允许有限HDR值，不静默裁剪或改写源参数。
         for (int channel = 0; channel < 4; ++channel) {
             if (!std::isfinite(renderer.color[channel]) || renderer.color[channel] < 0.0f
                 || (channel == 3 && renderer.color[channel] > 1.0f))
                 return { WorldError::InvalidArgument, "Mesh renderer color must be finite nonnegative RGB and alpha in [0,1]" };
         }
-        try { return m_Commands.Enqueue([this, entity, renderer](World& world) {
+        try {
+            if(m_ComponentSchemas){
+                if(!renderer.meshVersion.HasValue())return {WorldError::InvalidArgument,"Schema-enabled mesh renderer requires an asset version"};
+                ArchiveValue::Array materials;materials.reserve(renderer.materials.size());
+                for(const auto& material:renderer.materials)materials.push_back(ArchiveValue{material.GetId().ToString()});
+                ArchiveValue fields{ArchiveValue::Object{{"schemaVersion",ArchiveValue{uint64_t(1)}},
+                    {"mesh",ArchiveValue{renderer.meshVersion.GetId().ToString()}},{"materials",ArchiveValue{std::move(materials)}},
+                    {"color",AuthorVector({renderer.color.x,renderer.color.y,renderer.color.z,renderer.color.w})},{"visible",ArchiveValue{renderer.visible}}}};
+                if(const auto status=ValidateComponent("catalpa.mesh_renderer",fields);!status.IsSuccess())return status;
+            }
+            return m_Commands.Enqueue([this, entity, renderer](World& world) {
             if (const auto status = ValidateEntity(entity); !status.IsSuccess()) return status;
             return world.Has<MeshRendererComponent>(entity) ? world.Set(entity, renderer) : world.Add(entity, renderer);
         }); } catch (const std::bad_alloc&) { return { WorldError::AllocationFailed, "Cannot capture mesh renderer change" }; }

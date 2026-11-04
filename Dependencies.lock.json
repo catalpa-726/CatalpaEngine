@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scope": "S03.1 GLM and EnTT only; existing dependency inventory remains incomplete (B01).",
+  "scope": "Verified GLM, EnTT, enkiTS and SPIRV-Reflect source archives plus an observed external Vulkan SDK toolchain; the full existing dependency inventory remains incomplete (B01).",
   "acquiredOn": "2026-11-04",
   "sourceTreeHashAlgorithm": "sha256 of sorted UTF-8 records: relative POSIX path + NUL + lowercase file sha256 + LF; includes every extracted archive file.",
   "dependencies": [
@@ -69,6 +69,149 @@
         "upstreamSourceModified": false,
         "additionalLinkedDependencies": []
       }
+    },
+    {
+      "name": "enkiTS",
+      "version": "1.12",
+      "tag": "v1.12",
+      "repository": "https://github.com/dougbinks/enkiTS",
+      "acquisition": {
+        "method": "github-tag-archive",
+        "url": "https://codeload.github.com/dougbinks/enkiTS/zip/refs/tags/v1.12",
+        "sha256": "f35ec3b4d4cb1b410c7ffdb1eb6de1262d709c8065ae12f95fd1ddb2817c3771",
+        "bytes": 80378,
+        "cloneOutcome": "Not attempted: all Git commands are prohibited for this batch; full official tag archive used.",
+        "archiveDeletedAfterVerification": true
+      },
+      "path": "Catalpa/third_party/enkiTS",
+      "versionEvidence": "Official tag v1.12; upstream CMakeLists.txt still declares VERSION 1.11 and is preserved unchanged.",
+      "sourceFiles": 35,
+      "sourceTreeSha256": "f8a4cc8fb12c833bf55959b54d79a5d56effa504b5403d0c97ade10d3a96b77b",
+      "license": {
+        "selected": "Zlib",
+        "file": "License.txt",
+        "sha256": "445bc1c1f7c6a7c6c7b57e4132c02404816a64ed8bf678d3c8c049bebf57d61b"
+      },
+      "integration": {
+        "mode": "static-library",
+        "project": "enkiTS",
+        "buildHelper": "Script/Build/EnkiTS.lua",
+        "includeRoot": "Catalpa/third_party/enkiTS/src",
+        "compiledSources": [
+          "src/TaskScheduler.cpp"
+        ],
+        "consumers": [
+          "Catalpa"
+        ],
+        "plannedConsumers": [],
+        "submodule": false,
+        "submoduleMetadataDeclared": true,
+        "upstreamSourceModified": false,
+        "additionalLinkedDependencies": [],
+        "runtimeLibrary": "dynamic; inherits workspace configuration",
+        "validation": "Dependency batch was user-verified on 2026-11-05 (VS2022/v143 Debug/x64). New S04 production consumers are implemented and statically reviewed; full chapter generation/build/CPU/GPU verification remains pending user execution.",
+        "taskPriorities": "Upstream default 3; no override or DLL macro in library or consumer."
+      }
+    },
+    {
+      "name": "SPIRV-Reflect",
+      "version": "vulkan-sdk-1.4.363.0",
+      "tag": "vulkan-sdk-1.4.363.0",
+      "repository": "https://github.com/KhronosGroup/SPIRV-Reflect",
+      "acquisition": {
+        "method": "github-tag-archive",
+        "url": "https://codeload.github.com/KhronosGroup/SPIRV-Reflect/zip/refs/tags/vulkan-sdk-1.4.363.0",
+        "sha256": "a4654a90fe938a3cba55952776f50f0f0a005143371ef6d076578ab1f41afce1",
+        "bytes": 602993,
+        "cloneOutcome": "Not attempted: all Git commands are prohibited for this batch; full official tag archive used.",
+        "archiveDeletedAfterVerification": true
+      },
+      "path": "Catalpa/third_party/SPIRV-Reflect",
+      "versionEvidence": "Official vulkan-sdk-1.4.363.0 tag, matching the observed installed SDK.",
+      "sourceFiles": 417,
+      "sourceTreeSha256": "8a41671dbea8235a892b09638ce55981e041a73188cfb5c00f51ddc784746f67",
+      "license": {
+        "selected": "Apache-2.0",
+        "file": "LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "bundledFiles": [
+          {
+            "file": "include/spirv/unified1/spirv.h",
+            "selected": "MIT",
+            "sha256": "4b8d9ce80915feecf75a7d0a3a9527693a091f340ea5b7f70c89353254b7c2ca"
+          }
+        ]
+      },
+      "integration": {
+        "mode": "static-library",
+        "project": "SPIRV-Reflect",
+        "buildHelper": "Script/Build/SPIRVReflect.lua",
+        "includeRoot": "Catalpa/third_party/SPIRV-Reflect",
+        "compiledSources": [
+          "spirv_reflect.c"
+        ],
+        "consumers": [
+          "Tools (private ShaderCompiler reflection)"
+        ],
+        "plannedConsumers": [],
+        "submodule": false,
+        "submoduleMetadataDeclared": true,
+        "upstreamSourceModified": false,
+        "additionalLinkedDependencies": [],
+        "runtimeLibrary": "dynamic; inherits workspace configuration",
+        "validation": "Dependency batch was user-verified on 2026-11-05 (VS2022/v143 Debug/x64). New S04 production consumers are implemented and statically reviewed; full chapter generation/build/CPU/GPU verification remains pending user execution."
+      }
+    }
+  ],
+  "externalToolchains": [
+    {
+      "name": "Vulkan SDK",
+      "observedVersion": "1.4.363.0",
+      "observedRoot": "F:\\C\\vulkan",
+      "rootResolution": "Builds continue to use VULKAN_SDK; observedRoot is evidence, not a hardcoded build path.",
+      "versionEvidence": "components.xml; Include/slang/slang-tag-version.h",
+      "slangTagVersion": "2026.17-25-gc7954ebd1",
+      "files": [
+        {
+          "path": "components.xml",
+          "sha256": "5de9d0d48a5fd29e7727ead2bc3e182517a14e75814e4838ae0a857ff9fd0c11",
+          "bytes": 3699
+        },
+        {
+          "path": "Include/slang/slang-tag-version.h",
+          "sha256": "9a7de1f4ca938f67bd42e118185c0444552798825d62689f8605d9dd9781ff9a",
+          "bytes": 92
+        },
+        {
+          "path": "Bin/slangc.exe",
+          "sha256": "306cf17c6b9c795ecf7b5d951414e6a41ae0e6d1442e94eb8e965524a82d702d",
+          "bytes": 143288
+        },
+        {
+          "path": "Bin/slang-compiler.dll",
+          "sha256": "5f80a76029bed0b1a92d17ea7fb92989be33d3bfb16e9fb6a4f06749b9b448c0",
+          "bytes": 24778680
+        },
+        {
+          "path": "Bin/spirv-val.exe",
+          "sha256": "ea84bd4b277f344d57fd05971603189df00b33184010d968bfd648bb46b61a82",
+          "bytes": 2737592
+        }
+      ],
+      "integration": "Tools invokes the existing locked slangc and spirv-val processes; final SPIR-V is validated then reflected by the separately locked SPIRV-Reflect archive. Slang.lua tracks recursive sources and calls the already-linked Box tool route after build; Runtime reads cooked assets only. No new SDK download, DLL deployment or Slang library link.",
+      "licenses": [
+        {
+          "component": "Slang",
+          "spdx": "Apache-2.0 WITH LLVM-exception",
+          "url": "https://github.com/shader-slang/slang/blob/vulkan-sdk-1.4.363.0/LICENSE"
+        },
+        {
+          "component": "SPIRV-Tools",
+          "spdx": "Apache-2.0",
+          "url": "https://github.com/KhronosGroup/SPIRV-Tools/blob/vulkan-sdk-1.4.363.0/LICENSE"
+        }
+      ],
+      "validation": "Observed by static file reads and hashes only; tool versions were not executed. The assistant process has no VULKAN_SDK value; existing generated projects identify observedRoot."
     }
   ]
 }
