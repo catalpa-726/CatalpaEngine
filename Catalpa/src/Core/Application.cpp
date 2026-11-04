@@ -46,6 +46,8 @@ namespace Catalpa {
 
     void Application::PushOverlay(std::unique_ptr<Layer> overlay) { m_PendingLayers.push_back({ .layer = std::move(overlay), .overlay = true }); }
 
+    SceneManager& Application::GetScenes() { return m_Runtime->GetScenes(); }
+
     void Application::AttachPendingLayers()
     {
         auto pending = std::exchange(m_PendingLayers, {});
@@ -104,6 +106,12 @@ namespace Catalpa {
 
             for (Layer* layer : m_LayerStack) layer->OnUpdate(timestep);
             if (!m_Running) break;
+
+            // Layer 本轮产生的场景命令在单一安全点提交，再生成 UI/渲染数据。
+            if (const WorldStatus status = m_Runtime->UpdateScenes(); !status.IsSuccess()) {
+                CAT_CORE_ERROR("Scene update failed: {0}", status.message);
+                break;
+            }
 
             m_ImGuiLayer->Begin();
             for (Layer* layer : m_LayerStack) layer->OnImGuiRender();

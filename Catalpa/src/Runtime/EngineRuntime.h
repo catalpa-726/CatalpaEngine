@@ -4,6 +4,7 @@
 #include "RHI/RHIError.h"
 #include "RHI/RHISwapchainDesc.h"
 #include "RHI/RHIBackend.h"
+#include "Scene/SceneManager.h"
 #include <cstddef>
 #include <span>
 
@@ -35,11 +36,16 @@ namespace Catalpa {
 
         void RequestSwapchainUpdate() { m_SwapchainDirty = true; }
 
+        // 场景独占于 Runtime，Box/Layer 只借用服务和代次句柄。
+        SceneManager& GetScenes() { return m_Scenes; }
+        [[nodiscard]] WorldStatus UpdateScenes();
+
     private:
         // 持有运行期对象；Shutdown 显式按 Renderer、交换链、设备的顺序释放。
         std::unique_ptr<RHIDevice> m_Device;
         std::unique_ptr<RHISwapchain> m_Swapchain;
         std::unique_ptr<Renderer> m_Renderer;
+        SceneManager m_Scenes;
 
         // 由窗口表面变化事件标记重建请求。
         bool m_SwapchainDirty = true;

@@ -1,5 +1,8 @@
 ﻿#pragma once
 
+#include <cstdint>
+#include <limits>
+
 // 负责槽位索引和槽位代次，不认识设备或 Vulkan
 namespace Catalpa {
 

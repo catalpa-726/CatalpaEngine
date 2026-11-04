@@ -1,0 +1,62 @@
+#pragma once
+
+#include "ECS/EntityCommandBuffer.h"
+#include "Scene/EntityReference.h"
+#include "Scene/Components/IdentityComponent.h"
+#include "Scene/Components/TransformComponent.h"
+#include "Scene/Components/RelationshipComponent.h"
+#include <map>
+#include <string>
+#include <string_view>
+
+namespace Catalpa {
+
+    class TransformSystem;
+
+    // 独占World及其结构命令；本步主线程同步操作，不承担资产加载或GPU资源。
+    class CATALPA_API Scene {
+    public:
+        explicit Scene(std::string name);
+        ~Scene();
+        Scene(const Scene&) = delete;
+        Scene& operator=(const Scene&) = delete;
+
+        [[nodiscard]] const std::string& GetName() const noexcept { return m_Name; }
+        [[nodiscard]] const World& GetWorld() const noexcept { return m_World; }
+
+        // 命令捕获独占值；父节点须在该命令执行时存在。提交前不发布新实体身份。
+        [[nodiscard]] WorldStatus QueueCreate(PersistentEntityId persistent, std::string_view name, const Math::TransformTRS& local, EntityId parent = {});
+        [[nodiscard]] WorldStatus QueueDestroySubtree(EntityId entity);
+        [[nodiscard]] WorldStatus QueueSetLocal(EntityId entity, const Math::TransformTRS& local);
+        [[nodiscard]] WorldStatus QueueSetParent(EntityId entity, EntityId parent, bool keepWorld = false);
+        // FIFO逐命令原子操作，不承诺整批回滚；保留全部结果，返回首个失败。
+        [[nodiscard]] WorldStatus CommitPending();
+        [[nodiscard]] const EntityCommandApplyResult& GetLastCommandResults() const noexcept { return m_LastCommands; }
+
+        // 仅解析当前Scene；删除、卸载及跨World令牌不能返回旧实体。
+        [[nodiscard]] EntityId Resolve(PersistentEntityId persistent) const noexcept;
+        [[nodiscard]] EntityId Resolve(EntityReference reference) const noexcept;
+        [[nodiscard]] EntityReference MakeReference(EntityId entity) const;
+        [[nodiscard]] WorldStatus GetTransform(EntityId entity, TransformComponent& output) const;
+        [[nodiscard]] WorldStatus GetRelationship(EntityId entity, RelationshipComponent& output) const;
+        [[nodiscard]] WorldStatus GetIdentity(EntityId entity, IdentityComponent& output) const;
+
+    private:
+        friend class TransformSystem;
+        [[nodiscard]] WorldStatus ValidateEntity(EntityId entity) const noexcept;
+        [[nodiscard]] WorldStatus InitializeEntity(EntityId entity, PersistentEntityId persistent, const std::string& name, const Math::TransformTRS& local, EntityId parent);
+        [[nodiscard]] WorldStatus DestroySubtree(EntityId entity);
+        [[nodiscard]] WorldStatus SetLocal(EntityId entity, const Math::TransformTRS& local);
+        [[nodiscard]] WorldStatus SetParent(EntityId entity, EntityId parent, bool keepWorld);
+
+        std::string m_Name;
+        World m_World;
+        EntityCommandBuffer m_Commands;
+        EntityCommandApplyResult m_LastCommands;
+        std::map<PersistentEntityId, EntityId> m_Entities;
+        bool m_Dirty = false;
+        bool m_Committing = false;
+        bool m_UpdatingTransforms = false;
+    };
+
+}

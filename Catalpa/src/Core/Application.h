@@ -10,6 +10,7 @@ namespace Catalpa {
 
 	class EngineRuntime;
 	class ImGuiLayer;
+	class SceneManager;
 
 	class CATALPA_API Application {
 	public:
@@ -27,6 +28,9 @@ namespace Catalpa {
 		// 应用与窗口访问。
 		inline static Application& Get() { return *s_Instance; }
 		inline Window& GetWindow() { return *m_Window; }
+
+		// 仅开放场景服务；设备、交换链和 Renderer 仍由 Runtime 管理。
+		SceneManager& GetScenes();
 
 		// 先暂存所有权，初始化成功或当前帧结束后再挂载。
 		void PushLayer(std::unique_ptr<Layer> layer);
@@ -60,5 +64,12 @@ namespace Catalpa {
 	};
 
 	Application* CreateApplication();
+
+	// 由唯一宿主 Box 处理启动参数，CPU 验证在创建窗口/设备前返回退出码。
+	struct ApplicationStartupResult {
+		bool handled = false;
+		int exitCode = 0;
+	};
+	ApplicationStartupResult HandleApplicationArguments(int argc, char** argv);
 
 }

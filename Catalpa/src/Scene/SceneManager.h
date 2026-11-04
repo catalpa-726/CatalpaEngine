@@ -1,0 +1,52 @@
+#pragma once
+
+#include "Core/Base.h"
+#include "ECS/World.h"
+#include "Scene/SceneHandle.h"
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
+
+namespace Catalpa {
+
+    class Scene;
+
+    // Runtime唯一拥有的同步场景集合；本步只更新active Scene，后续再接调度/异步资产。
+    class CATALPA_API SceneManager {
+    public:
+        SceneManager();
+        ~SceneManager();
+        SceneManager(const SceneManager&) = delete;
+        SceneManager& operator=(const SceneManager&) = delete;
+
+        [[nodiscard]] WorldStatus CreateScene(std::string name, SceneHandle& output);
+        // 指针仅借用到下一次Unload/Clear；业务应长期保存SceneHandle。
+        [[nodiscard]] Scene* GetScene(SceneHandle handle) noexcept;
+        [[nodiscard]] const Scene* GetScene(SceneHandle handle) const noexcept;
+        [[nodiscard]] WorldStatus Unload(SceneHandle handle);
+        [[nodiscard]] WorldStatus SetActive(SceneHandle handle);
+        [[nodiscard]] Scene* GetActive() noexcept;
+        [[nodiscard]] const Scene* GetActive() const noexcept;
+        [[nodiscard]] WorldStatus UpdateActive();
+        // 全部场景可卸载后才一次清理；失败不释放任何仍被借用的场景。
+        [[nodiscard]] WorldStatus Clear() noexcept;
+
+    private:
+        struct Slot {
+            std::unique_ptr<Scene> scene;
+            uint32_t generation = 1;
+            bool retired = false;
+        };
+        [[nodiscard]] WorldStatus CanMutate() const noexcept;
+        [[nodiscard]] WorldStatus Validate(SceneHandle handle) const noexcept;
+        // 卸载后保留槽位代次；代次耗尽的槽永久退役。
+        void ReleaseSlot(uint32_t index) noexcept;
+        uint64_t m_Identity = 0;
+        std::thread::id m_OwnerThread;
+        std::vector<Slot> m_Slots;
+        SceneHandle m_Active;
+        bool m_Updating = false;
+    };
+
+}

@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "scope": "S03.1 GLM and EnTT only; existing dependency inventory remains incomplete (B01).",
+  "acquiredOn": "2026-11-04",
+  "sourceTreeHashAlgorithm": "sha256 of sorted UTF-8 records: relative POSIX path + NUL + lowercase file sha256 + LF; includes every extracted archive file.",
+  "dependencies": [
+    {
+      "name": "glm",
+      "version": "1.0.3",
+      "tag": "1.0.3",
+      "repository": "https://github.com/g-truc/glm",
+      "acquisition": {
+        "method": "github-tag-archive",
+        "url": "https://codeload.github.com/g-truc/glm/zip/refs/tags/1.0.3",
+        "sha256": "3aa4347b8f13cba882df1c7b61a6ca910c75a875c56ec3d75d7dc9ae8eac34df",
+        "bytes": 6243522,
+        "cloneOutcome": "Full-history clone attempted; initial missing SystemRoot caused getaddrinfo error; environment-corrected transfers did not complete and were cancelled. Archive fallback used."
+      },
+      "path": "Catalpa/third_party/glm",
+      "versionHeader": "glm/detail/setup.hpp",
+      "sourceFiles": 1674,
+      "sourceTreeSha256": "c873848b48cc94fbe6a51cfa3e983443cb9fc937e829978e3daf755c24024e01",
+      "license": {
+        "selected": "MIT",
+        "file": "copying.txt",
+        "sha256": "62d2d642c7d054d4fb4c9b42faad617d6c88fcd91e317f8035aa9f277cc159c3"
+      },
+      "integration": {
+        "mode": "header-only",
+        "includeRoot": "Catalpa/third_party/glm",
+        "consumers": [
+          "Catalpa",
+          "CatalpaBox",
+          "CatalpaEditor"
+        ],
+        "submodule": false,
+        "upstreamSourceModified": false,
+        "additionalLinkedDependencies": []
+      }
+    },
+    {
+      "name": "entt",
+      "version": "4.0.0",
+      "tag": "v4.0.0",
+      "repository": "https://github.com/skypjack/entt",
+      "acquisition": {
+        "method": "github-tag-archive",
+        "url": "https://codeload.github.com/skypjack/entt/zip/refs/tags/v4.0.0",
+        "sha256": "6cae22c98a6a463b4152c65bfc3593cfaf6fda60b9bb65771d0752365af4fe83",
+        "bytes": 1106172,
+        "cloneOutcome": "Full-history clone attempted; initial missing SystemRoot caused getaddrinfo error; environment-corrected transfers did not complete and were cancelled. Archive fallback used."
+      },
+      "path": "Catalpa/third_party/entt",
+      "versionHeader": "src/entt/config/version.h",
+      "sourceFiles": 374,
+      "sourceTreeSha256": "5c909a3ff7de8bed992f787e6d5e6a7c070dbd53a007222d84ec864e0b8e1969",
+      "license": {
+        "selected": "MIT",
+        "file": "LICENSE",
+        "sha256": "73547f6370ee16ea560665329bb62d4e2d8250f41eaa204b47a6c694ca3286ea"
+      },
+      "integration": {
+        "mode": "header-only",
+        "includeRoot": "Catalpa/third_party/entt/src",
+        "consumers": [
+          "Catalpa"
+        ],
+        "submodule": false,
+        "upstreamSourceModified": false,
+        "additionalLinkedDependencies": []
+      }
+    }
+  ]
+}

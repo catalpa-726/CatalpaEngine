@@ -54,6 +54,11 @@ namespace Catalpa {
 
     void EngineRuntime::Shutdown()
     {
+        // 本步没有异步 World 消费者；先清场景及未提交 CPU 命令。
+        if (const WorldStatus status = m_Scenes.Clear(); !status.IsSuccess()) {
+            CAT_CORE_CRITICAL("Cannot shut down while scene data is borrowed: {0}", status.message);
+            std::abort();
+        }
         if (m_Device) {
             // 兼容路径采用设备空闲收尾；支持呈现 Fence 时追加独立的呈现等待。
             RHIStatus status = m_Device->WaitIdleAndDiscardFrameCommands();
@@ -77,6 +82,8 @@ namespace Catalpa {
         if (!m_Renderer) return { RHIErrorCode::InvalidState, 0, "EngineRuntime::InitUI/Renderer" };
         return m_Renderer->InitUI(fontPixels, fontExtent);
     }
+
+    WorldStatus EngineRuntime::UpdateScenes() { return m_Scenes.UpdateActive(); }
 
     // 每轮先根据事件标记、VSync 变化或交换链状态处理更新，再执行绘制。
     // UpdateSwapchain 负责查询和比较请求配置，确实需要时才重建。

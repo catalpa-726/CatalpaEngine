@@ -4,9 +4,12 @@
 
 int main(int argc, char** argv) {
 	Catalpa::Log::Init();
+	const auto startup = Catalpa::HandleApplicationArguments(argc, argv);
+	if (startup.handled) return startup.exitCode;
 	auto app = Catalpa::CreateApplication();
 	app->Run();
 	delete app;
+	return 0;
 }
 
 #endif
