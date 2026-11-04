@@ -37,7 +37,7 @@ namespace Catalpa {
     private:
         friend class RenderGraph;
 
-        enum class StepKind { Copy, TextureUpload, Draw, Transition };
+        enum class StepKind { Copy, TextureUpload, Draw, Transition, Clear };
 
         struct Step {
             std::string name;
@@ -54,6 +54,7 @@ namespace Catalpa {
             BufferHandle vertices{};
             BufferHandle indices{};
             TextureViewHandle color{};
+            TextureViewHandle depth{};
             Extent2D extent{};
         };
 

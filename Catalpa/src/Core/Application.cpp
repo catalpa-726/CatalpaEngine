@@ -86,6 +86,15 @@ namespace Catalpa {
             CAT_CORE_ERROR("Invalid input profile: {0}", input.message);
             return;
         }
+        // 与输入一样按可执行目录部署并受检读取渲染配置；失败不继续初始化GPU。
+        std::ifstream rendererProfile(executableDirectory / "Resources" / "Config" / "RendererProfiles.json", std::ios::binary);
+        if (!rendererProfile) { CAT_CORE_ERROR("Missing Resources/Config/RendererProfiles.json; regenerate and build the current project."); return; }
+        rendererProfile.read(profileBytes.data(), static_cast<std::streamsize>(profileBytes.size()));
+        if (rendererProfile.bad() || rendererProfile.gcount() > 65536) { CAT_CORE_ERROR("Cannot read renderer profile or it exceeds 64 KiB."); return; }
+        if (const auto settings = m_Runtime->ConfigureRendererProfile(std::string_view(profileBytes.data(), static_cast<size_t>(rendererProfile.gcount()))); !settings.IsSuccess()) {
+            CAT_CORE_ERROR("Invalid renderer profile at {0}. RHI error: {1}", settings.operation, static_cast<int>(settings.code));
+            return;
+        }
         // Debug 默认请求同步验证
         RHIBackendDesc backendDesc{};
 

@@ -17,7 +17,16 @@ namespace Catalpa {
         uint32_t samplerBinding = 1;
     };
 
-    // 当前支持一个逐顶点数据流、一个索引流和一张完整颜色附件。
+    // 同一描述同时产生UniformRead访问及set 0字节范围绑定；数据须在导入前写入。
+    struct RGUniformBufferBinding {
+        RGBuffer buffer{};
+        uint32_t binding = 0;
+        uint64_t offset = 0;
+        uint64_t size = 0;
+        RHIShaderVisibility visibility = RHIShaderVisibility::VertexFragment;
+    };
+
+    // 单顶点流/索引流；color与depth至少提供一个，可声明真正depth-only绘制。
     struct RGIndexedDrawDesc {
         RGBuffer vertices{};
         RGBuffer indices{};
@@ -38,6 +47,12 @@ namespace Catalpa {
         Rect2D scissor{};
         std::vector<std::byte> pushConstants;                           // 自有字节副本；空数组表示本次绘制未提供 push constants。
         std::vector<RGSampledTextureBinding> sampledTextures;
+        std::vector<RGUniformBufferBinding> uniformBuffers;
+        RGTexture depth{};
+        RHILoadOp depthLoadOp = RHILoadOp::Clear;
+        RHIStoreOp depthStoreOp = RHIStoreOp::Store;
+        float clearDepth = 1.0f;
+        bool depthReadOnly = false;
     };
 
 }

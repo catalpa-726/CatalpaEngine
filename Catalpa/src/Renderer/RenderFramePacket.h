@@ -4,6 +4,7 @@
 
 #include "Renderer/RenderView.h"
 #include "Geometry/MeshData.h"
+#include "Core/Time/FrameTime.h"
 
 namespace Catalpa {
 
@@ -31,6 +32,8 @@ namespace Catalpa {
         std::vector<RenderTransform> transforms;
         std::vector<RenderView> views;
         std::vector<RenderMeshInstance> instances;
+        // Runtime在场景提取完成后复制本展示帧时间，GPU参数不再借用时钟或World。
+        FrameTime time;
     };
 
 }

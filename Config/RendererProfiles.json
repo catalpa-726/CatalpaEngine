@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "profile": "default",
+  "depthFormat": "D32_Float",
+  "depthPrepass": true,
+  "normalDebug": false,
+  "clearColor": [0.02, 0.02, 0.025, 1.0]
+}

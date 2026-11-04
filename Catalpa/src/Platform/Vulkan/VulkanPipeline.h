@@ -13,6 +13,8 @@ namespace Catalpa {
         VkPipeline pipeline = VK_NULL_HANDLE;
         VkPipelineLayout layout = VK_NULL_HANDLE;
         PixelFormat colorFormat = PixelFormat::Unknown;
+        PixelFormat depthFormat = PixelFormat::Unknown;
+        bool depthWrite = false;
         uint32_t sampleCount = 1;
         uint32_t vertexStride = 0;
         uint32_t vertexAttributeEnd = 0; // 所有属性 offset + 字节数的最大值。

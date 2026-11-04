@@ -54,6 +54,10 @@ namespace Catalpa {
             VkDescriptorPoolSize{
                 .type = VK_DESCRIPTOR_TYPE_SAMPLER,
                 .descriptorCount = SetsPerPool * RHIMaxBindingsPerSet
+            },
+            VkDescriptorPoolSize{
+                .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                .descriptorCount = SetsPerPool * RHIMaxBindingsPerSet
             }
         };
 

@@ -41,6 +41,20 @@ namespace Catalpa {
                             return status;
                         break;
 
+                    case StepKind::Clear:
+                    {
+                        const RHIColorAttachment color{
+                            .view = step.color, .loadOp = RHILoadOp::Clear,
+                            .storeOp = RHIStoreOp::Store, .clearColor = step.draw.clearColor
+                        };
+                        const RHIRenderingDesc rendering{
+                            .colorAttachments = { &color, 1 }, .renderArea = { .extent = step.extent }, .sampleCount = 1
+                        };
+                        if (const auto status = commands.BeginRendering(rendering); !status.IsSuccess()) return status;
+                        if (const auto status = commands.EndRendering(); !status.IsSuccess()) return status;
+                        break;
+                    }
+
                     case StepKind::Draw:
                     {
                         const auto& draw = step.draw;
@@ -52,10 +66,14 @@ namespace Catalpa {
                             .clearColor = draw.clearColor
                         };
 
-                        const RHIRenderingDesc rendering{
-                            .colorAttachments = { &color, 1 },
+                        RHIRenderingDesc rendering{
                             .renderArea = {.extent = step.extent },
                             .sampleCount = 1
+                        };
+                        if (step.color.HasValue()) rendering.colorAttachments = { &color, 1 };
+                        if (step.depth.HasValue()) rendering.depthAttachment = RHIDepthAttachment{
+                            .view = step.depth, .loadOp = draw.depthLoadOp, .storeOp = draw.depthStoreOp,
+                            .clearDepth = draw.clearDepth, .readOnly = draw.depthReadOnly
                         };
 
                         if (const RHIStatus status = commands.BeginRendering(rendering); !status.IsSuccess()) return status;

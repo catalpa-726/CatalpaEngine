@@ -12,45 +12,40 @@ namespace Catalpa {
     {
         constexpr const char* operation = "UploadScheduler::CreateBuffer";
         buffer = {};
-
         if (data.empty() || (usage != RHIBufferUsage::Vertex && usage != RHIBufferUsage::Index &&
             usage != (RHIBufferUsage::Vertex | RHIBufferUsage::Index)))
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-
-        if (m_Pending.size() == m_Pending.max_size())
-            return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
-
-        m_Pending.reserve(m_Pending.size() + 1);
-        const uint64_t size = static_cast<uint64_t>(data.size());
-
-        const RHIBufferDesc destinationDesc{
-            .size = size,
-            .usage = usage | RHIBufferUsage::TransferDestination,
-            .memory = RHIMemoryDomain::Device
-        };
-
-        const RHIBufferDesc stagingDesc{
-            .size = size,
-            .usage = RHIBufferUsage::TransferSource,
-            .memory = RHIMemoryDomain::Upload
-        };
-
         BufferHandle destination{}, staging{};
-        RHIStatus status = m_Device.CreateBuffer(destinationDesc, destination);
-        if (!status.IsSuccess()) return status;
+        const auto discard = [&] {
+            m_Device.ReleaseBuffer(std::exchange(staging, BufferHandle{}));
+            m_Device.ReleaseBuffer(std::exchange(destination, BufferHandle{}));
+        };
+        try {
+            if (m_Pending.size() == m_Pending.max_size())
+                return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
+            // 所有容器准备先于原生创建；候选句柄跨try保留，以收束后续创建/写入的分配异常。
+            m_Pending.reserve(m_Pending.size() + 1);
+            const uint64_t size = static_cast<uint64_t>(data.size());
+            const RHIBufferDesc destinationDesc{
+                .size = size, .usage = usage | RHIBufferUsage::TransferDestination, .memory = RHIMemoryDomain::Device
+            };
+            const RHIBufferDesc stagingDesc{
+                .size = size, .usage = RHIBufferUsage::TransferSource, .memory = RHIMemoryDomain::Upload
+            };
+            RHIStatus status = m_Device.CreateBuffer(destinationDesc, destination);
+            if (status.IsSuccess()) status = m_Device.CreateBuffer(stagingDesc, staging);
+            if (status.IsSuccess()) status = m_Device.WriteBuffer(staging, 0, data);
+            if (!status.IsSuccess()) { discard(); return status; }
 
-        status = m_Device.CreateBuffer(stagingDesc, staging);
-        if (status.IsSuccess()) status = m_Device.WriteBuffer(staging, 0, data);
-
-        if (!status.IsSuccess()) {
-            m_Device.ReleaseBuffer(staging);
-            m_Device.ReleaseBuffer(destination);
-            return status;
+            m_Pending.push_back({ .destination = destination, .staging = staging, .size = size, .usage = usage });
+            // Pending持有staging owner，调用方接收destination owner；发布后不再让catch看见这些候选。
+            buffer = std::exchange(destination, BufferHandle{});
+            staging = {};
+            return {};
+        } catch (const std::bad_alloc&) {
+            discard();
+            return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
         }
-
-        m_Pending.push_back({ .destination = destination, .staging = staging, .size = size, .usage = usage });
-        buffer = destination;
-        return {};
     }
 
     RHIStatus UploadScheduler::CreateTexture(std::span<const std::byte> data, const RHITextureDesc& desc, TextureHandle& texture, TextureViewHandle& view)
@@ -58,51 +53,44 @@ namespace Catalpa {
         constexpr const char* operation = "UploadScheduler::CreateTexture";
         texture = {};
         view = {};
-
         uint64_t bytes = 0;
-
         if (!TryGetTextureUploadByteSize(desc.extent, desc.format, bytes))
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
-
         if (static_cast<uint64_t>(data.size()) != bytes)
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-
-        if (m_PendingTextures.size() == m_PendingTextures.max_size())
-            return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
-
-        m_PendingTextures.reserve(m_PendingTextures.size() + 1);
-
-        RHITextureDesc destinationDesc = desc;
-        destinationDesc.usage = destinationDesc.usage | RHITextureUsage::TransferDestination;
-
-        const RHIBufferDesc stagingDesc{
-            .size = bytes,
-            .usage = RHIBufferUsage::TransferSource,
-            .memory = RHIMemoryDomain::Upload
-        };
-
         TextureHandle destination{};
         TextureViewHandle destinationView{};
         BufferHandle staging{};
+        const auto discard = [&] {
+            m_Device.ReleaseBuffer(std::exchange(staging, BufferHandle{}));
+            m_Device.ReleaseTextureView(std::exchange(destinationView, TextureViewHandle{}));
+            m_Device.ReleaseTexture(std::exchange(destination, TextureHandle{}));
+        };
+        try {
+            if (m_PendingTextures.size() == m_PendingTextures.max_size())
+                return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
+            m_PendingTextures.reserve(m_PendingTextures.size() + 1);
+            RHITextureDesc destinationDesc = desc;
+            destinationDesc.usage = destinationDesc.usage | RHITextureUsage::TransferDestination;
+            const RHIBufferDesc stagingDesc{
+                .size = bytes, .usage = RHIBufferUsage::TransferSource, .memory = RHIMemoryDomain::Upload
+            };
+            RHIStatus status = m_Device.CreateTexture(destinationDesc, destination);
+            if (status.IsSuccess()) status = m_Device.CreateTextureView(destination, RHITextureViewDesc{}, destinationView);
+            if (status.IsSuccess()) status = m_Device.CreateBuffer(stagingDesc, staging);
+            if (status.IsSuccess()) status = m_Device.WriteBuffer(staging, 0, data);
+            if (!status.IsSuccess()) { discard(); return status; }
 
-        RHIStatus status = m_Device.CreateTexture(destinationDesc, destination);
-        if (!status.IsSuccess()) return status;
-
-        status = m_Device.CreateTextureView(destination, RHITextureViewDesc{}, destinationView);
-        if (status.IsSuccess()) status = m_Device.CreateBuffer(stagingDesc, staging);
-        if (status.IsSuccess()) status = m_Device.WriteBuffer(staging, 0, data);
-
-        if (!status.IsSuccess()) {
-            m_Device.ReleaseBuffer(staging);
-            m_Device.ReleaseTextureView(destinationView);
-            m_Device.ReleaseTexture(destination);
-            return status;
+            m_PendingTextures.push_back({ .destination = destinationView, .staging = staging });
+            texture = std::exchange(destination, TextureHandle{});
+            view = std::exchange(destinationView, TextureViewHandle{});
+            staging = {};
+            return {};
+        } catch (const std::bad_alloc&) {
+            // View先于图像归还，避免候选图像仍有View引用时提前销毁；Pending协议保持原样。
+            discard();
+            return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
         }
-
-        m_PendingTextures.push_back({ .destination = destinationView, .staging = staging });
-        texture = destination;
-        view = destinationView;
-        return {};
     }
 
     RHIStatus UploadScheduler::AddPasses(RenderGraph& graph)

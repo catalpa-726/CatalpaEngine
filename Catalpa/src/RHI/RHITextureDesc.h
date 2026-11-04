@@ -12,7 +12,8 @@ namespace Catalpa {
         TransferSource = 1u << 0,
         TransferDestination = 1u << 1,
         Sampled = 1u << 2,
-        ColorAttachment = 1u << 3
+        ColorAttachment = 1u << 3,
+        DepthAttachment = 1u << 4
     };
 
     // 组合图像用途。
@@ -48,7 +49,7 @@ namespace Catalpa {
         bytes = 0;
         const PixelFormatInfo info = GetPixelFormatInfo(format);
 
-        if (extent.IsEmpty() || info.blockWidth != 1 || info.blockHeight != 1 || info.bytesPerBlock != 4)
+        if (extent.IsEmpty() || info.isDepth || info.blockWidth != 1 || info.blockHeight != 1 || info.bytesPerBlock != 4)
             return false;
 
         const uint64_t rowBytes = static_cast<uint64_t>(extent.width) * info.bytesPerBlock;

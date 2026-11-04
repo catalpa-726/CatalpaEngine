@@ -53,6 +53,14 @@ namespace Catalpa {
             return { Math::MathError::OutOfRange, "Render frame sequence is stale or invalid" };
         if (packet.sceneIdentity == 0 && (!packet.transforms.empty() || !packet.views.empty() || !packet.instances.empty()))
             return { Math::MathError::OutOfRange, "Render frame records require a source scene identity" };
+        const auto& time = packet.time;
+        if (!std::isfinite(time.realDeltaSeconds) || time.realDeltaSeconds < 0.0
+            || !std::isfinite(time.fixedDeltaSeconds) || time.fixedDeltaSeconds <= 0.0
+            || !std::isfinite(time.simulationSeconds) || time.simulationSeconds < 0.0
+            || !std::isfinite(time.interpolationAlpha) || time.interpolationAlpha < 0.0 || time.interpolationAlpha > 1.0
+            || !std::isfinite(time.droppedSeconds) || time.droppedSeconds < 0.0 || time.firstTick == 0
+            || (time.tickCount != 0 && static_cast<uint64_t>(time.tickCount - 1) > std::numeric_limits<uint64_t>::max() - time.firstTick))
+            return { Math::MathError::OutOfRange, "Render frame time is invalid or overflows the tick range" };
         try {
             std::set<RenderInstanceId> instances;
             for (const auto& transform : packet.transforms) {

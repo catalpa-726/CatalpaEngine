@@ -9,6 +9,11 @@
 #include "TriangleFragmentSpirv.h"
 #include "Geometry/VertexLayout.h"
 #include "RenderGraph/RenderGraph.h"
+#include "Passes/DepthPrepass.h"
+#include "Passes/ForwardPass.h"
+#include "UnlitVertexSpirv.h"
+#include "UnlitFragmentSpirv.h"
+#include "DepthFragmentSpirv.h"
 
 namespace Catalpa {
 
@@ -69,6 +74,9 @@ namespace Catalpa {
     Renderer::~Renderer()
     {
         m_Uploads.Shutdown();
+        for (auto& [key, geometry] : m_Geometry) ReleaseGeometry(geometry);
+        m_Device.ReleaseTextureView(m_DepthView);
+        m_Device.ReleaseTexture(m_DepthTexture);
         m_Device.ReleaseSampler(m_TriangleSampler);
         m_Device.ReleaseTextureView(m_TriangleTextureView);
         m_Device.ReleaseTexture(m_TriangleTexture);
@@ -79,65 +87,75 @@ namespace Catalpa {
 
     RHIStatus Renderer::BuildFrameGraph(RenderGraph& graph, const RHIAcquireResult& acquired, const ImGuiFrameData* uiFrame)
     {
-        if (const RHIStatus status = m_Uploads.AddPasses(graph); !status.IsSuccess()) return status;
-
-        RGBuffer vertices{}, indices{};
-        RGTexture color{}, sampledTexture{};
-
-        if (const RHIStatus status = graph.ImportBuffer(m_TriangleVertices, vertices); !status.IsSuccess()) return status;
-        if (const RHIStatus status = graph.ImportBuffer(m_TriangleIndices, indices); !status.IsSuccess()) return status;
-        if (const RHIStatus status = graph.ImportTexture(acquired.view, color); !status.IsSuccess()) return status;
-        if (const RHIStatus status = graph.ImportTexture(m_TriangleTextureView, sampledTexture); !status.IsSuccess()) return status;
-
-        const Extent2D extent = m_Swapchain.GetInfo().extent;
-
-        RGIndexedDrawDesc draw{
-            .vertices = vertices,
-            .indices = indices,
-            .color = color,
-            .pipeline = m_TrianglePipeline,
-            .vertexOffset = 0,
-            .indexOffset = 0,
-            .indexType = RHIIndexType::UInt32,
-            .indexCount = static_cast<uint32_t>(TriangleIndices.size()),
-            .loadOp = RHILoadOp::Clear,
-            .storeOp = RHIStoreOp::Store,
-            .clearColor = { 0.02f, 0.02f, 0.02f, 1.0f },
-            .viewport = {
-                .width = static_cast<float>(extent.width),
-                .height = static_cast<float>(extent.height)
-            },
-            .scissor = {.extent = extent }
-        };
-
-        draw.sampledTextures.push_back({
-            .texture = sampledTexture,
-            .sampler = m_TriangleSampler,
-            .textureBinding = 0,
-            .samplerBinding = 1
-            });
-
-        constexpr TriangleDrawParameters left{
-            .transform = { 0.60f, 0.60f, -0.42f, 0.0f },
-            .tint = { 1.0f, 1.0f, 1.0f, 1.0f }
-        };
-
-        constexpr TriangleDrawParameters right{
-            .transform = { 0.45f, 0.45f, 0.45f, 0.10f },
-            .tint = { 0.4f, 0.8f, 1.0f, 1.0f }
-        };
-
-        SetTriangleDrawParameters(draw, left);
-        if (const RHIStatus status = graph.AddDrawPass("Left Triangle - Clear", draw); !status.IsSuccess()) return status;
-
-        // 首个 Pass 已保存自己的副本；此处修改不会覆盖它。
-        draw.loadOp = RHILoadOp::Load;
-        SetTriangleDrawParameters(draw, right);
-
-        if (const RHIStatus status = graph.AddDrawPass("Right Triangle - Load", draw); !status.IsSuccess()) return status;
-        if (uiFrame) {
-            if (const RHIStatus status = m_UI.AddPasses(graph, color, extent, m_FrameSlot, *uiFrame); !status.IsSuccess()) return status;
+        if (const auto status = m_Uploads.AddPasses(graph); !status.IsSuccess()) return status;
+        RGTexture color;
+        if (const auto status = graph.ImportTexture(acquired.view, color); !status.IsSuccess()) return status;
+        const auto extent = m_Swapchain.GetInfo().extent;
+        // 无相机/无实例也需要真实清屏，不能依靠旧Triangle或伪draw初始化present输出。
+        if (const auto status = graph.AddClearPass("Scene Clear", color, m_Profile.clearColor); !status.IsSuccess()) return status;
+        const auto& packet = m_Scene.GetFrame();
+        if (!packet.views.empty() && !packet.instances.empty()) {
+            const auto* packing = m_FrameUniforms.GetPacking(m_FrameSlot);
+            if (!packing || packing->drawOffsets.size() != packet.instances.size())
+                return { .code = RHIErrorCode::InvalidState, .operation = "Renderer::BuildFrameGraph uniforms" };
+            RGTexture depth;
+            RGBuffer uniforms;
+            if (const auto status = graph.ImportTexture(m_DepthView, depth); !status.IsSuccess()) return status;
+            // Prepare已完成本帧WriteBuffer；现在才能读取新的状态revision。
+            if (const auto status = graph.ImportBuffer(m_FrameUniforms.GetBuffer(m_FrameSlot), uniforms); !status.IsSuccess()) return status;
+            std::vector<RGIndexedDrawDesc> forwardDraws, depthDraws;
+            const float clearDepth = packet.views[0].lens.reversedZ ? 0.0f : 1.0f;
+            for (size_t i = 0; i < packet.instances.size(); ++i) {
+                const auto& instance = packet.instances[i];
+                const auto found = m_Geometry.find(instance.mesh.get());
+                if (found == m_Geometry.end()) {
+                    if (instance.mesh->GetData().vertexCount == 0) continue;
+                    return { .code = RHIErrorCode::InvalidState, .operation = "Renderer::BuildFrameGraph geometry" };
+                }
+                const auto& geometry = found->second;
+                RGBuffer vertices, indices;
+                if (const auto status = graph.ImportBuffer(geometry.vertices, vertices); !status.IsSuccess()) return status;
+                if (const auto status = graph.ImportBuffer(geometry.indices, indices); !status.IsSuccess()) return status;
+                for (const auto& submesh : geometry.mesh->GetData().submeshes) {
+                    RGIndexedDrawDesc draw;
+                    draw.vertices = vertices;
+                    draw.indices = indices;
+                    draw.color = color;
+                    draw.pipeline = geometry.forward;
+                    draw.indexType = geometry.mesh->GetData().indexType == MeshIndexType::UInt16 ? RHIIndexType::UInt16 : RHIIndexType::UInt32;
+                    draw.indexCount = submesh.indexCount;
+                    draw.firstIndex = submesh.firstIndex;
+                    draw.baseVertex = submesh.baseVertex;
+                    draw.loadOp = RHILoadOp::Load;
+                    draw.storeOp = RHIStoreOp::Store;
+                    draw.viewport = { .width = static_cast<float>(extent.width), .height = static_cast<float>(extent.height) };
+                    draw.scissor = { .extent = extent };
+                    draw.depth = depth;
+                    draw.clearDepth = clearDepth;
+                    draw.uniformBuffers = {
+                        { uniforms, 0, 0, sizeof(FrameGpuParameters), RHIShaderVisibility::Fragment },
+                        { uniforms, 1, packing->viewOffset, sizeof(ViewGpuParameters), RHIShaderVisibility::Vertex },
+                        { uniforms, 2, packing->drawOffsets[i], sizeof(DrawGpuParameters), RHIShaderVisibility::VertexFragment }
+                    };
+                    forwardDraws.push_back(draw);
+                    if (m_Profile.depthPrepass) {
+                        draw.pipeline = geometry.depth;
+                        draw.color = {};
+                        // Depth vertex只使用View/Draw；不假定优化器保留未使用的Frame descriptor。
+                        draw.uniformBuffers = {
+                            { uniforms, 1, packing->viewOffset, sizeof(ViewGpuParameters), RHIShaderVisibility::Vertex },
+                            { uniforms, 2, packing->drawOffsets[i], sizeof(DrawGpuParameters), RHIShaderVisibility::Vertex }
+                        };
+                        depthDraws.push_back(std::move(draw));
+                    }
+                }
+            }
+            if (m_Profile.depthPrepass)
+                if (const auto status = DepthPrepass::Add(graph, depthDraws, clearDepth); !status.IsSuccess()) return status;
+            if (const auto status = ForwardPass::Add(graph, forwardDraws, m_Profile.depthPrepass); !status.IsSuccess()) return status;
         }
+        if (uiFrame)
+            if (const auto status = m_UI.AddPasses(graph, color, extent, m_FrameSlot, *uiFrame); !status.IsSuccess()) return status;
         return graph.ExportPresent(color);
     }
 
@@ -165,55 +183,201 @@ namespace Catalpa {
     RHIStatus Renderer::Render(const ImGuiFrameData* uiFrame)
     {
         if (m_Swapchain.GetInfo().state != RHISwapchainState::Ready) return {};
-        if (const RHIStatus status = EnsureTrianglePipeline(); !status.IsSuccess()) return status;
-        if (const RHIStatus status = EnsureTriangleGeometry(); !status.IsSuccess()) return status;
-        if (const RHIStatus status = EnsureTriangleTexture(); !status.IsSuccess()) return status;
-        if (const RHIStatus status = EnsureTriangleSampler(); !status.IsSuccess()) return status;
-
-        constexpr uint64_t timeoutNanoseconds = 16'000'000;
-        RHIFrameResources frame{};
-        bool ready = false;
-
-        RHIStatus status = m_Device.PrepareFrame(m_FrameSlot, timeoutNanoseconds, frame, ready);
-        if (!status.IsSuccess() || !ready) return status;
-
-        if (uiFrame) {
-            status = m_UI.Prepare(m_FrameSlot, *uiFrame, m_Swapchain.GetInfo().format);
-            if (!status.IsSuccess()) return status;
-        }
-
         RHIAcquireResult acquired{};
-        status = m_Swapchain.Acquire(frame.token, timeoutNanoseconds, acquired);
-        if (!status.IsSuccess() || !acquired.HasImage()) return status;
+        bool submitted = false;
+        try {
+            if (const auto status = EnsureSceneResources(); !status.IsSuccess()) return status;
+            constexpr uint64_t timeoutNanoseconds = 16'000'000;
+            RHIFrameResources frame{};
+            bool ready = false;
+            auto status = m_Device.PrepareFrame(m_FrameSlot, timeoutNanoseconds, frame, ready);
+            if (!status.IsSuccess() || !ready) return status;
+            const auto& packet = m_Scene.GetFrame();
+            if (!packet.views.empty() && !packet.instances.empty()) {
+                status = m_FrameUniforms.Prepare(m_FrameSlot, packet, m_Profile, m_Swapchain.GetInfo().extent);
+                if (!status.IsSuccess()) return status;
+            }
+            if (uiFrame) {
+                status = m_UI.Prepare(m_FrameSlot, *uiFrame, m_Swapchain.GetInfo().format);
+                if (!status.IsSuccess()) return status;
+            }
+            status = m_Swapchain.Acquire(frame.token, timeoutNanoseconds, acquired);
+            if (!status.IsSuccess() || !acquired.HasImage()) return status;
+            RenderGraph graph(m_Device);
+            RenderGraphPlan plan;
+            status = BuildFrameGraph(graph, acquired, uiFrame);
+            if (!status.IsSuccess()) return CancelFrame(acquired, status);
+            status = graph.Compile(plan);
+            if (!status.IsSuccess()) return CancelFrame(acquired, status);
+            status = plan.Record(*frame.commands);
+            if (!status.IsSuccess()) return CancelFrame(acquired, status);
+            const RHISubmission submission{
+                .frame = frame.token, .commands = frame.commands, .wait = acquired.acquireReady, .signal = acquired.renderFinished
+            };
+            RHICompletionPoint completion{};
+            status = m_Device.GetGraphicsQueue().Submit(submission, completion);
+            if (!status.IsSuccess()) return CancelFrame(acquired, status);
+            submitted = true;
+            m_Uploads.OnSubmitted(completion);
+            // 本次AddPasses冻结了所有已排队静态请求；现在其目标owner才不再受pending约束。
+            for (auto& [key, geometry] : m_Geometry) geometry.uploadPending = false;
+            m_FrameSlot = (m_FrameSlot + 1) % m_Device.GetFrameCount();
+            RHIPresentOutcome outcome{};
+            return m_Swapchain.Present(acquired, outcome);
+        } catch (const std::bad_alloc&) {
+            const RHIStatus failure{ .code = RHIErrorCode::OutOfMemory, .operation = "Renderer::Render" };
+            return acquired.HasImage() && !submitted ? CancelFrame(acquired, failure) : failure;
+        }
+    }
 
-        RenderGraph graph(m_Device);
-        RenderGraphPlan plan;
+    void Renderer::ReleaseGeometry(GeometryGpu& geometry) noexcept
+    {
+        m_Device.ReleaseGraphicsPipeline(geometry.forward);
+        m_Device.ReleaseGraphicsPipeline(geometry.depth);
+        m_Device.ReleaseBuffer(geometry.indices);
+        m_Device.ReleaseBuffer(geometry.vertices);
+    }
 
-        status = BuildFrameGraph(graph, acquired, uiFrame);
-        if (!status.IsSuccess()) return CancelFrame(acquired, status);
+    void Renderer::PruneGeometry() noexcept
+    {
+        const auto& instances = m_Scene.GetFrame().instances;
+        for (auto it = m_Geometry.begin(); it != m_Geometry.end();) {
+            const bool used = std::any_of(instances.begin(), instances.end(),
+                [&](const RenderMeshInstance& instance) { return instance.mesh.get() == it->first; });
+            if (!used && !it->second.uploadPending) {
+                ReleaseGeometry(it->second);
+                it = m_Geometry.erase(it);
+            } else ++it;
+        }
+    }
 
-        status = graph.Compile(plan);
-        if (!status.IsSuccess()) return CancelFrame(acquired, status);
+    RHIStatus Renderer::EnsureDepthTarget(Extent2D extent)
+    {
+        if (m_DepthView.HasValue() && m_DepthExtent == extent) return {};
+        constexpr const char* operation = "Renderer::EnsureDepthTarget";
+        if (!m_Device.GetFormatSupport(m_Profile.depthFormat).depthAttachment)
+            return { .code = RHIErrorCode::Unsupported, .operation = operation };
+        TextureHandle texture;
+        TextureViewHandle view;
+        try {
+        const RHITextureDesc desc{ .extent = extent, .format = m_Profile.depthFormat, .usage = RHITextureUsage::DepthAttachment };
+        if (const auto status = m_Device.CreateTexture(desc, texture); !status.IsSuccess()) return status;
+        const RHITextureViewDesc viewDesc{ .format = m_Profile.depthFormat, .range = { .aspect = RHITextureAspect::Depth } };
+        if (const auto status = m_Device.CreateTextureView(texture, viewDesc, view); !status.IsSuccess()) {
+            m_Device.ReleaseTexture(std::exchange(texture, TextureHandle{}));
+            return status;
+        }
+        // 旧附件的命令引用继续保活；尺寸变化不按“等几帧”直接销毁原生image。
+        const auto previousView = std::exchange(m_DepthView, std::exchange(view, TextureViewHandle{}));
+        const auto previousTexture = std::exchange(m_DepthTexture, std::exchange(texture, TextureHandle{}));
+        m_DepthExtent = extent;
+        m_Device.ReleaseTextureView(previousView);
+        m_Device.ReleaseTexture(previousTexture);
+        return {};
+        } catch (const std::bad_alloc&) {
+            // 创建View的C++分配失败同样必须归还已成功创建的候选图像。
+            m_Device.ReleaseTextureView(view);
+            m_Device.ReleaseTexture(texture);
+            return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
+        }
+    }
 
-        status = plan.Record(*frame.commands);
-        if (!status.IsSuccess()) return CancelFrame(acquired, status);
+    RHIStatus Renderer::EnsureScenePipelines(GeometryGpu& geometry, bool reversedZ)
+    {
+        const auto colorFormat = m_Swapchain.GetInfo().format;
+        if (geometry.forward.HasValue() && geometry.colorFormat == colorFormat && geometry.reversedZ == reversedZ
+            && geometry.prepass == m_Profile.depthPrepass && (!m_Profile.depthPrepass || geometry.depth.HasValue())) return {};
+        constexpr std::array<RHIBindingLayoutEntry, 3> forwardBindings{{
+            { 0, RHIBindingType::UniformBuffer, RHIShaderVisibility::Fragment },
+            { 1, RHIBindingType::UniformBuffer, RHIShaderVisibility::Vertex },
+            { 2, RHIBindingType::UniformBuffer, RHIShaderVisibility::VertexFragment }
+        }};
+        constexpr std::array<RHIBindingLayoutEntry, 2> depthBindings{{
+            { 1, RHIBindingType::UniformBuffer, RHIShaderVisibility::Vertex },
+            { 2, RHIBindingType::UniformBuffer, RHIShaderVisibility::Vertex }
+        }};
+        std::vector<uint32_t> invariantVertex;
+        std::span<const uint32_t> vertexCode = UnlitVertexSpirv;
+        if (m_Profile.depthPrepass) {
+            if (const auto status = DepthPrepass::PrepareInvariantVertexShader(vertexCode, invariantVertex); !status.IsSuccess()) return status;
+            vertexCode = invariantVertex;
+        }
+        RHIGraphicsPipelineDesc desc;
+        desc.vertex = { .bytecode = vertexCode, .stage = RHIShaderStage::Vertex, .entryPoint = "vertexMain" };
+        desc.fragment = { .bytecode = UnlitFragmentSpirv, .stage = RHIShaderStage::Fragment, .entryPoint = "fragmentMain" };
+        desc.colorFormat = colorFormat;
+        // Shader只消费position/normal；保留原stride/offset，不为未使用UV声明多余输入。
+        std::array<VertexAttribute, 2> inputs;
+        for (const auto& attribute : geometry.mesh->GetData().attributes)
+            if (attribute.location < inputs.size()) inputs[attribute.location] = attribute;
+        desc.vertexLayout = { geometry.mesh->GetData().vertexStride, inputs };
+        desc.bindingLayout = { .entries = forwardBindings };
+        desc.depthFormat = m_Profile.depthFormat;
+        desc.depthState = { .testEnabled = true, .writeEnabled = !m_Profile.depthPrepass,
+            .compareOp = m_Profile.depthPrepass ? RHICompareOp::Equal : (reversedZ ? RHICompareOp::GreaterEqual : RHICompareOp::LessEqual) };
+        // 默认Cull=None，使负缩放实例保持正确显示；完整双面材质策略在材质阶段接入。
+        GraphicsPipelineHandle forward, depth;
+        try {
+        if (const auto status = m_Device.CreateGraphicsPipeline(desc, forward); !status.IsSuccess()) return status;
+        if (m_Profile.depthPrepass) {
+            desc.colorFormat = PixelFormat::Unknown;
+            desc.fragment = { .bytecode = DepthFragmentSpirv, .stage = RHIShaderStage::Fragment, .entryPoint = "fragmentMain" };
+            desc.bindingLayout = { .entries = depthBindings };
+            desc.depthState = { .testEnabled = true, .writeEnabled = true,
+                .compareOp = reversedZ ? RHICompareOp::GreaterEqual : RHICompareOp::LessEqual };
+            // 两pass使用同一份带Invariant Position的派生VS与相同UBO/viewport输入，落实Equal的跨pipeline前提。
+            // Depth.slang仍生成完整VS/FS供专用路径扩展；本步实际使用其无颜色输出FS。
+            if (const auto status = m_Device.CreateGraphicsPipeline(desc, depth); !status.IsSuccess()) {
+                m_Device.ReleaseGraphicsPipeline(std::exchange(forward, GraphicsPipelineHandle{}));
+                return status;
+            }
+        }
+        const auto previousForward = std::exchange(geometry.forward, std::exchange(forward, GraphicsPipelineHandle{}));
+        const auto previousDepth = std::exchange(geometry.depth, std::exchange(depth, GraphicsPipelineHandle{}));
+        m_Device.ReleaseGraphicsPipeline(previousForward);
+        m_Device.ReleaseGraphicsPipeline(previousDepth);
+        geometry.colorFormat = colorFormat;
+        geometry.reversedZ = reversedZ;
+        geometry.prepass = m_Profile.depthPrepass;
+        return {};
+        } catch (const std::bad_alloc&) {
+            // 两条管线全部创建后才发布；第二条创建异常时不能遗失第一条候选owner。
+            m_Device.ReleaseGraphicsPipeline(depth);
+            m_Device.ReleaseGraphicsPipeline(forward);
+            return { .code = RHIErrorCode::OutOfMemory, .operation = "Renderer::EnsureScenePipelines" };
+        }
+    }
 
-        const RHISubmission submission{
-            .frame = frame.token,
-            .commands = frame.commands,
-            .wait = acquired.acquireReady,
-            .signal = acquired.renderFinished
-        };
-
-        RHICompletionPoint completion{};
-        status = m_Device.GetGraphicsQueue().Submit(submission, completion);
-        if (!status.IsSuccess()) return CancelFrame(acquired, status);
-        m_Uploads.OnSubmitted(completion);
-
-        m_FrameSlot = (m_FrameSlot + 1) % m_Device.GetFrameCount();
-
-        RHIPresentOutcome outcome{};
-        return m_Swapchain.Present(acquired, outcome);
+    RHIStatus Renderer::EnsureSceneResources()
+    {
+        constexpr const char* operation = "Renderer::EnsureSceneResources";
+        PruneGeometry();
+        const auto& packet = m_Scene.GetFrame();
+        if (packet.views.empty() || packet.instances.empty()) return {};
+        if (packet.views.size() != 1 || m_Profile.depthFormat != PixelFormat::D32_Float)
+            return { .code = RHIErrorCode::Unsupported, .operation = operation };
+        if (const auto status = EnsureDepthTarget(m_Swapchain.GetInfo().extent); !status.IsSuccess()) return status;
+        for (const auto& instance : packet.instances) {
+            const auto& mesh = instance.mesh->GetData();
+            if (mesh.vertexCount == 0) continue;
+            // 本步shader要求position/normal在0/1，缺失不能伪装为已正确绘制；UV可由现有layout提供。
+            const auto hasAttribute = [&](VertexSemantic semantic, uint32_t location, VertexFormat format) {
+                return std::any_of(mesh.attributes.begin(), mesh.attributes.end(), [&](const VertexAttribute& a) {
+                    return a.semantic == semantic && a.location == location && a.format == format;
+                });
+            };
+            if (!hasAttribute(VertexSemantic::Position, 0, VertexFormat::Float3) || !hasAttribute(VertexSemantic::Normal, 1, VertexFormat::Float3))
+                return { .code = RHIErrorCode::Unsupported, .operation = operation };
+            auto [it, inserted] = m_Geometry.try_emplace(instance.mesh.get());
+            auto& geometry = it->second;
+            if (inserted) geometry.mesh = instance.mesh;
+            if (!geometry.vertices.HasValue())
+                if (const auto status = m_Uploads.CreateBuffer(mesh.vertexData, RHIBufferUsage::Vertex, geometry.vertices); !status.IsSuccess()) return status;
+            if (!geometry.indices.HasValue())
+                if (const auto status = m_Uploads.CreateBuffer(mesh.indexData, RHIBufferUsage::Index, geometry.indices); !status.IsSuccess()) return status;
+            if (const auto status = EnsureScenePipelines(geometry, packet.views[0].lens.reversedZ); !status.IsSuccess()) return status;
+        }
+        return {};
     }
 
     RHIStatus Renderer::EnsureTrianglePipeline()

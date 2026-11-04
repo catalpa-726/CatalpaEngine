@@ -12,7 +12,8 @@ namespace Catalpa {
     // 沙盒只提供示例内容/固定步回调和诊断；输入、时钟、调度与提取由引擎执行。
     class BoxGameplay {
     public:
-        bool Attach(SceneManager& scenes);
+        // reversedZ只选择本样例的镜头契约；渲染后端根据提取的lens匹配深度状态。
+        bool Attach(SceneManager& scenes, bool reversedZ = false);
         void Update(const FrameTime& time, const RenderFramePacket& frame);
         void Detach();
 

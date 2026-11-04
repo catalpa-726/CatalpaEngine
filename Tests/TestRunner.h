@@ -33,5 +33,7 @@ namespace Catalpa::Tests {
     // CPU几何/边界及场景快照契约；本批尚不覆盖GPU深度/UBO。
     void RunMeshValidationTests(TestContext& context);
     void RunGeometrySnapshotTests(TestContext& context);
+    // Frame/View/Draw字节布局、对齐与配置解析；此入口不创建窗口或GPU。
+    void RunFramePackingTests(TestContext& context);
     int RunS033Tests();
 }

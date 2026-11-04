@@ -4,6 +4,7 @@
 #include "VulkanDevice.h"
 #include "VulkanConversions.h"
 #include "VulkanUtils.h"
+#include "VulkanBinding.h"
 
 namespace Catalpa {
 
@@ -14,13 +15,39 @@ namespace Catalpa {
         if (desc.vertex.stage != RHIShaderStage::Vertex || desc.fragment.stage != RHIShaderStage::Fragment)
             return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanGraphicsPipeline" };
 
-        if (desc.sampleCount != 1 || !device.GetFormatSupport(desc.colorFormat).colorAttachment)
+        const bool hasColor = desc.colorFormat != PixelFormat::Unknown;
+        const bool hasDepth = desc.depthFormat != PixelFormat::Unknown;
+        if (desc.sampleCount != 1 || (!hasColor && !hasDepth)
+            || (hasColor && !device.GetFormatSupport(desc.colorFormat).colorAttachment)
+            || (hasDepth && (desc.depthFormat != PixelFormat::D32_Float || !device.GetFormatSupport(desc.depthFormat).depthAttachment)))
             return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
+        if ((!hasDepth && (desc.depthState.testEnabled || desc.depthState.writeEnabled))
+            || (desc.depthState.writeEnabled && !desc.depthState.testEnabled))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanGraphicsPipeline" };
+        VkCompareOp depthCompare = VK_COMPARE_OP_MAX_ENUM;
+        switch (desc.depthState.compareOp) {
+        case RHICompareOp::Always: depthCompare=VK_COMPARE_OP_ALWAYS; break;
+        case RHICompareOp::Less: depthCompare=VK_COMPARE_OP_LESS; break;
+        case RHICompareOp::LessEqual: depthCompare=VK_COMPARE_OP_LESS_OR_EQUAL; break;
+        case RHICompareOp::Equal: depthCompare=VK_COMPARE_OP_EQUAL; break;
+        case RHICompareOp::Greater: depthCompare=VK_COMPARE_OP_GREATER; break;
+        case RHICompareOp::GreaterEqual: depthCompare=VK_COMPARE_OP_GREATER_OR_EQUAL; break;
+        default: return { .code=RHIErrorCode::InvalidDescription,.operation="CreateVulkanGraphicsPipeline" };
+        }
+        VkCullModeFlags cullMode=VK_CULL_MODE_NONE;
+        switch (desc.cullMode) {
+        case RHICullMode::None: break;
+        case RHICullMode::Back: cullMode=VK_CULL_MODE_BACK_BIT; break;
+        case RHICullMode::Front: cullMode=VK_CULL_MODE_FRONT_BIT; break;
+        default: return { .code=RHIErrorCode::InvalidDescription,.operation="CreateVulkanGraphicsPipeline" };
+        }
+        if (desc.frontFace != RHIFrontFace::CounterClockwise && desc.frontFace != RHIFrontFace::Clockwise)
+            return { .code=RHIErrorCode::InvalidDescription,.operation="CreateVulkanGraphicsPipeline" };
 
         if (desc.blendMode != RHIBlendMode::Opaque && desc.blendMode != RHIBlendMode::StraightAlpha)
             return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
 
-        if (desc.blendMode == RHIBlendMode::StraightAlpha && !device.GetFormatSupport(desc.colorFormat).colorAttachmentBlend)
+        if (desc.blendMode == RHIBlendMode::StraightAlpha && (!hasColor || !device.GetFormatSupport(desc.colorFormat).colorAttachmentBlend))
             return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
 
         const auto& vertexLayout = desc.vertexLayout;
@@ -44,57 +71,10 @@ namespace Catalpa {
             return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
 
         std::array<VkDescriptorSetLayoutBinding, RHIMaxBindingsPerSet> nativeBindings{};
-        uint32_t sampledImageCount = 0;
-        uint32_t samplerCount = 0;
-
-        for (size_t i = 0; i < bindingEntries.size(); ++i) {
-            const auto& entry = bindingEntries[i];
-
-            if (entry.visibility != RHIShaderVisibility::Fragment)
-                return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
-
-            for (size_t previous = 0; previous < i; ++previous) {
-                if (bindingEntries[previous].binding == entry.binding)
-                    return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanGraphicsPipeline" };
-            }
-
-            VkDescriptorType type{};
-
-            switch (entry.type) {
-            case RHIBindingType::SampledTexture:
-                type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-                ++sampledImageCount;
-                break;
-            case RHIBindingType::Sampler:
-                type = VK_DESCRIPTOR_TYPE_SAMPLER;
-                ++samplerCount;
-                break;
-            default:
-                return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanGraphicsPipeline" };
-            }
-
-            nativeBindings[i] = {
-                .binding = entry.binding,
-                .descriptorType = type,
-                .descriptorCount = 1,
-                .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
-            };
-        }
-
-        if (!bindingEntries.empty()) {
-            VkPhysicalDeviceProperties properties{};
-            vkGetPhysicalDeviceProperties(device.GetPhysicalDevice(), &properties);
-            const auto& limits = properties.limits;
-
-            // Fragment 的单颜色附件也计入 maxPerStageResources，独立 sampler 不计入。
-            if (limits.maxBoundDescriptorSets < 1 ||
-                sampledImageCount > limits.maxPerStageDescriptorSampledImages ||
-                sampledImageCount > limits.maxDescriptorSetSampledImages ||
-                samplerCount > limits.maxPerStageDescriptorSamplers ||
-                samplerCount > limits.maxDescriptorSetSamplers ||
-                sampledImageCount + 1 > limits.maxPerStageResources)
-                return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
-        }
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(device.GetPhysicalDevice(), &properties);
+        if (const auto bindingStatus = BuildVulkanBindingLayout(bindingEntries, properties.limits,
+            hasColor ? 1u : 0u, nativeBindings); !bindingStatus.IsSuccess()) return bindingStatus;
 
         // 在原生对象创建前复制调用方描述，成功发布时只交换容器。
         std::vector<RHIBindingLayoutEntry> bindings(bindingEntries.begin(), bindingEntries.end());
@@ -226,8 +206,8 @@ namespace Catalpa {
             const VkPipelineRasterizationStateCreateInfo rasterization{
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
                 .polygonMode = VK_POLYGON_MODE_FILL,
-                .cullMode = VK_CULL_MODE_NONE,
-                .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+                .cullMode = cullMode,
+                .frontFace = desc.frontFace == RHIFrontFace::Clockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE,
                 .lineWidth = 1.0f
             };
 
@@ -249,8 +229,17 @@ namespace Catalpa {
 
             const VkPipelineColorBlendStateCreateInfo blend{
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-                .attachmentCount = 1,
-                .pAttachments = &attachment
+                .attachmentCount = hasColor ? 1u : 0u,
+                .pAttachments = hasColor ? &attachment : nullptr
+            };
+
+            const VkPipelineDepthStencilStateCreateInfo depthState{
+                .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+                .depthTestEnable = static_cast<VkBool32>(desc.depthState.testEnabled),
+                .depthWriteEnable = static_cast<VkBool32>(desc.depthState.writeEnabled),
+                .depthCompareOp = depthCompare,
+                .minDepthBounds = 0.0f,
+                .maxDepthBounds = 1.0f
             };
 
             constexpr std::array dynamicStates{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
@@ -265,8 +254,9 @@ namespace Catalpa {
 
             const VkPipelineRenderingCreateInfo rendering{
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
-                .colorAttachmentCount = 1,
-                .pColorAttachmentFormats = &colorFormat
+                .colorAttachmentCount = hasColor ? 1u : 0u,
+                .pColorAttachmentFormats = hasColor ? &colorFormat : nullptr,
+                .depthAttachmentFormat = ToVulkanFormat(desc.depthFormat)
             };
 
             const VkGraphicsPipelineCreateInfo info{
@@ -279,6 +269,7 @@ namespace Catalpa {
                 .pViewportState = &viewport,
                 .pRasterizationState = &rasterization,
                 .pMultisampleState = &multisample,
+                .pDepthStencilState = &depthState,
                 .pColorBlendState = &blend,
                 .pDynamicState = &dynamic,
                 .layout = pipeline.layout,
@@ -297,6 +288,8 @@ namespace Catalpa {
         }
 
         pipeline.colorFormat = desc.colorFormat;
+        pipeline.depthFormat = desc.depthFormat;
+        pipeline.depthWrite = desc.depthState.writeEnabled;
         pipeline.sampleCount = desc.sampleCount;
         pipeline.vertexStride = vertexLayout.stride;
         pipeline.vertexAttributeEnd = vertexAttributeEnd;

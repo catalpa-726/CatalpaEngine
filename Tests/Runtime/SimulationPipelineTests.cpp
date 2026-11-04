@@ -364,6 +364,27 @@ namespace Catalpa::Tests {
         test.Check(render.Apply(std::move(empty)).IsSuccess() && render.GetFrame().instances.empty()
             && render.GetFrame().transforms.empty(), "A newer empty scene frame clears all previously retained geometry instances");
         test.Check(lifetime.expired(), "The sealed mesh is released after the final accepted snapshot owner is removed");
+        const auto acceptedSequence = render.GetFrame().sequence;
+        const auto rejectTime = [&](const FrameTime& invalid, std::string_view reason) {
+            RenderFramePacket bad;
+            bad.sequence = acceptedSequence + 1;
+            bad.time = invalid;
+            test.Check(!render.Apply(std::move(bad)).IsSuccess()
+                && render.GetFrame().sequence == acceptedSequence && render.GetFrame().instances.empty(), reason);
+        };
+        FrameTime invalid;
+        invalid.simulationSeconds = std::numeric_limits<double>::quiet_NaN();
+        rejectTime(invalid, "Render snapshots reject NaN simulation time without replacing the accepted frame");
+        invalid = {};
+        invalid.fixedDeltaSeconds = 0.0;
+        rejectTime(invalid, "Render snapshots reject a zero fixed step");
+        invalid = {};
+        invalid.interpolationAlpha = 1.01;
+        rejectTime(invalid, "Render interpolation cannot describe a value beyond the current fixed-step interval");
+        invalid = {};
+        invalid.firstTick = std::numeric_limits<uint64_t>::max();
+        invalid.tickCount = 2;
+        rejectTime(invalid, "Render tick intervals cannot wrap the uint64 identity range");
     }
 
 }

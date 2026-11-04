@@ -52,7 +52,7 @@ namespace Catalpa {
             return status;
         }
 
-        m_Renderer = std::make_unique<Renderer>(*m_Device, *m_Swapchain);
+        m_Renderer = std::make_unique<Renderer>(*m_Device, *m_Swapchain, m_RendererProfile);
         m_SimulationStopped = false;
         m_FrameSequence = 0;
         m_InputSceneIdentity = 0;
@@ -85,6 +85,12 @@ namespace Catalpa {
         m_Device.reset();
         m_LastSwapchainDesc = {};
         m_SwapchainDirty = true;
+    }
+
+    RHIStatus EngineRuntime::ConfigureRendererProfile(std::string_view json)
+    {
+        if (m_Device) return { RHIErrorCode::InvalidState, 0, "EngineRuntime::ConfigureRendererProfile/AlreadyInitialized" };
+        return ParseRendererProfile(json, m_RendererProfile);
     }
 
     RHIStatus EngineRuntime::InitUI(std::span<const std::byte> fontPixels, Extent2D fontExtent)
@@ -186,6 +192,8 @@ namespace Catalpa {
                 return systems.RunPhase(SystemPhase::Extract, presentation);
             });
             if (!status.IsSuccess()) return status;
+            // Extract替换整个包后才附加展示帧时间；所有权随快照交给Renderer。
+            packet.time = m_FrameTime;
             if (const auto applied = m_Renderer->SetSceneFrame(std::move(packet)); !applied.IsSuccess()) return { WorldError::InvalidArgument, applied.message };
             ++m_FrameSequence;
             return {};

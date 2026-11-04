@@ -17,8 +17,17 @@ namespace Catalpa {
         RHIShaderVisibility visibility = RHIShaderVisibility::None;
     };
 
-    // 当前支持 triangle list、单颜色附件、动态视口/裁剪和单顶点流。
-    // 空顶点布局保留无顶点缓冲绘制；描述符当前限于 set 0 的 fragment 纹理和采样器。
+    enum class RHICompareOp { Always, Less, LessEqual, Equal, Greater, GreaterEqual };
+    enum class RHICullMode { None, Back, Front };
+    enum class RHIFrontFace { CounterClockwise, Clockwise };
+    struct RHIDepthState {
+        bool testEnabled = false;
+        bool writeEnabled = false;
+        RHICompareOp compareOp = RHICompareOp::Less;
+    };
+
+    // 当前支持triangle list、至多一个颜色附件与可选D32深度、动态视口/裁剪及单顶点流。
+    // 空顶点布局可无顶点缓冲；set0支持vertex/fragment UBO和fragment纹理/sampler。
     struct RHIGraphicsPipelineDesc {
         RHIShaderDesc vertex{};
         RHIShaderDesc fragment{ .stage = RHIShaderStage::Fragment };
@@ -28,6 +37,10 @@ namespace Catalpa {
         VertexLayout vertexLayout{};
         RHIPushConstantDesc pushConstants{};
         RHIBindingLayoutDesc bindingLayout{};
+        PixelFormat depthFormat = PixelFormat::Unknown;
+        RHIDepthState depthState{};
+        RHICullMode cullMode = RHICullMode::None;
+        RHIFrontFace frontFace = RHIFrontFace::CounterClockwise;
     };
 
 }

@@ -21,6 +21,7 @@ namespace Catalpa {
         {
             return layout == RHITextureLayout::Undefined ||
                 layout == RHITextureLayout::ColorAttachment ||
+                layout == RHITextureLayout::DepthAttachment ||
                 layout == RHITextureLayout::TransferDestination ||
                 layout == RHITextureLayout::ShaderReadOnly ||
                 layout == RHITextureLayout::Present;
@@ -31,6 +32,7 @@ namespace Catalpa {
         {
             RHIResourceAccess access = RHIResourceAccess::None;
             if (layout == RHITextureLayout::ColorAttachment) access = RHIResourceAccess::ColorReadWrite;
+            else if (layout == RHITextureLayout::DepthAttachment) access = RHIResourceAccess::DepthReadWrite;
             else if (layout == RHITextureLayout::TransferDestination) access = RHIResourceAccess::TransferWrite;
             else if (layout == RHITextureLayout::ShaderReadOnly) access = RHIResourceAccess::SampledRead;
 
@@ -225,80 +227,135 @@ namespace Catalpa {
     {
         constexpr const char* operation = "RenderGraph::AddDrawPass";
         if (const RHIStatus status = CheckBuilding(operation); !status.IsSuccess()) return status;
-
         if (desc.pushConstants.size() % 4 != 0)
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-
         if (desc.pushConstants.size() > m_Device.GetCapabilities().maxPushConstantBytes)
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
 
         const auto* vertices = Resolve(desc.vertices);
         const auto* indices = Resolve(desc.indices);
         const auto* color = Resolve(desc.color);
-
-        if (!name || !*name || !vertices || !indices || !color ||
-            !desc.pipeline.HasValue() || desc.pipeline.device != m_Device.GetDeviceId())
+        const auto* depth = Resolve(desc.depth);
+        if (!name || !*name || !vertices || !indices || (!color && !depth)
+            || (!color && desc.color != RGTexture{}) || (!depth && desc.depth != RGTexture{})
+            || !desc.pipeline.HasValue() || desc.pipeline.device != m_Device.GetDeviceId())
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
-        if (!HasTextureUsage(color->snapshot.usage, RHITextureUsage::ColorAttachment))
+        const auto validLoad = [](RHILoadOp value) { return value == RHILoadOp::Load || value == RHILoadOp::Clear || value == RHILoadOp::DontCare; };
+        const auto validStore = [](RHIStoreOp value) { return value == RHIStoreOp::Store || value == RHIStoreOp::DontCare; };
+        if (color) {
+            if (GetPixelFormatInfo(color->snapshot.format).isDepth
+                || !HasTextureUsage(color->snapshot.usage, RHITextureUsage::ColorAttachment)
+                || !validLoad(desc.loadOp) || !validStore(desc.storeOp))
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            if (desc.loadOp == RHILoadOp::Clear)
+                for (const float value : desc.clearColor)
+                    if (!std::isfinite(value)) return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        }
+        if (depth) {
+            if (!GetPixelFormatInfo(depth->snapshot.format).isDepth || depth->snapshot.presentable
+                || !HasTextureUsage(depth->snapshot.usage, RHITextureUsage::DepthAttachment)
+                || !validLoad(desc.depthLoadOp) || !validStore(desc.depthStoreOp)
+                || !std::isfinite(desc.clearDepth) || desc.clearDepth < 0.0f || desc.clearDepth > 1.0f
+                || (desc.depthReadOnly && (desc.depthLoadOp != RHILoadOp::Load || desc.depthStoreOp != RHIStoreOp::Store))
+                || (color && (desc.depth == desc.color || color->snapshot.extent != depth->snapshot.extent)))
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        }
+        const auto extent = color ? color->snapshot.extent : depth->snapshot.extent;
+        if (extent.width > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())
+            || extent.height > static_cast<uint32_t>(std::numeric_limits<int32_t>::max())
+            || !std::isfinite(desc.viewport.x) || !std::isfinite(desc.viewport.y)
+            || !std::isfinite(desc.viewport.width) || !std::isfinite(desc.viewport.height)
+            || !std::isfinite(desc.viewport.minDepth) || !std::isfinite(desc.viewport.maxDepth)
+            || desc.viewport.width <= 0.0f || desc.viewport.height <= 0.0f
+            || desc.viewport.minDepth < 0.0f || desc.viewport.maxDepth > 1.0f
+            || desc.viewport.minDepth > desc.viewport.maxDepth)
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        if (!desc.scissor.IsEmpty()) {
+            if (desc.scissor.offset.x < 0 || desc.scissor.offset.y < 0
+                || static_cast<uint32_t>(desc.scissor.offset.x) > extent.width
+                || desc.scissor.extent.width > extent.width - static_cast<uint32_t>(desc.scissor.offset.x)
+                || static_cast<uint32_t>(desc.scissor.offset.y) > extent.height
+                || desc.scissor.extent.height > extent.height - static_cast<uint32_t>(desc.scissor.offset.y))
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        }
 
-        if (desc.sampledTextures.size() > RHIMaxBindingsPerSet / 2)
+        if (desc.sampledTextures.size() > RHIMaxBindingsPerSet / 2
+            || desc.uniformBuffers.size() > RHIMaxBindingsPerSet - desc.sampledTextures.size() * 2)
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
-
         for (size_t i = 0; i < desc.sampledTextures.size(); ++i) {
             const auto& binding = desc.sampledTextures[i];
             const auto* sampled = Resolve(binding.texture);
-
-            if (!sampled || binding.texture == desc.color ||
-                !HasTextureUsage(sampled->snapshot.usage, RHITextureUsage::Sampled) ||
-                !binding.sampler.HasValue() || binding.sampler.device != m_Device.GetDeviceId() ||
-                binding.textureBinding == binding.samplerBinding)
+            if (!sampled || binding.texture == desc.color || binding.texture == desc.depth
+                || GetPixelFormatInfo(sampled->snapshot.format).isDepth
+                || !HasTextureUsage(sampled->snapshot.usage, RHITextureUsage::Sampled)
+                || !binding.sampler.HasValue() || binding.sampler.device != m_Device.GetDeviceId()
+                || binding.textureBinding == binding.samplerBinding)
                 return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-
-            // binding 数字不要求连续，但不同声明不得覆盖同一个槽。
             for (size_t j = 0; j < i; ++j) {
                 const auto& previous = desc.sampledTextures[j];
-
-                if (binding.textureBinding == previous.textureBinding ||
-                    binding.textureBinding == previous.samplerBinding ||
-                    binding.samplerBinding == previous.textureBinding ||
-                    binding.samplerBinding == previous.samplerBinding)
+                if (binding.textureBinding == previous.textureBinding || binding.textureBinding == previous.samplerBinding
+                    || binding.samplerBinding == previous.textureBinding || binding.samplerBinding == previous.samplerBinding)
                     return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
             }
         }
-
-        if ((desc.loadOp != RHILoadOp::Load && desc.loadOp != RHILoadOp::Clear && desc.loadOp != RHILoadOp::DontCare) ||
-            (desc.storeOp != RHIStoreOp::Store && desc.storeOp != RHIStoreOp::DontCare))
-            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-
-        uint32_t indexSize = 0;
-
-        switch (desc.indexType) {
-            case RHIIndexType::UInt16: indexSize = 2; break;
-            case RHIIndexType::UInt32: indexSize = 4; break;
-            default: return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        const auto& caps = m_Device.GetCapabilities();
+        for (size_t i = 0; i < desc.uniformBuffers.size(); ++i) {
+            const auto& binding = desc.uniformBuffers[i];
+            const auto* uniform = Resolve(binding.buffer);
+            if (!uniform || binding.buffer == desc.vertices || binding.buffer == desc.indices
+                || !HasBufferUsage(uniform->snapshot.desc.usage, RHIBufferUsage::Uniform) || binding.size == 0
+                || !IsValidBufferRange(uniform->snapshot.desc.size, binding.offset, binding.size)
+                || (binding.visibility != RHIShaderVisibility::Vertex && binding.visibility != RHIShaderVisibility::Fragment
+                    && binding.visibility != RHIShaderVisibility::VertexFragment))
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            if (caps.minUniformBufferOffsetAlignment == 0 || binding.offset % caps.minUniformBufferOffsetAlignment != 0
+                || binding.size > caps.maxUniformBufferRange)
+                return { .code = RHIErrorCode::Unsupported, .operation = operation };
+            for (size_t j = 0; j < i; ++j)
+                if (binding.binding == desc.uniformBuffers[j].binding)
+                    return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            for (const auto& sampled : desc.sampledTextures)
+                if (binding.binding == sampled.textureBinding || binding.binding == sampled.samplerBinding)
+                    return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
         }
 
+        uint32_t indexSize = 0;
+        switch (desc.indexType) {
+        case RHIIndexType::UInt16: indexSize = 2; break;
+        case RHIIndexType::UInt32: indexSize = 4; break;
+        default: return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        }
         const auto& vertexDesc = vertices->snapshot.desc;
         const auto& indexDesc = indices->snapshot.desc;
-
-        if (!HasBufferUsage(vertexDesc.usage, RHIBufferUsage::Vertex) ||
-            !HasBufferUsage(indexDesc.usage, RHIBufferUsage::Index) ||
-            desc.vertexOffset >= vertexDesc.size || desc.vertexOffset % 4 != 0 ||
-            desc.indexOffset >= indexDesc.size || desc.indexOffset % indexSize != 0)
+        if (!HasBufferUsage(vertexDesc.usage, RHIBufferUsage::Vertex)
+            || !HasBufferUsage(indexDesc.usage, RHIBufferUsage::Index)
+            || desc.vertexOffset >= vertexDesc.size || desc.vertexOffset % 4 != 0
+            || desc.indexOffset >= indexDesc.size || desc.indexOffset % indexSize != 0)
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-
         const uint64_t firstByte = static_cast<uint64_t>(desc.firstIndex) * indexSize;
         const uint64_t byteCount = static_cast<uint64_t>(desc.indexCount) * indexSize;
-
         if (!IsValidBufferRange(indexDesc.size - desc.indexOffset, firstByte, byteCount))
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-
         if (m_Passes.size() == m_Passes.max_size())
             return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
-
         m_Passes.push_back({ .name = name, .kind = PassKind::Draw, .draw = desc });
+        return {};
+    }
+
+    RHIStatus RenderGraph::AddClearPass(const char* name, RGTexture color, std::array<float, 4> clearColor)
+    {
+        constexpr const char* operation = "RenderGraph::AddClearPass";
+        if (const RHIStatus status = CheckBuilding(operation); !status.IsSuccess()) return status;
+        const auto* target = Resolve(color);
+        if (!name || !*name || !target || GetPixelFormatInfo(target->snapshot.format).isDepth
+            || !HasTextureUsage(target->snapshot.usage, RHITextureUsage::ColorAttachment))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        for (const float value : clearColor)
+            if (!std::isfinite(value)) return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        if (m_Passes.size() == m_Passes.max_size())
+            return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
+        m_Passes.push_back({ .name = name, .kind = PassKind::Clear, .clearTexture = color, .clearColor = clearColor });
         return {};
     }
 
@@ -357,6 +414,26 @@ namespace Catalpa {
             buffers[index].access = after;
             bufferUsed[index] = 1;
             };
+
+        // 附件访问/初始化与实际BeginRendering使用同一load/store描述，不提前发布设备状态。
+        const auto addAttachmentAccess = [&](RenderGraphPlan::Step& step, uint32_t index,
+            RHILoadOp loadOp, RHIStoreOp storeOp, RHITextureAccess after) -> RHIStatus {
+            auto& state = textures[index];
+            if (loadOp == RHILoadOp::Load && !state.initialized)
+                return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedAttachmentLoad" };
+            RHITextureSubresourceRange range{};
+            range.aspect = GetPixelFormatInfo(m_Textures[index].snapshot.format).isDepth ? RHITextureAspect::Depth : RHITextureAspect::Color;
+            step.textureBarriers.push_back({
+                .view = m_Textures[index].handle, .range = range,
+                .before = ConservativeTextureBefore(state.access.layout), .after = after
+            });
+            state.access = after;
+            if (loadOp == RHILoadOp::Clear) state.initialized = true;
+            else if (loadOp == RHILoadOp::DontCare) state.initialized = false;
+            if (storeOp == RHIStoreOp::DontCare) state.initialized = false;
+            textureUsed[index] = 1;
+            return {};
+        };
 
         for (const auto& pass : m_Passes) {
             RenderGraphPlan::Step step;
@@ -430,122 +507,110 @@ namespace Catalpa {
                 destinationState.initialized = true;
                 textureUsed[destination] = 1;
             }
+            else if (pass.kind == PassKind::Clear) {
+                const uint32_t color = pass.clearTexture.slot.index;
+                step.kind = RenderGraphPlan::StepKind::Clear;
+                step.color = m_Textures[color].handle;
+                step.extent = m_Textures[color].snapshot.extent;
+                step.draw.clearColor = pass.clearColor;
+                if (const auto status = addAttachmentAccess(step, color, RHILoadOp::Clear, RHIStoreOp::Store, {
+                    .stage = RHIPipelineStage::ColorAttachmentOutput,
+                    .access = RHIResourceAccess::ColorWrite, .layout = RHITextureLayout::ColorAttachment
+                }); !status.IsSuccess()) return status;
+            }
             else {
                 const auto& draw = pass.draw;
                 const uint32_t vertices = draw.vertices.slot.index;
                 const uint32_t indices = draw.indices.slot.index;
-                const uint32_t color = draw.color.slot.index;
-
                 const uint64_t vertexBytes = m_Buffers[vertices].snapshot.desc.size - draw.vertexOffset;
                 const uint64_t indexSize = draw.indexType == RHIIndexType::UInt16 ? 2u : 4u;
                 const uint64_t indexReadOffset = draw.indexOffset + static_cast<uint64_t>(draw.firstIndex) * indexSize;
                 const uint64_t indexReadBytes = static_cast<uint64_t>(draw.indexCount) * indexSize;
-
-                // 空 draw 仍执行附件操作，但不读取顶点/索引。
                 if (draw.indexCount != 0 && draw.instanceCount != 0) {
                     if (!RangeContains(buffers[indices].initialized, indexReadOffset, indexReadBytes))
                         return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedIndexInput" };
-
-                    // 当前不读取 GPU 索引值，保守要求绑定剩余顶点区间已初始化。
                     if (!RangeContains(buffers[vertices].initialized, draw.vertexOffset, vertexBytes))
                         return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedVertexInput" };
                 }
-
-                auto& colorState = textures[color];
-
-                if (draw.loadOp == RHILoadOp::Load && !colorState.initialized)
-                    return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedAttachmentLoad" };
-
                 step.kind = RenderGraphPlan::StepKind::Draw;
                 step.draw = draw;
                 step.vertices = m_Buffers[vertices].handle;
                 step.indices = m_Buffers[indices].handle;
-                step.color = m_Textures[color].handle;
-                step.extent = m_Textures[color].snapshot.extent;
-
-                step.bindings.reserve(draw.sampledTextures.size() * 2);
-
+                step.extent = draw.color.HasValue() ? m_Textures[draw.color.slot.index].snapshot.extent
+                    : m_Textures[draw.depth.slot.index].snapshot.extent;
+                step.bindings.reserve(draw.sampledTextures.size() * 2 + draw.uniformBuffers.size());
                 for (const auto& binding : draw.sampledTextures) {
                     const uint32_t sampled = binding.texture.slot.index;
                     const TextureViewHandle view = m_Textures[sampled].handle;
                     auto& sampledState = textures[sampled];
-
                     if (!sampledState.initialized)
                         return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedSampledTexture" };
-
                     const RHITextureAccess sampledAccess{
                         .stage = RHIPipelineStage::FragmentShader,
                         .access = RHIResourceAccess::SampledRead,
                         .layout = RHITextureLayout::ShaderReadOnly
                     };
-
-                    // 连续的相同只读访问不需要重复屏障；上传或附件访问之后必须建立依赖。
-                    if (sampledState.access.stage != sampledAccess.stage ||
-                        sampledState.access.access != sampledAccess.access ||
-                        sampledState.access.layout != sampledAccess.layout) {
+                    if (sampledState.access.stage != sampledAccess.stage || sampledState.access.access != sampledAccess.access
+                        || sampledState.access.layout != sampledAccess.layout) {
                         step.textureBarriers.push_back({
-                            .view = view,
-                            .before = ConservativeTextureBefore(sampledState.access.layout),
-                            .after = sampledAccess
-                            });
+                            .view = view, .before = ConservativeTextureBefore(sampledState.access.layout), .after = sampledAccess
+                        });
                     }
-
                     sampledState.access = sampledAccess;
                     textureUsed[sampled] = 1;
-
-                    // 与上面的资源访问来自同一份声明，不另收一份绑定参数。
+                    step.bindings.push_back({ .binding = binding.textureBinding, .type = RHIBindingType::SampledTexture, .texture = view });
+                    step.bindings.push_back({ .binding = binding.samplerBinding, .type = RHIBindingType::Sampler, .sampler = binding.sampler });
+                }
+                for (size_t i = 0; i < draw.uniformBuffers.size(); ++i) {
+                    const auto& binding = draw.uniformBuffers[i];
+                    const uint32_t uniform = binding.buffer.slot.index;
+                    if (!RangeContains(buffers[uniform].initialized, binding.offset, binding.size))
+                        return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedUniformInput" };
                     step.bindings.push_back({
-                        .binding = binding.textureBinding,
-                        .type = RHIBindingType::SampledTexture,
-                        .texture = view
-                        });
-
-                    step.bindings.push_back({
-                        .binding = binding.samplerBinding,
-                        .type = RHIBindingType::Sampler,
-                        .sampler = binding.sampler
-                        });
-                }
-
-                if (vertices == indices) {
-                    addBufferAccess(step, vertices, {
-                        .stage = RHIPipelineStage::VertexInput,
-                        .access = RHIResourceAccess::VertexIndexRead
-                        });
-                }
-                else {
-                    addBufferAccess(step, vertices, {
-                        .stage = RHIPipelineStage::VertexInput,
-                        .access = RHIResourceAccess::VertexRead
-                        });
-
-                    addBufferAccess(step, indices, {
-                        .stage = RHIPipelineStage::VertexInput,
-                        .access = RHIResourceAccess::IndexRead
-                        });
-                }
-
-                const RHITextureAccess colorAccess{
-                    .stage = RHIPipelineStage::ColorAttachmentOutput,
-                    .access = draw.loadOp == RHILoadOp::Load ?
-                        RHIResourceAccess::ColorReadWrite : RHIResourceAccess::ColorWrite,
-                    .layout = RHITextureLayout::ColorAttachment
-                };
-
-                step.textureBarriers.push_back({
-                    .view = step.color,
-                    .before = ConservativeTextureBefore(colorState.access.layout),
-                    .after = colorAccess
+                        .binding = binding.binding, .type = RHIBindingType::UniformBuffer,
+                        .buffer = m_Buffers[uniform].handle, .offset = binding.offset, .size = binding.size
                     });
-
-                colorState.access = colorAccess;
-
-                // Record 使用完整 extent 作为 renderArea。
-                if (draw.loadOp == RHILoadOp::Clear) colorState.initialized = true;
-                else if (draw.loadOp == RHILoadOp::DontCare) colorState.initialized = false;
-
-                if (draw.storeOp == RHIStoreOp::DontCare) colorState.initialized = false;
-                textureUsed[color] = 1;
+                    bool firstUse = true;
+                    for (size_t j = 0; j < i; ++j)
+                        if (draw.uniformBuffers[j].buffer == binding.buffer) firstUse = false;
+                    if (!firstUse) continue;
+                    // 同一buffer的多个范围合并stage，避免后一个绑定把本draw的前一可见阶段覆盖。
+                    bool vertex = false, fragment = false;
+                    for (const auto& use : draw.uniformBuffers) {
+                        if (use.buffer != binding.buffer) continue;
+                        vertex = vertex || use.visibility == RHIShaderVisibility::Vertex || use.visibility == RHIShaderVisibility::VertexFragment;
+                        fragment = fragment || use.visibility == RHIShaderVisibility::Fragment || use.visibility == RHIShaderVisibility::VertexFragment;
+                    }
+                    addBufferAccess(step, uniform, {
+                        .stage = vertex && fragment ? RHIPipelineStage::VertexFragmentShader
+                            : vertex ? RHIPipelineStage::VertexShader : RHIPipelineStage::FragmentShader,
+                        .access = RHIResourceAccess::UniformRead
+                    });
+                }
+                if (vertices == indices) {
+                    addBufferAccess(step, vertices, { .stage = RHIPipelineStage::VertexInput, .access = RHIResourceAccess::VertexIndexRead });
+                } else {
+                    addBufferAccess(step, vertices, { .stage = RHIPipelineStage::VertexInput, .access = RHIResourceAccess::VertexRead });
+                    addBufferAccess(step, indices, { .stage = RHIPipelineStage::VertexInput, .access = RHIResourceAccess::IndexRead });
+                }
+                if (draw.color.HasValue()) {
+                    const uint32_t color = draw.color.slot.index;
+                    step.color = m_Textures[color].handle;
+                    if (const auto status = addAttachmentAccess(step, color, draw.loadOp, draw.storeOp, {
+                        .stage = RHIPipelineStage::ColorAttachmentOutput,
+                        .access = draw.loadOp == RHILoadOp::Load ? RHIResourceAccess::ColorReadWrite : RHIResourceAccess::ColorWrite,
+                        .layout = RHITextureLayout::ColorAttachment
+                    }); !status.IsSuccess()) return status;
+                }
+                if (draw.depth.HasValue()) {
+                    const uint32_t depth = draw.depth.slot.index;
+                    step.depth = m_Textures[depth].handle;
+                    if (const auto status = addAttachmentAccess(step, depth, draw.depthLoadOp, draw.depthStoreOp, {
+                        .stage = RHIPipelineStage::DepthStencilTests,
+                        .access = draw.depthReadOnly ? RHIResourceAccess::DepthRead : RHIResourceAccess::DepthReadWrite,
+                        .layout = RHITextureLayout::DepthAttachment
+                    }); !status.IsSuccess()) return status;
+                }
             }
 
             compiled.m_Steps.push_back(std::move(step));

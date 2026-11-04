@@ -49,7 +49,7 @@ namespace Catalpa::Tests {
     }
     int RunS033Tests()
     {
-        CAT_INFO("[S03.3 CPU] S03.1/S03.2 regression, geometry validation and owned instances. GPU depth/UBO tests are not included.");
+        CAT_INFO("[S03.3 CPU] S03.1/S03.2 regression, geometry, owned instances, frame packing and renderer profiles. No window/GPU initialization.");
         TestContext context("S03.3 CPU");
         try {
             RunWorldTests(context);
@@ -60,6 +60,7 @@ namespace Catalpa::Tests {
             RunSimulationPipelineTests(context);
             RunMeshValidationTests(context);
             RunGeometrySnapshotTests(context);
+            RunFramePackingTests(context);
         } catch (const std::exception& error) { context.Check(false, error.what()); }
         catch (...) { context.Check(false, "Unexpected non-standard exception"); }
         CAT_INFO("[S03.3 CPU] {0} checks, {1} failures.", context.GetCheckCount(), context.GetFailureCount());

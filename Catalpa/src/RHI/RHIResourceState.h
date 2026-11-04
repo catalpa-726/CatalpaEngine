@@ -22,7 +22,7 @@ namespace Catalpa {
         std::vector<RHIBufferRange> initialized;
     };
 
-    // 当前只描述颜色 mip 0、layer 0。
+    // 当前描述单颜色或D32深度mip0/layer0；状态唯一保存于图像，不因View重建复制。
     struct RHITextureState {
         uint64_t revision = 1;
         RHITextureAccess access{};

@@ -23,6 +23,8 @@ namespace Catalpa {
         const PersistentEntityId ParentId = PersistentEntityId::FromWords(0x5330333100000001ULL, 1);
         const PersistentEntityId ChildId = PersistentEntityId::FromWords(0x5330333100000001ULL, 2);
         const PersistentEntityId CameraId = PersistentEntityId::FromWords(0x5330333200000001ULL, 1);
+        const PersistentEntityId ForegroundId = PersistentEntityId::FromWords(0x5330333300000001ULL, 1);
+        const PersistentEntityId GroundId = PersistentEntityId::FromWords(0x5330333300000001ULL, 2);
 
         // 从受捕获/焦点控制的动作快照读取样例轴，不直接轮询平台按键。
         double Action(const ActionSnapshot* input, std::string_view id)
@@ -38,14 +40,14 @@ namespace Catalpa {
         double pitch = 0.0;
     };
 
-    bool BoxGameplay::Attach(SceneManager& scenes)
+    bool BoxGameplay::Attach(SceneManager& scenes, bool reversedZ)
     {
         try {
         m_Scenes = &scenes;
         m_ReportSeconds = 0.0;
         m_ReportedHierarchy = false;
         m_State = std::make_shared<State>();
-        m_State->camera.translation = Math::Vec3{ 0.0f, 2.0f, 6.0f };
+        m_State->camera.translation = Math::Vec3{ 0.0f, 2.0f, 10.0f };
         WorldStatus status = scenes.CreateScene("S03.2 Fixed-step Camera Sample", m_Scene);
         if (status.IsSuccess()) status = scenes.SetActive(m_Scene);
         if (!status.IsSuccess()) { CAT_ERROR("Cannot install sandbox: {0}", status.message); Detach(); return false; }
@@ -60,11 +62,22 @@ namespace Catalpa {
         status = scene.QueueCreate(ParentId, "Parent", parent);
         if (status.IsSuccess()) status = scene.QueueCreate(ChildId, "Child", child);
         if (status.IsSuccess()) status = scene.QueueCreate(CameraId, "Sandbox Camera", m_State->camera);
+        Math::TransformTRS foreground;
+        foreground.translation = { -2.3f, 0.4f, 5.0f };
+        foreground.scale = { 0.8f, 1.4f, 0.8f };
+        Math::TransformTRS ground;
+        ground.translation = { 0.0f, -0.5f, 1.0f };
+        if (status.IsSuccess()) status = scene.QueueCreate(ForegroundId, "Foreground cube", foreground);
+        if (status.IsSuccess()) status = scene.QueueCreate(GroundId, "Ground plane", ground);
         // Attach 发生在主循环外；此处是明确的启动结构安全点。
         if (status.IsSuccess()) status = scene.CommitPending();
         if (status.IsSuccess()) status = scene.QueueSetParent(scene.Resolve(ChildId), scene.Resolve(ParentId));
-        if (status.IsSuccess()) status = scene.QueueSetCamera(scene.Resolve(CameraId), CameraComponent{});
-        // 一个引擎生成并密封的立方体供两个实体共享；Box不创建或拥有GPU buffer。
+        CameraComponent camera;
+        camera.lens.nearPlane = 0.1f;
+        camera.lens.farPlane = 30.0f;
+        camera.lens.reversedZ = reversedZ;
+        if (status.IsSuccess()) status = scene.QueueSetCamera(scene.Resolve(CameraId), camera);
+        // 三个实体共享一个受检立方体，地面使用一个受检平面；Box只生产CPU样例。
         MeshData cube;
         MeshResourceRef geometry;
         if (status.IsSuccess()) {
@@ -73,6 +86,13 @@ namespace Catalpa {
             if (!meshStatus.IsSuccess()) { CAT_ERROR("Cannot prepare sandbox geometry: {0}", meshStatus.message); Detach(); return false; }
             status = scene.QueueSetMeshRenderer(scene.Resolve(ParentId), { geometry, Math::Vec4{ 0.1f, 0.8f, 0.5f, 1.0f }, true });
             if (status.IsSuccess()) status = scene.QueueSetMeshRenderer(scene.Resolve(ChildId), { geometry, Math::Vec4{ 0.9f, 0.4f, 0.2f, 1.0f }, true });
+            if (status.IsSuccess()) status = scene.QueueSetMeshRenderer(scene.Resolve(ForegroundId), { geometry, Math::Vec4{ 0.55f, 0.25f, 0.85f, 1.0f }, true });
+            MeshData plane;
+            MeshResourceRef planeGeometry;
+            meshStatus = CreatePlaneMesh(12.0f, 12.0f, plane);
+            if (meshStatus.IsSuccess()) meshStatus = CreateMeshResource(plane, planeGeometry);
+            if (!meshStatus.IsSuccess()) { CAT_ERROR("Cannot prepare ground geometry: {0}", meshStatus.message); Detach(); return false; }
+            if (status.IsSuccess()) status = scene.QueueSetMeshRenderer(scene.Resolve(GroundId), { planeGeometry, Math::Vec4{ 0.18f, 0.2f, 0.22f, 1.0f }, true });
         }
         if (status.IsSuccess()) status = scene.CommitPending();
         if (!status.IsSuccess()) { CAT_ERROR("Cannot create sandbox content: {0}", status.message); Detach(); return false; }
@@ -104,7 +124,7 @@ namespace Catalpa {
         status = m_Module.Install(scene, std::move(gameplay));
         if (!status.IsSuccess()) { CAT_ERROR("Cannot install sandbox gameplay: {0}", status.message); Detach(); return false; }
         CAT_INFO("[S03.2] WASD/QE move, hold right mouse to look, F6 pause, F7 step while paused; UI capture suppresses gameplay.");
-        CAT_INFO("Geometry snapshot sample: two instances share one sealed cube. GPU depth/UBO drawing is pending the next batch.");
+        CAT_INFO("Scene sample: 4 instances share 2 meshes; near=0.1m, far=30m, reversed-Z={0}.", reversedZ);
         return true;
         } catch (const std::bad_alloc&) {
             CAT_ERROR("Cannot allocate sandbox gameplay state");
@@ -130,8 +150,15 @@ namespace Catalpa {
         if (m_ReportSeconds < 1.0 || frame.views.empty() || frame.sceneIdentity != scene->GetWorld().GetIdentity()) return;
         m_ReportSeconds = 0.0;
         const auto& position = frame.views.front().matrices.position;
-        const bool sharedGeometry = frame.instances.size() == 2 && frame.instances[0].mesh == frame.instances[1].mesh;
-        CAT_INFO("Geometry snapshot: {0} instances, shared mesh = {1}", frame.instances.size(), sharedGeometry);
+        size_t uniqueMeshes = 0;
+        for (size_t index = 0; index < frame.instances.size(); ++index) {
+            bool seen = false;
+            for (size_t prior = 0; prior < index; ++prior)
+                if (frame.instances[index].mesh == frame.instances[prior].mesh) { seen = true; break; }
+            if (!seen) ++uniqueMeshes;
+        }
+        CAT_INFO("Geometry snapshot: {0} instances, {1} unique meshes, shared geometry = {2}",
+            frame.instances.size(), uniqueMeshes, uniqueMeshes < frame.instances.size());
         CAT_INFO("[S03.2] tick={0}, simulation={1}s, steps={2}, alpha={3}, camera=({4}, {5}, {6})",
             time.tickCount == 0 ? time.firstTick - 1 : time.firstTick + time.tickCount - 1, time.simulationSeconds, time.tickCount,
             time.interpolationAlpha, position.x, position.y, position.z);

@@ -1,5 +1,6 @@
 ﻿#include "catpch.h"
 #include "VulkanCommandList.h"
+#include "VulkanBinding.h"
 #include "VulkanCommandPool.h"
 #include "VulkanUtils.h"
 #include "VulkanDevice.h"
@@ -80,6 +81,16 @@ namespace Catalpa {
         std::vector<RHIBufferStateUpdate> bufferUpdates(buffers.begin(), buffers.end());
         std::vector<RHITextureStateUpdate> textureUpdates(textures.begin(), textures.end());
 
+        // 声明不证明初始化；从当前权威快照建立独立账本，不能导入after.initialized。
+        m_LocalBufferStates.clear();
+        m_LocalBufferStates.reserve(bufferUpdates.size());
+        for (const auto& update : bufferUpdates) {
+            LocalBufferState* local = nullptr;
+            if (const auto status = GetLocalBufferState(update.buffer, local); !status.IsSuccess()) {
+                Invalidate();
+                return status;
+            }
+        }
         m_RetainedBuffers.reserve(bufferUpdates.size());
         m_RetainedViews.reserve(textureUpdates.size());
 
@@ -114,6 +125,16 @@ namespace Catalpa {
             m_RetainedViews.size() != m_TextureStateUpdates.size())
             return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::UndeclaredResource" };
 
+        // 提交后要发布的初始化范围也必须有实际录制证据；防止虚假after状态倒灌下一帧。
+        for (const auto& update : m_BufferStateUpdates) {
+            const auto local = std::ranges::find_if(m_LocalBufferStates,
+                [&](const auto& entry) { return entry.buffer == update.buffer; });
+            if (local == m_LocalBufferStates.end())
+                return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::UnprovenInitialization" };
+            for (const auto& range : update.after.initialized)
+                if (!RangeContains(local->snapshot.state.initialized, range.offset, range.size))
+                    return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::UnprovenInitialization" };
+        }
         return VulkanResourceStateTracker::Validate(
             m_Device.GetResourceRegistry(), m_BufferStateUpdates, m_TextureStateUpdates, true);
     }
@@ -204,86 +225,93 @@ namespace Catalpa {
     RHIStatus VulkanCommandList::BeginRendering(const RHIRenderingDesc& desc)
     {
         constexpr const char* operation = "VulkanCommandList::BeginRendering";
-
-        if (m_State != RHICommandListState::Recording) {
-            CAT_CORE_ASSERT(false, "Command list must be recording outside a rendering scope!");
+        if (m_State != RHICommandListState::Recording)
             return { .code = RHIErrorCode::InvalidState, .operation = operation };
-        }
-
-        if (desc.sampleCount != 1)
+        if (desc.sampleCount != 1 || desc.colorAttachments.size() > 1)
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
-
         const auto& capabilities = m_Device.GetCapabilities();
         const auto& area = desc.renderArea;
-
-        if (desc.colorAttachments.empty() || desc.colorAttachments.size() > capabilities.maxColorAttachments || area.IsEmpty() || area.offset.x < 0 || area.offset.y < 0)
+        if ((desc.colorAttachments.empty() && !desc.depthAttachment)
+            || desc.colorAttachments.size() > capabilities.maxColorAttachments
+            || area.IsEmpty() || area.offset.x < 0 || area.offset.y < 0)
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-
         const uint64_t right = static_cast<uint64_t>(area.offset.x) + area.extent.width;
         const uint64_t bottom = static_cast<uint64_t>(area.offset.y) + area.extent.height;
-
         if (right > capabilities.maxRenderTargetExtent.width || bottom > capabilities.maxRenderTargetExtent.height)
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-
         auto& registry = m_Device.GetResourceRegistry();
         std::vector<VkRenderingAttachmentInfo> attachments;
         attachments.reserve(desc.colorAttachments.size());
-
-        PixelFormat colorFormat = PixelFormat::Unknown;
-
+        PixelFormat colorFormat = PixelFormat::Unknown, depthFormat = PixelFormat::Unknown;
         for (const auto& attachment : desc.colorAttachments) {
             const auto* record = registry.ResolveTextureView(attachment.view);
-
-            if (!record || !HasTextureUsage(record->usage, RHITextureUsage::ColorAttachment) ||
-                right > record->extent.width || bottom > record->extent.height)
+            if (!record || !HasTextureUsage(record->usage, RHITextureUsage::ColorAttachment)
+                || GetPixelFormatInfo(record->format).isDepth || record->sampleCount != 1
+                || right > record->extent.width || bottom > record->extent.height)
                 return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-
-            if (record->sampleCount != 1 || ToVulkanFormat(record->format) == VK_FORMAT_UNDEFINED)
-                return { .code = RHIErrorCode::Unsupported, .operation = operation };
-
-            colorFormat = record->format;
-
-            const VkAttachmentLoadOp loadOp = ToVulkanLoadOp(attachment.loadOp);
-            const VkAttachmentStoreOp storeOp = ToVulkanStoreOp(attachment.storeOp);
-
+            const auto loadOp = ToVulkanLoadOp(attachment.loadOp);
+            const auto storeOp = ToVulkanStoreOp(attachment.storeOp);
             if (loadOp == VK_ATTACHMENT_LOAD_OP_MAX_ENUM || storeOp == VK_ATTACHMENT_STORE_OP_MAX_ENUM)
                 return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-
-            const auto& color = attachment.clearColor;
-
+            for (float value : attachment.clearColor)
+                if (!std::isfinite(value)) return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            colorFormat = record->format;
+            const auto& c = attachment.clearColor;
             attachments.push_back({
                 .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                 .imageView = record->view,
                 .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 .loadOp = loadOp,
                 .storeOp = storeOp,
-                .clearValue = {.color = {.float32 = { color[0], color[1], color[2], color[3] } } }
+                .clearValue = { .color = { .float32 = { c[0], c[1], c[2], c[3] } } }
             });
         }
-
-        const size_t first = m_RetainedViews.size();
-        m_RetainedViews.reserve(first + desc.colorAttachments.size());
-
-        for (const auto& attachment : desc.colorAttachments) {
-            if (const RHIStatus status = RetainTextureView(attachment.view); !status.IsSuccess()) {
-                ReleaseTextureViews(first);
-                return status;
-            }
+        VkRenderingAttachmentInfo depthInfo{};
+        if (desc.depthAttachment) {
+            const auto& depth = *desc.depthAttachment;
+            const auto* record = registry.ResolveTextureView(depth.view);
+            if (!record || !HasTextureUsage(record->usage, RHITextureUsage::DepthAttachment)
+                || record->format != PixelFormat::D32_Float || record->sampleCount != 1
+                || right > record->extent.width || bottom > record->extent.height
+                || !std::isfinite(depth.clearDepth) || depth.clearDepth < 0.0f || depth.clearDepth > 1.0f
+                || (depth.readOnly && (depth.loadOp != RHILoadOp::Load || depth.storeOp != RHIStoreOp::Store)))
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            const auto loadOp = ToVulkanLoadOp(depth.loadOp);
+            const auto storeOp = ToVulkanStoreOp(depth.storeOp);
+            if (loadOp == VK_ATTACHMENT_LOAD_OP_MAX_ENUM || storeOp == VK_ATTACHMENT_STORE_OP_MAX_ENUM)
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            depthFormat = record->format;
+            depthInfo = {
+                .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                .imageView = record->view,
+                .imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                .loadOp = loadOp,
+                .storeOp = storeOp,
+                .clearValue = { .depthStencil = { depth.clearDepth, 0 } }
+            };
         }
-
-        const VkRenderingInfo renderingInfo{
+        const size_t first = m_RetainedViews.size();
+        m_RetainedViews.reserve(first + desc.colorAttachments.size() + (desc.depthAttachment ? 1 : 0));
+        for (const auto& attachment : desc.colorAttachments)
+            if (const auto status = RetainTextureView(attachment.view); !status.IsSuccess()) {
+                ReleaseTextureViews(first); return status;
+            }
+        if (desc.depthAttachment)
+            if (const auto status = RetainTextureView(desc.depthAttachment->view); !status.IsSuccess()) {
+                ReleaseTextureViews(first); return status;
+            }
+        const VkRenderingInfo info{
             .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
-            .renderArea = {
-                .offset = { area.offset.x, area.offset.y },
-                .extent = { area.extent.width, area.extent.height }
-            },
+            .renderArea = { { area.offset.x, area.offset.y }, { area.extent.width, area.extent.height } },
             .layerCount = 1,
             .colorAttachmentCount = static_cast<uint32_t>(attachments.size()),
-            .pColorAttachments = attachments.data()
+            .pColorAttachments = attachments.empty() ? nullptr : attachments.data(),
+            .pDepthAttachment = desc.depthAttachment ? &depthInfo : nullptr
         };
-
-        vkCmdBeginRendering(m_CommandBuffer, &renderingInfo);
-        m_RenderingColorFormat = desc.colorAttachments.size() == 1 ? colorFormat : PixelFormat::Unknown;
+        vkCmdBeginRendering(m_CommandBuffer, &info);
+        m_RenderingColorFormat = colorFormat;
+        m_RenderingDepthFormat = depthFormat;
+        m_RenderingDepthReadOnly = desc.depthAttachment && desc.depthAttachment->readOnly;
         m_State = RHICommandListState::Rendering;
         return {};
     }
@@ -326,6 +354,19 @@ namespace Catalpa {
         vkCmdSetViewport(m_CommandBuffer, 0, 1, &nativeViewport);
         vkCmdSetScissor(m_CommandBuffer, 0, 1, &nativeScissor);
         m_ViewportAndScissorSet = true;
+        return {};
+    }
+
+    RHIStatus VulkanCommandList::GetLocalBufferState(BufferHandle buffer, LocalBufferState*& state)
+    {
+        const auto found = std::ranges::find_if(m_LocalBufferStates,
+            [&](const auto& entry) { return entry.buffer == buffer; });
+        if (found != m_LocalBufferStates.end()) { state = &*found; return {}; }
+        LocalBufferState candidate;
+        candidate.buffer = buffer;
+        if (const auto status = m_Device.GetBufferState(buffer, candidate.snapshot); !status.IsSuccess()) return status;
+        m_LocalBufferStates.push_back(std::move(candidate));
+        state = &m_LocalBufferStates.back();
         return {};
     }
 
@@ -379,6 +420,7 @@ namespace Catalpa {
         ReleaseBuffers();
 
         m_BufferStateUpdates.clear();
+        m_LocalBufferStates.clear();
         m_TextureStateUpdates.clear();
         m_ResourceStatePlanBound = false;
         m_ResourceStatePlanCommitted = false;
@@ -394,6 +436,10 @@ namespace Catalpa {
 
         m_BoundColorFormat = PixelFormat::Unknown;
         m_RenderingColorFormat = PixelFormat::Unknown;
+        m_BoundDepthFormat = PixelFormat::Unknown;
+        m_RenderingDepthFormat = PixelFormat::Unknown;
+        m_BoundDepthWrite = false;
+        m_RenderingDepthReadOnly = false;
         m_ViewportAndScissorSet = false;
         m_VertexStride = 0;
         m_VertexAttributeEnd = 0;
@@ -442,6 +488,8 @@ namespace Catalpa {
         m_PushConstantsSet = m_PushConstantBytes == 0;
 
         m_BoundColorFormat = record->colorFormat;
+        m_BoundDepthFormat = record->depthFormat;
+        m_BoundDepthWrite = record->depthWrite;
         m_VertexStride = record->vertexStride;
         m_VertexAttributeEnd = record->vertexAttributeEnd;
         return {};
@@ -470,114 +518,102 @@ namespace Catalpa {
     RHIStatus VulkanCommandList::SetGraphicsBindings(std::span<const RHIBinding> bindings)
     {
         constexpr const char* operation = "VulkanCommandList::SetGraphicsBindings";
-
-        // 设置失败后，后续 Draw 不能静默沿用旧绑定。
         m_GraphicsBindingsSet = false;
-
-        if ((m_State != RHICommandListState::Recording && m_State != RHICommandListState::Rendering) ||
-            m_BoundPipelineLayout == VK_NULL_HANDLE || m_BoundBindingLayout == VK_NULL_HANDLE)
+        if ((m_State != RHICommandListState::Recording && m_State != RHICommandListState::Rendering)
+            || m_BoundPipelineLayout == VK_NULL_HANDLE || m_BoundBindingLayout == VK_NULL_HANDLE)
             return { .code = RHIErrorCode::InvalidState, .operation = operation };
-
         if (bindings.empty() || bindings.size() != m_BoundBindingCount)
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-
         const std::span<const RHIBindingLayoutEntry> layout{ m_BoundBindings.data(), m_BoundBindingCount };
         auto& registry = m_Device.GetResourceRegistry();
-
         std::array<VkDescriptorImageInfo, RHIMaxBindingsPerSet> images{};
+        std::array<VkDescriptorBufferInfo, RHIMaxBindingsPerSet> buffers{};
         std::array<VkWriteDescriptorSet, RHIMaxBindingsPerSet> writes{};
-
-        bool requiresLinearFiltering = false;
-        bool texturesSupportLinearFiltering = true;
-
+        bool requiresLinearFiltering = false, texturesSupportLinearFiltering = true;
         for (size_t i = 0; i < bindings.size(); ++i) {
             const auto& binding = bindings[i];
             const auto expected = std::ranges::find(layout, binding.binding, &RHIBindingLayoutEntry::binding);
-
             if (expected == layout.end() || expected->type != binding.type)
                 return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-
-            for (size_t previous = 0; previous < i; ++previous) {
-                if (bindings[previous].binding == binding.binding)
+            for (size_t j=0; j<i; ++j)
+                if (bindings[j].binding == binding.binding)
                     return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-            }
-
-            VkDescriptorType type{};
-
+            VkDescriptorType type = VK_DESCRIPTOR_TYPE_MAX_ENUM;
             switch (binding.type) {
-                case RHIBindingType::SampledTexture:
-                {
-                    const auto* record = registry.ResolveTextureView(binding.texture);
-
-                    if (!record || !HasTextureUsage(record->usage, RHITextureUsage::Sampled))
-                        return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-
-                    images[i].imageView = record->view;
-                    images[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                    texturesSupportLinearFiltering &= record->linearFiltering;
-                    type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-                    break;
-                }
-
-                case RHIBindingType::Sampler:
-                {
-                    const auto* record = registry.ResolveSampler(binding.sampler);
-
-                    if (!record)
-                        return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-
-                    images[i].sampler = record->sampler;
-                    requiresLinearFiltering |= record->linearFiltering;
-                    type = VK_DESCRIPTOR_TYPE_SAMPLER;
-                    break;
-                }
-
-                default:
+            case RHIBindingType::SampledTexture: {
+                const auto* record = registry.ResolveTextureView(binding.texture);
+                if (!record || !HasTextureUsage(record->usage, RHITextureUsage::Sampled)
+                    || GetPixelFormatInfo(record->format).isDepth || binding.sampler.HasValue()
+                    || binding.buffer.HasValue() || binding.offset != 0 || binding.size != 0)
                     return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+                images[i].imageView = record->view;
+                images[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                texturesSupportLinearFiltering &= record->linearFiltering;
+                type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                break;
             }
-
+            case RHIBindingType::Sampler: {
+                const auto* record = registry.ResolveSampler(binding.sampler);
+                if (!record || binding.texture.HasValue() || binding.buffer.HasValue() || binding.offset != 0 || binding.size != 0)
+                    return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+                images[i].sampler = record->sampler;
+                requiresLinearFiltering |= record->linearFiltering;
+                type = VK_DESCRIPTOR_TYPE_SAMPLER;
+                break;
+            }
+            case RHIBindingType::UniformBuffer: {
+                const auto* record = registry.ResolveBuffer(binding.buffer);
+                if (!record) return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+                LocalBufferState* local = nullptr;
+                if (const auto status = GetLocalBufferState(binding.buffer, local); !status.IsSuccess()) return status;
+                const auto localAccess = local->snapshot.state.access;
+                const bool coversStages = localAccess.stage == RHIPipelineStage::AllCommands
+                    || localAccess.stage == RHIPipelineStage::VertexFragmentShader
+                    || (localAccess.stage == RHIPipelineStage::VertexShader && expected->visibility == RHIShaderVisibility::Vertex)
+                    || (localAccess.stage == RHIPipelineStage::FragmentShader && expected->visibility == RHIShaderVisibility::Fragment);
+                if (localAccess.access != RHIResourceAccess::UniformRead || !coversStages)
+                    return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+                if (const auto status = ValidateVulkanUniformBinding(binding, local->snapshot, m_Device.GetCapabilities()); !status.IsSuccess()) return status;
+                buffers[i] = { record->buffer, binding.offset, binding.size };
+                type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                break;
+            }
+            default: return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            }
             writes[i] = {
                 .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                 .dstBinding = binding.binding,
                 .descriptorCount = 1,
                 .descriptorType = type,
-                .pImageInfo = &images[i]
+                .pImageInfo = binding.type == RHIBindingType::UniformBuffer ? nullptr : &images[i],
+                .pBufferInfo = binding.type == RHIBindingType::UniformBuffer ? &buffers[i] : nullptr
             };
         }
-
-        // 独立描述符无法确定 Shader 实际配对，当前保守覆盖全部可能组合。
         if (requiresLinearFiltering && !texturesSupportLinearFiltering)
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
-
-        const size_t firstView = m_RetainedViews.size();
-        const size_t firstSampler = m_RetainedSamplers.size();
-
-        const auto fail = [this, firstView, firstSampler](RHIStatus status) {
-            ReleaseSamplers(firstSampler);
-            ReleaseTextureViews(firstView);
-            return status;
+        const size_t firstView=m_RetainedViews.size(), firstSampler=m_RetainedSamplers.size(), firstBuffer=m_RetainedBuffers.size();
+        m_RetainedViews.reserve(firstView+bindings.size());
+        m_RetainedSamplers.reserve(firstSampler+bindings.size());
+        m_RetainedBuffers.reserve(firstBuffer+bindings.size());
+        const auto fail = [this,firstView,firstSampler,firstBuffer](RHIStatus status) {
+            ReleaseBuffers(firstBuffer); ReleaseSamplers(firstSampler); ReleaseTextureViews(firstView); return status;
         };
-
         for (const auto& binding : bindings) {
-            const RHIStatus status = binding.type == RHIBindingType::SampledTexture ?
-                RetainTextureView(binding.texture) : RetainSampler(binding.sampler);
-
+            RHIStatus status;
+            switch (binding.type) {
+            case RHIBindingType::SampledTexture: status=RetainTextureView(binding.texture); break;
+            case RHIBindingType::Sampler: status=RetainSampler(binding.sampler); break;
+            case RHIBindingType::UniformBuffer: status=RetainBuffer(binding.buffer); break;
+            default: return fail({ .code=RHIErrorCode::InvalidDescription,.operation=operation });
+            }
             if (!status.IsSuccess()) return fail(status);
         }
-
-        VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-
-        if (const RHIStatus status = m_Device.ObserveStatus(m_Descriptors.Allocate(m_BoundBindingLayout, descriptorSet)); !status.IsSuccess())
-            return fail(status);
-
-        for (size_t i = 0; i < bindings.size(); ++i) writes[i].dstSet = descriptorSet;
-
-        vkUpdateDescriptorSets(m_Device.GetHandle(), static_cast<uint32_t>(bindings.size()), writes.data(), 0, nullptr);
-        vkCmdBindDescriptorSets(
-            m_CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-            m_BoundPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
-
-        m_GraphicsBindingsSet = true;
+        VkDescriptorSet descriptorSet=VK_NULL_HANDLE;
+        if (const auto status=m_Device.ObserveStatus(m_Descriptors.Allocate(m_BoundBindingLayout,descriptorSet));!status.IsSuccess()) return fail(status);
+        for (auto& write:writes) write.dstSet=descriptorSet;
+        vkUpdateDescriptorSets(m_Device.GetHandle(),static_cast<uint32_t>(bindings.size()),writes.data(),0,nullptr);
+        vkCmdBindDescriptorSets(m_CommandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,m_BoundPipelineLayout,0,1,&descriptorSet,0,nullptr);
+        m_GraphicsBindingsSet=true;
         return {};
     }
 
@@ -585,8 +621,10 @@ namespace Catalpa {
     {
         constexpr const char* operation = "VulkanCommandList::Draw";
 
-        if (m_State != RHICommandListState::Rendering || m_BoundColorFormat == PixelFormat::Unknown ||
-            m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet || !m_PushConstantsSet || !m_GraphicsBindingsSet)
+        if (m_State != RHICommandListState::Rendering
+            || (m_BoundColorFormat == PixelFormat::Unknown && m_BoundDepthFormat == PixelFormat::Unknown)
+            || m_BoundDepthFormat != m_RenderingDepthFormat || (m_RenderingDepthReadOnly && m_BoundDepthWrite)
+            || m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet || !m_PushConstantsSet || !m_GraphicsBindingsSet)
             return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
         if (m_VertexStride != 0) {
@@ -611,8 +649,10 @@ namespace Catalpa {
     {
         constexpr const char* operation = "VulkanCommandList::DrawIndexed";
 
-        if (m_State != RHICommandListState::Rendering || m_BoundColorFormat == PixelFormat::Unknown ||
-            m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet || !m_PushConstantsSet || !m_GraphicsBindingsSet ||
+        if (m_State != RHICommandListState::Rendering
+            || (m_BoundColorFormat == PixelFormat::Unknown && m_BoundDepthFormat == PixelFormat::Unknown)
+            || m_BoundDepthFormat != m_RenderingDepthFormat || (m_RenderingDepthReadOnly && m_BoundDepthWrite)
+            || m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet || !m_PushConstantsSet || !m_GraphicsBindingsSet ||
             !m_IndexBufferBound || (m_VertexStride != 0 && !m_VertexBufferBound))
             return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
@@ -650,6 +690,11 @@ namespace Catalpa {
 
         const size_t first = m_RetainedBuffers.size();
         m_RetainedBuffers.reserve(first + barriers.size());
+        m_LocalBufferStates.reserve(m_LocalBufferStates.size() + barriers.size());
+        for (const auto& desc : barriers) {
+            LocalBufferState* local = nullptr;
+            if (const auto status = GetLocalBufferState(desc.buffer, local); !status.IsSuccess()) return status;
+        }
 
         for (const auto& desc : barriers) {
             if (const RHIStatus status = RetainBuffer(desc.buffer); !status.IsSuccess()) {
@@ -665,6 +710,12 @@ namespace Catalpa {
         };
 
         vkCmdPipelineBarrier2(m_CommandBuffer, &dependencyInfo);
+        // 容量已在原生命令前准备；以下发布局部录制状态不再分配。
+        for (const auto& desc : barriers) {
+            const auto found = std::ranges::find_if(m_LocalBufferStates,
+                [&](const auto& entry) { return entry.buffer == desc.buffer; });
+            found->snapshot.state.access = desc.after;
+        }
         return {};
     }
 
@@ -695,6 +746,16 @@ namespace Catalpa {
             copy.destinationOffset < copy.sourceOffset + copy.size)
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
+        m_LocalBufferStates.reserve(m_LocalBufferStates.size() + 2);
+        LocalBufferState* sourceState = nullptr;
+        LocalBufferState* destinationState = nullptr;
+        if (const auto status = GetLocalBufferState(source, sourceState); !status.IsSuccess()) return status;
+        if (const auto status = GetLocalBufferState(destination, destinationState); !status.IsSuccess()) return status;
+        if (!RangeContains(sourceState->snapshot.state.initialized, copy.sourceOffset, copy.size))
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
+        auto& initialized = destinationState->snapshot.state.initialized;
+        initialized.reserve(initialized.size() + 1);
+
         const VkBuffer sourceBuffer = sourceRecord->buffer;
         const VkBuffer destinationBuffer = destinationRecord->buffer;
         const size_t first = m_RetainedBuffers.size();
@@ -714,6 +775,8 @@ namespace Catalpa {
         };
 
         vkCmdCopyBuffer(m_CommandBuffer, sourceBuffer, destinationBuffer, 1, &region);
+        // 只有真实copy录制成功后的目标区间才初始化；此前已准备容量，不在副作用后分配。
+        MarkInitialized(initialized, copy.destinationOffset, copy.size);
         return {};
     }
 
@@ -732,7 +795,7 @@ namespace Catalpa {
         if (!sourceRecord || !destinationRecord ||
             !HasBufferUsage(sourceRecord->desc.usage, RHIBufferUsage::TransferSource) ||
             !HasTextureUsage(destinationRecord->usage, RHITextureUsage::TransferDestination) ||
-            destinationRecord->presentable || copy.bufferOffset % 4 != 0)
+            destinationRecord->presentable || GetPixelFormatInfo(destinationRecord->format).isDepth || copy.bufferOffset % 4 != 0)
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
         if (copy.range != RHITextureSubresourceRange{} || destinationRecord->sampleCount != 1)
@@ -745,6 +808,10 @@ namespace Catalpa {
 
         if (!IsValidBufferRange(sourceRecord->desc.size, copy.bufferOffset, bytes))
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        LocalBufferState* sourceState = nullptr;
+        if (const auto status = GetLocalBufferState(source, sourceState); !status.IsSuccess()) return status;
+        if (!RangeContains(sourceState->snapshot.state.initialized, copy.bufferOffset, bytes))
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
         const VkBuffer sourceBuffer = sourceRecord->buffer;
         const VkImage destinationImage = destinationRecord->image;

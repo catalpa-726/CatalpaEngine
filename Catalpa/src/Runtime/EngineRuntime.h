@@ -10,6 +10,7 @@
 #include "Core/Time/SimulationClock.h"
 #include "Runtime/Input/InputActions.h"
 #include "Renderer/RenderFramePacket.h"
+#include "Renderer/RendererFrameContext.h"
 
 namespace Catalpa {
 
@@ -46,6 +47,8 @@ namespace Catalpa {
         [[nodiscard]] WorldStatus UpdateScenes();
         // 平台先收集事件，UI NewFrame 后提交捕获策略，再运行固定步及派生提取。
         [[nodiscard]] InputStatus ConfigureInputProfile(std::string_view json) { return m_Input.ParseProfile(json); }
+        // 渲染配置仅在设备初始化前解析并保存，不在飞行帧中热改资源契约。
+        [[nodiscard]] RHIStatus ConfigureRendererProfile(std::string_view json);
         void OnInputEvent(const Event& event) { m_Input.OnEvent(event); }
         [[nodiscard]] WorldStatus UpdateSimulation(double realSeconds, InputCapture capture, uint32_t width, uint32_t height);
         void StopSimulation() noexcept;
@@ -60,6 +63,7 @@ namespace Catalpa {
         SceneManager m_Scenes;
         SimulationClock m_Clock;
         InputActions m_Input;
+        RendererProfile m_RendererProfile;
         FrameTime m_FrameTime;
         uint64_t m_FrameSequence = 0;
         uint64_t m_InputSceneIdentity = 0;

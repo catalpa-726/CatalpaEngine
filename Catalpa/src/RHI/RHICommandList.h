@@ -27,8 +27,8 @@ namespace Catalpa {
             std::span<const RHIBufferStateUpdate> buffers,
             std::span<const RHITextureStateUpdate> textures) = 0;
 
-        // 当前支持二维、单层、单采样颜色附件。
-        // 附件执行时须已处于颜色附件状态；本函数不执行布局转换。
+        // 二维单层单采样，至多一个颜色附件及可选D32深度；允许depth-only或仅clear。
+        // 附件须已处于声明的颜色/深度布局；只读深度必须Load/Store，本函数不转换布局。
         [[nodiscard]] virtual RHIStatus BeginRendering(const RHIRenderingDesc& desc) = 0;
 
         [[nodiscard]] virtual RHIStatus EndRendering() = 0;

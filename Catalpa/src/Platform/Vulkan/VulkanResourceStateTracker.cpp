@@ -24,7 +24,7 @@ namespace Catalpa {
         return true;
     }
 
-    // 当前支持单层颜色附件、上传、采样和交换链呈现状态。
+    // 单层颜色/深度附件、上传、采样和呈现均经过同一已接受状态校验。
     static bool IsValidTextureState(const RHITextureState& state, const VulkanTextureRecord& texture) noexcept
     {
         const auto& source = state.access;
@@ -39,6 +39,7 @@ namespace Catalpa {
             return !state.initialized && source.access == RHIResourceAccess::None &&
             (source.stage == RHIPipelineStage::None || source.stage == RHIPipelineStage::AllCommands);
 
+        if (source.access == RHIResourceAccess::DepthRead && !state.initialized) return false;
         return source.access != RHIResourceAccess::None;
     }
 

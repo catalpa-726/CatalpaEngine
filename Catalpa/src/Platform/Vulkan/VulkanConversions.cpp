@@ -10,6 +10,7 @@ namespace Catalpa {
         case PixelFormat::RGBA8_SRGB: return VK_FORMAT_R8G8B8A8_SRGB;
         case PixelFormat::BGRA8_UNorm: return VK_FORMAT_B8G8R8A8_UNORM;
         case PixelFormat::BGRA8_SRGB: return VK_FORMAT_B8G8R8A8_SRGB;
+        case PixelFormat::D32_Float: return VK_FORMAT_D32_SFLOAT;
         default: return VK_FORMAT_UNDEFINED;
         }
     }
@@ -36,7 +37,7 @@ namespace Catalpa {
     VkBufferUsageFlags ToVulkanBufferUsage(RHIBufferUsage usage) noexcept
     {
         constexpr RHIBufferUsage supported = RHIBufferUsage::TransferSource | RHIBufferUsage::TransferDestination |
-            RHIBufferUsage::Vertex | RHIBufferUsage::Index;
+            RHIBufferUsage::Vertex | RHIBufferUsage::Index | RHIBufferUsage::Uniform;
 
         if ((static_cast<uint32_t>(usage) & ~static_cast<uint32_t>(supported)) != 0) return 0;
 
@@ -45,13 +46,14 @@ namespace Catalpa {
         if (HasBufferUsage(usage, RHIBufferUsage::TransferDestination)) flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         if (HasBufferUsage(usage, RHIBufferUsage::Vertex)) flags |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
         if (HasBufferUsage(usage, RHIBufferUsage::Index)) flags |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        if (HasBufferUsage(usage, RHIBufferUsage::Uniform)) flags |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
         return flags;
     }
 
     VkImageUsageFlags ToVulkanTextureUsage(RHITextureUsage usage) noexcept
     {
         constexpr RHITextureUsage supported = RHITextureUsage::TransferSource | RHITextureUsage::TransferDestination |
-            RHITextureUsage::Sampled | RHITextureUsage::ColorAttachment;
+            RHITextureUsage::Sampled | RHITextureUsage::ColorAttachment | RHITextureUsage::DepthAttachment;
 
         if ((static_cast<uint32_t>(usage) & ~static_cast<uint32_t>(supported)) != 0) return 0;
 
@@ -60,6 +62,7 @@ namespace Catalpa {
         if (HasTextureUsage(usage, RHITextureUsage::TransferDestination)) flags |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         if (HasTextureUsage(usage, RHITextureUsage::Sampled)) flags |= VK_IMAGE_USAGE_SAMPLED_BIT;
         if (HasTextureUsage(usage, RHITextureUsage::ColorAttachment)) flags |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        if (HasTextureUsage(usage, RHITextureUsage::DepthAttachment)) flags |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
         return flags;
     }
 

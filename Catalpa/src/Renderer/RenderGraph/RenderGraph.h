@@ -28,6 +28,8 @@ namespace Catalpa {
         // 登记整幅、紧密排列的颜色纹理上传。
         [[nodiscard]] RHIStatus AddTextureUploadPass(const char* name, RGBuffer source, RGTexture destination, const RHIBufferTextureCopy& copy);
         [[nodiscard]] RHIStatus AddDrawPass(const char* name, const RGIndexedDrawDesc& desc);
+        // 空场景也以真实附件Clear初始化颜色，不用零顶点绘制或旧内容掩盖未初始化。
+        [[nodiscard]] RHIStatus AddClearPass(const char* name, RGTexture color, std::array<float, 4> clearColor);
 
         // 指定最终呈现输出，并结束声明阶段。
         [[nodiscard]] RHIStatus ExportPresent(RGTexture resource);
@@ -46,7 +48,7 @@ namespace Catalpa {
             RHITextureStateSnapshot snapshot{};
         };
 
-        enum class PassKind { Copy, TextureUpload, Draw };
+        enum class PassKind { Copy, TextureUpload, Draw, Clear };
 
         // 保存不同 Pass 的声明参数，由 Compile 生成实际命令步骤。
         struct Pass {
@@ -59,6 +61,8 @@ namespace Catalpa {
             RHIBufferTextureCopy textureCopy{};
             uint64_t textureBytes = 0;
             RGIndexedDrawDesc draw{};
+            RGTexture clearTexture{};
+            std::array<float, 4> clearColor{};
         };
 
         // 检查图仍处于允许添加声明的阶段。

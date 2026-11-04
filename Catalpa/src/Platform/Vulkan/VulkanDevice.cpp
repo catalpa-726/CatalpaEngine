@@ -183,7 +183,8 @@ namespace Catalpa {
             .colorAttachment = (features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) != 0,
             .colorAttachmentBlend = (features & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT) != 0,
             .transferSource = (features & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT) != 0,
-            .transferDestination = (features & VK_FORMAT_FEATURE_TRANSFER_DST_BIT) != 0
+            .transferDestination = (features & VK_FORMAT_FEATURE_TRANSFER_DST_BIT) != 0,
+            .depthAttachment = (features & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0
         };
     }
 

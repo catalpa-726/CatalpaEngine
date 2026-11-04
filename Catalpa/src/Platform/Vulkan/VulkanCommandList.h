@@ -67,6 +67,13 @@ namespace Catalpa {
         void EndDebugLabel() override;
 
     private:
+        struct LocalBufferState {
+            BufferHandle buffer{};
+            RHIBufferStateSnapshot snapshot;
+        };
+        // 首次从权威快照导入；以后只由实际录制的barrier/copy更新，绝不使用整图最终状态。
+        [[nodiscard]] RHIStatus GetLocalBufferState(BufferHandle buffer, LocalBufferState*& state);
+
         // 录制期资源引用与状态复位
         [[nodiscard]] RHIStatus RetainTextureView(TextureViewHandle handle);
 
@@ -132,9 +139,15 @@ namespace Catalpa {
         // 当前管线、渲染附件与动态状态
         PixelFormat m_BoundColorFormat = PixelFormat::Unknown;
         PixelFormat m_RenderingColorFormat = PixelFormat::Unknown;
+        PixelFormat m_BoundDepthFormat = PixelFormat::Unknown;
+        PixelFormat m_RenderingDepthFormat = PixelFormat::Unknown;
+        bool m_BoundDepthWrite = false;
+        bool m_RenderingDepthReadOnly = false;
         bool m_ViewportAndScissorSet = false;
 
         std::vector<BufferHandle> m_RetainedBuffers;
+        // 命令局部访问/初始化账本，不推导依赖、不发布全局已接受状态。
+        std::vector<LocalBufferState> m_LocalBufferStates;
 
         std::vector<RHIBufferStateUpdate> m_BufferStateUpdates;
         std::vector<RHITextureStateUpdate> m_TextureStateUpdates;

@@ -18,6 +18,19 @@ namespace Catalpa {
             desc.mipLevels == 0 || desc.arrayLayers == 0 || desc.sampleCount == 0)
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
+        const bool depth = GetPixelFormatInfo(desc.format).isDepth;
+        if (depth != HasTextureUsage(desc.usage, RHITextureUsage::DepthAttachment)
+            || (depth && desc.usage != RHITextureUsage::DepthAttachment)
+            || (!depth && HasTextureUsage(desc.usage, RHITextureUsage::DepthAttachment)))
+            return { .code = RHIErrorCode::Unsupported, .operation = operation };
+        const auto support = device.GetFormatSupport(desc.format);
+        if ((depth && !support.depthAttachment)
+            || (HasTextureUsage(desc.usage, RHITextureUsage::ColorAttachment) && !support.colorAttachment)
+            || (HasTextureUsage(desc.usage, RHITextureUsage::Sampled) && !support.sampledImage)
+            || (HasTextureUsage(desc.usage, RHITextureUsage::TransferSource) && !support.transferSource)
+            || (HasTextureUsage(desc.usage, RHITextureUsage::TransferDestination) && !support.transferDestination))
+            return { .code = RHIErrorCode::Unsupported, .operation = operation };
+
         if (desc.mipLevels != 1 || desc.arrayLayers != 1 || desc.sampleCount != 1)
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
 
@@ -89,12 +102,16 @@ namespace Catalpa {
 
         const PixelFormat format = desc.format == PixelFormat::Unknown ? parent.desc.format : desc.format;
 
-        if (desc.range != RHITextureSubresourceRange{} || format != parent.desc.format)
+        RHITextureSubresourceRange supportedRange{};
+        const bool depth = GetPixelFormatInfo(format).isDepth;
+        supportedRange.aspect = depth ? RHITextureAspect::Depth : RHITextureAspect::Color;
+        if (desc.range != supportedRange || format != parent.desc.format)
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
 
-        // 当前可创建 View 的用途为采样或颜色附件。
+        // 当前View支持颜色采样/附件，或独立D32深度附件。
         if (!HasTextureUsage(parent.desc.usage, RHITextureUsage::Sampled) &&
-            !HasTextureUsage(parent.desc.usage, RHITextureUsage::ColorAttachment))
+            !HasTextureUsage(parent.desc.usage, RHITextureUsage::ColorAttachment) &&
+            !HasTextureUsage(parent.desc.usage, RHITextureUsage::DepthAttachment))
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
 
         const VkImageViewCreateInfo info{
@@ -103,7 +120,7 @@ namespace Catalpa {
             .viewType = VK_IMAGE_VIEW_TYPE_2D,
             .format = ToVulkanFormat(format),
             .subresourceRange = {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .aspectMask = static_cast<VkImageAspectFlags>(depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT),
                 .baseMipLevel = desc.range.baseMipLevel,
                 .levelCount = desc.range.levelCount,
                 .baseArrayLayer = desc.range.baseArrayLayer,
