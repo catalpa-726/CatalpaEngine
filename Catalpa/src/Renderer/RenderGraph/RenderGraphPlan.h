@@ -3,11 +3,11 @@
 #include "RenderGraphPass.h"
 #include "RHI/RHIResourceState.h"
 #include "RHI/RHIError.h"
+#include "Core/Base.h"
 
-// 持有编译结果：固定执行顺序、屏障和待提交状态。编译完成后，外部不能任意修改内部步骤
+// 持有编译结果：稳定拓扑顺序、屏障和待提交状态；外部只能读取诊断，不能改写命令步骤。
 namespace Catalpa {
 
-    class RenderGraph;
     class RHICommandList;
 
     class RenderGraphPlan {
@@ -27,15 +27,20 @@ namespace Catalpa {
             m_Steps = std::move(other.m_Steps);
             m_BufferUpdates = std::move(other.m_BufferUpdates);
             m_TextureUpdates = std::move(other.m_TextureUpdates);
+            m_Schedule = std::move(other.m_Schedule);
             m_Valid = std::exchange(other.m_Valid, false);
             return *this;
         }
 
         // 按编译顺序录制，不自行提交或发布设备状态。
-        [[nodiscard]] RHIStatus Record(RHICommandList& commands) const;
+        [[nodiscard]] CATALPA_API RHIStatus Record(RHICommandList& commands) const;
+        // 只读编译诊断不暴露可改写的命令步骤或设备状态。
+        [[nodiscard]] bool IsValid() const noexcept { return m_Valid; }
+        [[nodiscard]] const RGCompiledSchedule& GetSchedule() const noexcept { return m_Schedule; }
 
     private:
-        friend class RenderGraph;
+        friend class RenderGraphCompiler;
+        friend class RenderGraphExecutor;
 
         enum class StepKind { Copy, TextureUpload, Draw, Transition, Clear };
 
@@ -61,6 +66,7 @@ namespace Catalpa {
         std::vector<Step> m_Steps;
         std::vector<RHIBufferStateUpdate> m_BufferUpdates;
         std::vector<RHITextureStateUpdate> m_TextureUpdates;
+        RGCompiledSchedule m_Schedule;
         bool m_Valid = false;
     };
 

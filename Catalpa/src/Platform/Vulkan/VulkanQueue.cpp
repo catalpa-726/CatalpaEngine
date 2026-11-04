@@ -36,18 +36,12 @@ namespace Catalpa {
 
     RHICompletionPoint VulkanQueue::GetLastCompletionPoint() const
     {
-        return { .device = m_Device.GetDeviceId(), .queue = m_Id, .sequence = m_Submitted };
+        return m_Submissions.GetLastCompletionPoint();
     }
 
     void VulkanQueue::NotifyFenceCompleted(VulkanFence& fence)
     {
-        CAT_CORE_ASSERT(fence.GetState() == VulkanFenceState::Signaled, "Fence completion must be observed first!");
-
-        const auto it = std::ranges::find(m_Pending, &fence, &PendingSubmission::fence);
-        if (it == m_Pending.end()) return;
-
-        m_Completed = std::max(m_Completed, it->sequence);
-        std::erase_if(m_Pending, [this](const auto& pending) { return pending.sequence <= m_Completed; });
+        m_Submissions.NotifyFenceCompleted(fence);
     }
 
     RHIStatus VulkanQueue::IsComplete(const RHICompletionPoint& point, bool& complete)
@@ -56,29 +50,7 @@ namespace Catalpa {
         if (!m_Device.GetFailure().IsSuccess()) return m_Device.GetFailure();
         if (!m_Failure.IsSuccess()) return m_Failure;
 
-        if (!point.HasValue() || point.device != m_Device.GetDeviceId() || point.queue != m_Id || point.sequence > m_Submitted)
-            return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanQueue::IsComplete" };
-
-        if (point.sequence <= m_Completed) {
-            complete = true;
-            return {};
-        }
-
-        const auto it = std::ranges::find(m_Pending, point.sequence, &PendingSubmission::sequence);
-
-        if (it == m_Pending.end())
-            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanQueue::IsComplete" };
-
-        VulkanFence& fence = *it->fence;
-        bool signaled = false;
-        const RHIStatus status = m_Device.ObserveStatus(fence.Wait(0, signaled));
-
-        if (status.IsSuccess() && signaled) {
-            NotifyFenceCompleted(fence);
-            complete = true;
-        }
-
-        return status;
+        return m_Submissions.IsComplete(point, complete);
     }
 
     RHIStatus VulkanQueue::SubmitSynchronization(VulkanFence& fence, std::span<const VkSemaphoreSubmitInfo> waits, std::span<const VkSemaphoreSubmitInfo> signals)
@@ -88,6 +60,7 @@ namespace Catalpa {
 
     RHIStatus VulkanQueue::SubmitInternal(VulkanCommandList* commands, VulkanFence& fence, std::span<const VkSemaphoreSubmitInfo> waits, std::span<const VkSemaphoreSubmitInfo> signals)
     {
+        if (!m_Device.GetFailure().IsSuccess()) return m_Device.GetFailure();
         if (!m_Failure.IsSuccess()) return m_Failure;
 
         // nullptr 是取消 Acquire 的纯同步提交，不包含资源状态更新。
@@ -96,13 +69,7 @@ namespace Catalpa {
                 return status;
         }
 
-        if (m_Submitted == std::numeric_limits<uint64_t>::max())
-            return { .code = RHIErrorCode::OutOfMemory, .operation = "VulkanQueue::SubmissionSequence" };
-
-        if (fence.GetState() == VulkanFenceState::Signaled) NotifyFenceCompleted(fence);
-
-        // 提交接受后不再扩容，避免接受了 GPU 工作却未能登记完成记录。
-        m_Pending.reserve(m_Pending.size() + 1);
+        if (const auto status = m_Submissions.PrepareSubmission(fence); !status.IsSuccess()) return status;
 
         const VkCommandBufferSubmitInfo commandInfo{
             .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
@@ -139,7 +106,7 @@ namespace Catalpa {
         }
 
         fence.MarkSubmitted();
-        m_Pending.push_back({ .sequence = ++m_Submitted, .fence = &fence });
+        m_Submissions.AcceptSubmission(fence);
         return {};
     }
 

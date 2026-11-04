@@ -41,5 +41,9 @@ namespace Catalpa::Tests {
     void RunMultiViewTests(TestContext& context);
     void RunMultiViewPackingTests(TestContext& context);
     void RunMultiViewExtractionTests(TestContext& context);
+    // 单队列图依赖、完成集合和真实计划调度的CPU替身检查，不创建GPU或证明原生退休。
+    void RunRenderGraphHazardTests(TestContext& context);
+    void RunCompletionTests(TestContext& context);
+    void RunFrameLifetimeTests(TestContext& context);
     int RunS034Tests();
 }

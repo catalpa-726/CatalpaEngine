@@ -2,6 +2,7 @@
 
 #include "VulkanHeaders.h"
 #include "RHI/RHIQueue.h"
+#include "VulkanSubmissionTracker.h"
 
 // 包装已有原生队列，提供提交入口，保存队列发生的终止性失败
 namespace Catalpa {
@@ -13,7 +14,8 @@ namespace Catalpa {
     class VulkanQueue : public RHIQueue {
     public:
         // 借用设备和原生队列
-        VulkanQueue(VulkanDevice& device, VkQueue queue, uint32_t queueFamily, QueueId id) : m_Device(device), m_Queue(queue), m_QueueFamily(queueFamily), m_Id(id) {}
+        VulkanQueue(VulkanDevice& device, VkQueue queue, uint32_t queueFamily, QueueId id)
+            : m_Device(device), m_Queue(queue), m_QueueFamily(queueFamily), m_Id(id), m_Submissions(device, id) {}
 
         VulkanQueue(const VulkanQueue&) = delete;
         VulkanQueue& operator=(const VulkanQueue&) = delete;
@@ -37,17 +39,11 @@ namespace Catalpa {
         RHICompletionPoint GetLastCompletionPoint() const;
 
         // 仅用于停止使用队列后的关闭流程；不表示这些提交正常完成。
-        void DiscardPendingSubmissions() { m_Pending.clear(); }
+        void DiscardPendingSubmissions() { m_Submissions.DiscardPendingSubmissions(); }
 
     private:
         // 命令提交与纯同步提交共用的入口
         [[nodiscard]] RHIStatus SubmitInternal(VulkanCommandList* commands, VulkanFence& fence, std::span<const VkSemaphoreSubmitInfo> waits, std::span<const VkSemaphoreSubmitInfo> signals);
-
-        // Fence 由帧持有；销毁帧前必须清除此处的借用指针。
-        struct PendingSubmission {
-            uint64_t sequence = 0;
-            VulkanFence* fence = nullptr;
-        };
 
         // 原生队列与身份
         VulkanDevice& m_Device;
@@ -55,10 +51,8 @@ namespace Catalpa {
         uint32_t m_QueueFamily;
         QueueId m_Id{};
 
-        // 单调提交序列与待观察的 Fence
-        uint64_t m_Submitted = 0;
-        uint64_t m_Completed = 0;
-        std::vector<PendingSubmission> m_Pending;
+        // 唯一完成账本；Fence 由帧持有，销毁帧前清除 tracker 的借用。
+        VulkanSubmissionTracker m_Submissions;
 
         // 保存终止性提交失败，不随后续查询恢复。
         RHIStatus m_Failure{};

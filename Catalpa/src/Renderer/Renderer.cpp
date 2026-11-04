@@ -9,6 +9,7 @@
 #include "TriangleFragmentSpirv.h"
 #include "Geometry/VertexLayout.h"
 #include "RenderGraph/RenderGraph.h"
+#include "FrameScheduler.h"
 #include "Passes/DepthPrepass.h"
 #include "Passes/ForwardPass.h"
 #include "UnlitVertexSpirv.h"
@@ -216,17 +217,17 @@ namespace Catalpa {
             if (!status.IsSuccess()) return CancelFrame(acquired, status);
             status = graph.Compile(plan);
             if (!status.IsSuccess()) return CancelFrame(acquired, status);
-            status = plan.Record(*frame.commands);
-            if (!status.IsSuccess()) return CancelFrame(acquired, status);
             const RHISubmission submission{
                 .frame = frame.token, .commands = frame.commands, .wait = acquired.acquireReady, .signal = acquired.renderFinished
             };
-            RHICompletionPoint completion{};
-            status = m_Device.GetGraphicsQueue().Submit(submission, completion);
-            if (!status.IsSuccess()) return CancelFrame(acquired, status);
-            submitted = true;
+            FrameSubmissionResult execution;
+            status = FrameScheduler::Execute(plan, m_Device.GetGraphicsQueue(), submission, execution);
+            submitted = execution.accepted;
+            if (!submitted) return CancelFrame(acquired, status);
+            // 后端若违反完成身份契约，保留已接受事实并交运行时失败关闭，不再消费Acquire。
+            if (!status.IsSuccess()) return status;
             m_FrameUniforms.OnSubmitted();
-            m_Uploads.OnSubmitted(completion);
+            m_Uploads.OnSubmitted(execution.completion);
             // 本次AddPasses冻结了所有已排队静态请求；现在其目标owner才不再受pending约束。
             for (auto& [key, geometry] : m_Geometry) geometry.uploadPending = false;
             m_FrameSlot = (m_FrameSlot + 1) % m_Device.GetFrameCount();

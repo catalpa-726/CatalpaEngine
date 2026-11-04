@@ -68,7 +68,7 @@ namespace Catalpa::Tests {
     }
     int RunS034Tests()
     {
-        CAT_INFO("[S03.4 CPU] Previous CPU contracts, independent view extraction/history/packing and frustum visibility. No window/GPU initialization.");
+        CAT_INFO("[S03.4 CPU] Previous CPU contracts, view history/visibility, graph dependencies and frame submission/completion. No window/GPU initialization.");
         TestContext context("S03.4 CPU");
         try {
             RunWorldTests(context);
@@ -84,6 +84,9 @@ namespace Catalpa::Tests {
             RunMultiViewTests(context);
             RunMultiViewPackingTests(context);
             RunMultiViewExtractionTests(context);
+            RunRenderGraphHazardTests(context);
+            RunCompletionTests(context);
+            RunFrameLifetimeTests(context);
         } catch (const std::exception& error) { context.Check(false, error.what()); }
         catch (...) { context.Check(false, "Unexpected non-standard exception"); }
         CAT_INFO("[S03.4 CPU] {0} checks, {1} failures.", context.GetCheckCount(), context.GetFailureCount());
