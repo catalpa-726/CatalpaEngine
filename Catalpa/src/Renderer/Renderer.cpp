@@ -96,7 +96,10 @@ namespace Catalpa {
         const auto& packet = m_Scene.GetFrame();
         if (!packet.views.empty() && !packet.instances.empty()) {
             const auto* packing = m_FrameUniforms.GetPacking(m_FrameSlot);
-            if (!packing || packing->drawOffsets.size() != packet.instances.size())
+            const auto* view = m_FrameUniforms.GetView(m_FrameSlot);
+            const auto* visibility = m_FrameUniforms.GetVisibility(m_FrameSlot);
+            if (!packing || !view || !visibility || packing->viewOffsets.size() != 1
+                || packing->drawOffsets.size() != packet.instances.size())
                 return { .code = RHIErrorCode::InvalidState, .operation = "Renderer::BuildFrameGraph uniforms" };
             RGTexture depth;
             RGBuffer uniforms;
@@ -104,8 +107,9 @@ namespace Catalpa {
             // Prepare已完成本帧WriteBuffer；现在才能读取新的状态revision。
             if (const auto status = graph.ImportBuffer(m_FrameUniforms.GetBuffer(m_FrameSlot), uniforms); !status.IsSuccess()) return status;
             std::vector<RGIndexedDrawDesc> forwardDraws, depthDraws;
-            const float clearDepth = packet.views[0].lens.reversedZ ? 0.0f : 1.0f;
-            for (size_t i = 0; i < packet.instances.size(); ++i) {
+            const float clearDepth = view->lens.reversedZ ? 0.0f : 1.0f;
+            // 只裁剪绘制清单，保持原实例顺序及UBO索引，不改写CPU网格或帧快照。
+            for (const size_t i : visibility->instanceIndices) {
                 const auto& instance = packet.instances[i];
                 const auto found = m_Geometry.find(instance.mesh.get());
                 if (found == m_Geometry.end()) {
@@ -134,7 +138,7 @@ namespace Catalpa {
                     draw.clearDepth = clearDepth;
                     draw.uniformBuffers = {
                         { uniforms, 0, 0, sizeof(FrameGpuParameters), RHIShaderVisibility::Fragment },
-                        { uniforms, 1, packing->viewOffset, sizeof(ViewGpuParameters), RHIShaderVisibility::Vertex },
+                        { uniforms, 1, packing->viewOffsets[0], sizeof(ViewGpuParameters), RHIShaderVisibility::Vertex },
                         { uniforms, 2, packing->drawOffsets[i], sizeof(DrawGpuParameters), RHIShaderVisibility::VertexFragment }
                     };
                     forwardDraws.push_back(draw);
@@ -143,7 +147,7 @@ namespace Catalpa {
                         draw.color = {};
                         // Depth vertex只使用View/Draw；不假定优化器保留未使用的Frame descriptor。
                         draw.uniformBuffers = {
-                            { uniforms, 1, packing->viewOffset, sizeof(ViewGpuParameters), RHIShaderVisibility::Vertex },
+                            { uniforms, 1, packing->viewOffsets[0], sizeof(ViewGpuParameters), RHIShaderVisibility::Vertex },
                             { uniforms, 2, packing->drawOffsets[i], sizeof(DrawGpuParameters), RHIShaderVisibility::Vertex }
                         };
                         depthDraws.push_back(std::move(draw));
@@ -163,6 +167,7 @@ namespace Catalpa {
     {
         // 取消路径不执行原来的复制命令，上传请求仍然待提交。
         m_Uploads.OnCancelled();
+        m_FrameUniforms.OnCancelled();
 
         if (failure.code == RHIErrorCode::DeviceLost) return failure;
 
@@ -182,6 +187,8 @@ namespace Catalpa {
 
     RHIStatus Renderer::Render(const ImGuiFrameData* uiFrame)
     {
+        // 上轮可能在Acquire超时前就完成Prepare；未提交的视图不能成为下一帧历史。
+        m_FrameUniforms.OnCancelled();
         if (m_Swapchain.GetInfo().state != RHISwapchainState::Ready) return {};
         RHIAcquireResult acquired{};
         bool submitted = false;
@@ -193,16 +200,16 @@ namespace Catalpa {
             auto status = m_Device.PrepareFrame(m_FrameSlot, timeoutNanoseconds, frame, ready);
             if (!status.IsSuccess() || !ready) return status;
             const auto& packet = m_Scene.GetFrame();
-            if (!packet.views.empty() && !packet.instances.empty()) {
+            if (packet.sequence != 0) {
                 status = m_FrameUniforms.Prepare(m_FrameSlot, packet, m_Profile, m_Swapchain.GetInfo().extent);
                 if (!status.IsSuccess()) return status;
             }
             if (uiFrame) {
                 status = m_UI.Prepare(m_FrameSlot, *uiFrame, m_Swapchain.GetInfo().format);
-                if (!status.IsSuccess()) return status;
+                if (!status.IsSuccess()) { m_FrameUniforms.OnCancelled(); return status; }
             }
             status = m_Swapchain.Acquire(frame.token, timeoutNanoseconds, acquired);
-            if (!status.IsSuccess() || !acquired.HasImage()) return status;
+            if (!status.IsSuccess() || !acquired.HasImage()) { m_FrameUniforms.OnCancelled(); return status; }
             RenderGraph graph(m_Device);
             RenderGraphPlan plan;
             status = BuildFrameGraph(graph, acquired, uiFrame);
@@ -218,6 +225,7 @@ namespace Catalpa {
             status = m_Device.GetGraphicsQueue().Submit(submission, completion);
             if (!status.IsSuccess()) return CancelFrame(acquired, status);
             submitted = true;
+            m_FrameUniforms.OnSubmitted();
             m_Uploads.OnSubmitted(completion);
             // 本次AddPasses冻结了所有已排队静态请求；现在其目标owner才不再受pending约束。
             for (auto& [key, geometry] : m_Geometry) geometry.uploadPending = false;
@@ -226,6 +234,7 @@ namespace Catalpa {
             return m_Swapchain.Present(acquired, outcome);
         } catch (const std::bad_alloc&) {
             const RHIStatus failure{ .code = RHIErrorCode::OutOfMemory, .operation = "Renderer::Render" };
+            if (!submitted) m_FrameUniforms.OnCancelled();
             return acquired.HasImage() && !submitted ? CancelFrame(acquired, failure) : failure;
         }
     }

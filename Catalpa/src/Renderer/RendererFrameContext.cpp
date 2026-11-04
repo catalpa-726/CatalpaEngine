@@ -114,18 +114,25 @@ namespace Catalpa {
     RHIStatus BuildFrameUniformData(const RenderFramePacket& packet, const RendererProfile& profile,
         uint64_t alignment, uint64_t maxRange, PackedFrameUniforms& output)
     {
-        if (!ValidProfile(profile) || packet.views.size() != 1 || packet.views[0].viewport.width == 0 || packet.views[0].viewport.height == 0
+        if (!ValidProfile(profile) || packet.views.empty()
             || maxRange < sizeof(DrawGpuParameters) || alignment == 0 || (alignment & (alignment - 1)) != 0)
             return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
         try {
             PackedFrameUniforms candidate;
-            uint64_t drawStart = 0, stride = 0;
-            if (!Align(sizeof(FrameGpuParameters), alignment, candidate.viewOffset)
-                || candidate.viewOffset > std::numeric_limits<uint64_t>::max() - sizeof(ViewGpuParameters)
-                || !Align(candidate.viewOffset + sizeof(ViewGpuParameters), alignment, drawStart)
+            uint64_t viewStart = 0, viewStride = 0, drawStart = 0, stride = 0;
+            if (!Align(sizeof(FrameGpuParameters), alignment, viewStart)
+                || !Align(sizeof(ViewGpuParameters), alignment, viewStride)
                 || !Align(sizeof(DrawGpuParameters), alignment, stride))
                 return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
-            uint64_t total = candidate.viewOffset + sizeof(ViewGpuParameters);
+            const uint64_t viewCount = packet.views.size();
+            if (viewCount - 1 > (std::numeric_limits<uint64_t>::max() - viewStart) / viewStride)
+                return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
+            uint64_t total = viewStart + (viewCount - 1) * viewStride;
+            if (total > std::numeric_limits<uint64_t>::max() - sizeof(ViewGpuParameters))
+                return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
+            total += sizeof(ViewGpuParameters);
+            if (!Align(total, alignment, drawStart))
+                return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
             if (!packet.instances.empty()) {
                 const uint64_t count = packet.instances.size();
                 if (count - 1 > (std::numeric_limits<uint64_t>::max() - drawStart) / stride)
@@ -135,9 +142,12 @@ namespace Catalpa {
                     return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
                 total += sizeof(DrawGpuParameters);
             }
-            if (total > candidate.data.max_size()) return { .code = RHIErrorCode::OutOfMemory, .operation = PackingOperation };
+            if (total > candidate.data.max_size() || packet.views.size() > candidate.viewOffsets.max_size()
+                || packet.instances.size() > candidate.drawOffsets.max_size())
+                return { .code = RHIErrorCode::OutOfMemory, .operation = PackingOperation };
             candidate.data.resize(static_cast<size_t>(total), std::byte{0});
             candidate.drawOffsets.reserve(packet.instances.size());
+            candidate.viewOffsets.reserve(packet.views.size());
             FrameGpuParameters frame;
             const auto& time = packet.time;
             if (time.simulationSeconds < 0.0 || time.realDeltaSeconds < 0.0 || time.fixedDeltaSeconds <= 0.0
@@ -147,16 +157,24 @@ namespace Catalpa {
                 return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
             frame.options[0] = profile.normalDebug ? 1.0f : 0.0f;
             std::memcpy(candidate.data.data(), &frame, sizeof(frame));
-            ViewGpuParameters view;
-            for (int column = 0; column < 4; ++column)
-                for (int row = 0; row < 4; ++row)
-                    if (!FloatValue(packet.views[0].matrices.viewProjection[column][row], view.viewProjectionColumns[column][row]))
-                        return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
-            for (int axis = 0; axis < 3; ++axis)
-                if (!FloatValue(packet.views[0].matrices.position[axis], view.cameraPosition[axis]))
+            std::set<uint64_t> viewIds;
+            for (size_t index = 0; index < packet.views.size(); ++index) {
+                const auto& source = packet.views[index];
+                if (source.viewport.width == 0 || source.viewport.height == 0 || !viewIds.insert(source.id).second)
                     return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
-            view.cameraPosition[3] = 1.0f;
-            std::memcpy(candidate.data.data() + candidate.viewOffset, &view, sizeof(view));
+                ViewGpuParameters view;
+                for (int column = 0; column < 4; ++column)
+                    for (int row = 0; row < 4; ++row)
+                        if (!FloatValue(source.matrices.viewProjection[column][row], view.viewProjectionColumns[column][row]))
+                            return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
+                for (int axis = 0; axis < 3; ++axis)
+                    if (!FloatValue(source.matrices.position[axis], view.cameraPosition[axis]))
+                        return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
+                view.cameraPosition[3] = 1.0f;
+                const uint64_t offset = viewStart + index * viewStride;
+                candidate.viewOffsets.push_back(offset);
+                std::memcpy(candidate.data.data() + offset, &view, sizeof(view));
+            }
             for (size_t i = 0; i < packet.instances.size(); ++i) {
                 const auto& instance = packet.instances[i];
                 DrawGpuParameters draw;
@@ -194,8 +212,20 @@ namespace Catalpa {
         try {
             if (m_Slots.empty()) m_Slots.resize(m_Device.GetFrameCount());
             RenderFramePacket presentation = packet;
-            if (packet.views.size() != 1) return { .code = RHIErrorCode::Unsupported, .operation = operation };
+            // 本批多view CPU契约已开放，实际GPU目标仍是唯一交换链；离屏批接管多个目标。
+            if (packet.views.size() > 1) return { .code = RHIErrorCode::Unsupported, .operation = operation };
+            if (packet.views.empty()) {
+                if (!m_ViewHistory.Stage(packet.sequence, packet.sceneIdentity, {}).IsSuccess())
+                    return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+                m_Slots[slot].views.clear();
+                m_Slots[slot].visibility.clear();
+                m_Slots[slot].packing = {};
+                return {};
+            }
             if (const auto status = BuildPresentationView(packet.views[0], targetExtent, presentation.views[0]); !status.IsSuccess()) return status;
+            std::vector<VisibilityResult> visibility(presentation.views.size());
+            if (const auto status = VisibilitySystem::Build(presentation.views[0], presentation.instances, visibility[0]); !status.IsSuccess())
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
             PackedFrameUniforms candidate;
             const auto& capabilities = m_Device.GetCapabilities();
             if (const auto status = BuildFrameUniformData(presentation, profile, capabilities.minUniformBufferOffsetAlignment,
@@ -216,16 +246,23 @@ namespace Catalpa {
                 m_Device.ReleaseBuffer(std::exchange(unpublished, BufferHandle{}));
                 return status;
             }
+            if (!m_ViewHistory.Stage(packet.sequence, packet.sceneIdentity, presentation.views).IsSuccess()) {
+                m_Device.ReleaseBuffer(std::exchange(unpublished, BufferHandle{}));
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            }
             if (replace) {
                 const auto previous = std::exchange(frame.buffer, std::exchange(unpublished, BufferHandle{}));
                 frame.capacity = candidate.data.size();
                 m_Device.ReleaseBuffer(previous);
             }
             frame.packing = std::move(candidate);
+            frame.views = std::move(presentation.views);
+            frame.visibility = std::move(visibility);
             return {};
         } catch (const std::bad_alloc&) {
             // WriteBuffer本身也可能在初始化范围扩容时抛出，尚未发布的候选owner须归还。
             m_Device.ReleaseBuffer(unpublished);
+            m_ViewHistory.OnCancelled();
             return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
         }
     }
@@ -237,5 +274,13 @@ namespace Catalpa {
     const PackedFrameUniforms* RendererFrameContext::GetPacking(uint32_t slot) const noexcept
     {
         return slot < m_Slots.size() ? &m_Slots[slot].packing : nullptr;
+    }
+    const RenderView* RendererFrameContext::GetView(uint32_t slot, size_t index) const noexcept
+    {
+        return slot < m_Slots.size() && index < m_Slots[slot].views.size() ? &m_Slots[slot].views[index] : nullptr;
+    }
+    const VisibilityResult* RendererFrameContext::GetVisibility(uint32_t slot, size_t index) const noexcept
+    {
+        return slot < m_Slots.size() && index < m_Slots[slot].visibility.size() ? &m_Slots[slot].visibility[index] : nullptr;
     }
 }

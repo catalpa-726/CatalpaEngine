@@ -67,9 +67,11 @@ Catalpa::ApplicationStartupResult Catalpa::HandleApplicationArguments(int argc, 
         sandboxReversedZ = true;
         return {}; // 继续唯一正常应用入口，由样例镜头启用反向Z。
     }
-    if (argc == 2 && (std::string_view(argv[1]) == "--test-s03-1" || std::string_view(argv[1]) == "--test-s03-2" || std::string_view(argv[1]) == "--test-s03-3")) {
+    if (argc == 2 && (std::string_view(argv[1]) == "--test-s03-1" || std::string_view(argv[1]) == "--test-s03-2"
+        || std::string_view(argv[1]) == "--test-s03-3" || std::string_view(argv[1]) == "--test-s03-4")) {
 #if !defined(CATALPA_DIST)
         const std::string_view mode(argv[1]);
+        if (mode == "--test-s03-4") return { true, Tests::RunS034Tests() };
         if (mode == "--test-s03-3") return { true, Tests::RunS033Tests() };
         return { true, mode == "--test-s03-2" ? Tests::RunS032Tests() : Tests::RunS031Tests() };
 #else
@@ -78,6 +80,6 @@ Catalpa::ApplicationStartupResult Catalpa::HandleApplicationArguments(int argc, 
 #endif
     }
     const bool help = argc == 2 && std::string_view(argv[1]) == "--help";
-    CAT_INFO("Usage: CatalpaBox [--test-s03-1 | --test-s03-2 | --test-s03-3 | --sample-reversed-z | --help]. No arguments opens the workspace.");
+    CAT_INFO("Usage: CatalpaBox [--test-s03-1 | --test-s03-2 | --test-s03-3 | --test-s03-4 | --sample-reversed-z | --help]. No arguments opens the workspace.");
     return { true, help ? 0 : 2 };
 }

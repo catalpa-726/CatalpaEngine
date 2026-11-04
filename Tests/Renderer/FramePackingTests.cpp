@@ -65,7 +65,7 @@ namespace Catalpa::Tests {
         test.Check(BuildFrameUniformData(packet, profile, 256, 128, packed).IsSuccess(),
             "A buffer larger than maxUniformBufferRange is valid when each descriptor range fits");
         if (packed.data.empty() || packed.drawOffsets.size() != 2) return;
-        test.Check(packed.viewOffset == 256 && packed.drawOffsets[0] == 512 && packed.drawOffsets[1] == 768
+        test.Check(packed.viewOffsets == std::vector<uint64_t>{256} && packed.drawOffsets[0] == 512 && packed.drawOffsets[1] == 768
             && packed.data.size() == 896, "Frame/View/Draw use independently aligned offsets and exact last range end");
         const auto read = [&](uint64_t offset) {
             float value; std::memcpy(&value, packed.data.data() + offset, sizeof(value)); return value;
@@ -94,7 +94,7 @@ namespace Catalpa::Tests {
         const auto accepted = packed;
         const auto rejectsPacking = [&](const RenderFramePacket& input, uint64_t alignment, uint64_t range, std::string_view requirement) {
             test.Check(!BuildFrameUniformData(input, profile, alignment, range, packed).IsSuccess(), requirement);
-            test.Check(packed.data == accepted.data && packed.viewOffset == accepted.viewOffset
+            test.Check(packed.data == accepted.data && packed.viewOffsets == accepted.viewOffsets
                 && packed.drawOffsets == accepted.drawOffsets, "Failed packing preserves the complete previous byte packet");
         };
         rejectsPacking(packet, 0, 128, "Zero UBO alignment is rejected");
@@ -104,7 +104,7 @@ namespace Catalpa::Tests {
         auto bad = packet; bad.views.clear();
         rejectsPacking(bad, 256, 128, "Packing requires the selected view rather than substituting an identity camera");
         bad = packet; bad.views.push_back(view);
-        rejectsPacking(bad, 256, 128, "Current single-view packing does not silently drop extra views");
+        rejectsPacking(bad, 256, 128, "Multiple views cannot share a duplicate output identity");
         bad = packet; bad.views[0].viewport.width = 0;
         rejectsPacking(bad, 256, 128, "A zero pixel target is not packed as a drawable view");
         bad = packet; bad.time.simulationSeconds = std::numeric_limits<double>::max();
@@ -279,5 +279,53 @@ namespace Catalpa::Tests {
         uint64_t bytes = 0;
         test.Check(!TryGetTextureUploadByteSize({4,4}, PixelFormat::D32_Float, bytes),
             "A four-byte depth format is not accepted by the color upload contract");
+    }
+
+    // 多view用各自range，共享的Frame/Draw数据不按view重复；预期偏移和系数独立写出。
+    void RunMultiViewPackingTests(TestContext& test)
+    {
+        RenderFramePacket packet;
+        RenderView source;
+        source.id = 10;
+        source.lens.verticalFovRadians = Math::Pi * 0.5f;
+        RenderView wide, tall;
+        test.Check(BuildPresentationView(source, {640,480}, wide).IsSuccess(), "Wide view builds its own presentation aspect");
+        source.id = 20;
+        source.lens.reversedZ = true;
+        source.matrices.view[3].x = -7;
+        source.matrices.inverseView[3].x = 7;
+        source.matrices.position.x = 7;
+        test.Check(BuildPresentationView(source, {320,640}, tall).IsSuccess(), "Tall reverse-Z view builds an independent camera range");
+        packet.views = { wide, tall };
+        packet.instances.resize(2);
+        packet.instances[1].worldMatrix[3].x = 9;
+        PackedFrameUniforms packed;
+        test.Check(BuildFrameUniformData(packet, {}, 256, 128, packed).IsSuccess(), "Two views pack without dropping either camera");
+        if (packed.viewOffsets.size() != 2 || packed.drawOffsets.size() != 2) return;
+        test.Check(packed.viewOffsets == std::vector<uint64_t>{256,512}
+            && packed.drawOffsets == std::vector<uint64_t>{768,1024} && packed.data.size() == 1152,
+            "Two independent View records precede one shared pair of Draw records");
+        const auto read = [&](uint64_t offset) {
+            float value = 0; std::memcpy(&value, packed.data.data() + offset, sizeof(value)); return value;
+        };
+        test.Check(std::abs(read(256) - 0.75f) < 1.0e-5f && std::abs(read(512) - 2.0f) < 1.0e-5f
+            && read(576) == 7 && read(320) == 0 && read(1072) == 9,
+            "Each view preserves its aspect and position while instances retain shared independent transforms");
+        bool zeroPadding = true;
+        for (size_t i = 336; i < 512; ++i) zeroPadding = zeroPadding && packed.data[i] == std::byte{0};
+        for (size_t i = 592; i < 768; ++i) zeroPadding = zeroPadding && packed.data[i] == std::byte{0};
+        test.Check(zeroPadding, "All gaps between multiple View records and Draw data are cleared");
+        const auto accepted = packed;
+        auto invalid = packet;
+        invalid.views[1].matrices.viewProjection[2][1] = std::numeric_limits<float>::quiet_NaN();
+        test.Check(!BuildFrameUniformData(invalid, {}, 256, 128, packed).IsSuccess()
+            && packed.data == accepted.data && packed.viewOffsets == accepted.viewOffsets && packed.drawOffsets == accepted.drawOffsets,
+            "Invalid second view preserves all previously packed cameras and instance bytes");
+        test.Check(!BuildFrameUniformData(packet, {}, uint64_t{1} << 63, 128, packed).IsSuccess()
+            && packed.data == accepted.data, "Multiple view offset arithmetic rejects uint64 overflow");
+        packet.instances.clear();
+        test.Check(BuildFrameUniformData(packet, {}, 256, 128, packed).IsSuccess()
+            && packed.viewOffsets.size() == 2 && packed.drawOffsets.empty() && packed.data.size() == 592,
+            "Empty geometry still preserves both cameras without inventing Draw records");
     }
 }

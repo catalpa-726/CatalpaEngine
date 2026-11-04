@@ -4,6 +4,7 @@
 
 #include "Camera/CameraLens.h"
 #include "Camera/CameraMatrices.h"
+#include "Core/Math/TransformMath.h"
 
 namespace Catalpa {
 
@@ -16,7 +17,7 @@ namespace Catalpa {
         constexpr auto operator<=>(const RenderInstanceId&) const = default;
     };
 
-    // S03.2 的单视图相机输入；S03.4 才接入离屏目标、多视图和独立历史。
+    // 每个逻辑视图独占相机和像素尺寸；目标代次只标记重建，不持有GPU资源。
     struct RenderView {
         uint64_t id = 0;
         RenderInstanceId camera;
@@ -24,6 +25,43 @@ namespace Catalpa {
         CameraLens lens;
         CameraViewport viewport;
         CameraMatrices matrices;
+        uint64_t targetGeneration = 1;
+    };
+
+    // 检查值快照的身份、镜头、刚性姿态、最终float矩阵组合和逆，不查询World。
+    [[nodiscard]] CATALPA_API Math::MathStatus ValidateRenderView(const RenderView& view) noexcept;
+
+    // 上一次成功提交的实际VP；首次、切镜头/尺寸/目标重建时明确无历史。
+    struct RenderViewHistoryState {
+        bool valid = false;
+        uint64_t previousSequence = 0;
+        Math::Mat4 previousViewProjection{ 1.0f };
+    };
+
+    // 准备阶段自有相机值与派生历史，不向输入RenderFramePacket回写历史。
+    struct PreparedRenderView {
+        RenderView view;
+        RenderViewHistoryState history;
+    };
+
+    // 主线程提交事务：Stage只准备；仅真实队列接受后OnSubmitted推进历史。
+    // acquire/录制/提交失败均OnCancelled，不把未绘制的CPU帧当成前帧。
+    class CATALPA_API RenderViewHistory {
+    public:
+        [[nodiscard]] Math::MathStatus Stage(uint64_t sequence, uint64_t sceneIdentity, std::span<const RenderView> views);
+        [[nodiscard]] const std::vector<PreparedRenderView>& GetPending() const noexcept { return m_Pending; }
+        void OnSubmitted() noexcept;
+        void OnCancelled() noexcept;
+        void Clear() noexcept;
+
+    private:
+        std::vector<PreparedRenderView> m_Committed;
+        std::vector<PreparedRenderView> m_Pending;
+        uint64_t m_CommittedSequence = 0;
+        uint64_t m_CommittedScene = 0;
+        uint64_t m_PendingSequence = 0;
+        uint64_t m_PendingScene = 0;
+        bool m_HasPending = false;
     };
 
 }

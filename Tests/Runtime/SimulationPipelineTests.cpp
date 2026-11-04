@@ -9,6 +9,7 @@
 #include "Runtime/Systems/RenderExtractSystem.h"
 #include "Renderer/RenderScene.h"
 #include "Scene/Components/MeshRendererComponent.h"
+#include "Scene/Components/CameraComponent.h"
 #include "Geometry/PrimitiveMesh.h"
 #include <cmath>
 #include <limits>
@@ -387,4 +388,78 @@ namespace Catalpa::Tests {
         rejectTime(invalid, "Render tick intervals cannot wrap the uint64 identity range");
     }
 
+    // 真实Scene安全点到多view帧包：各自选择/尺寸、共享实例、缺失/关闭及来源卸载。
+    void RunMultiViewExtractionTests(TestContext& test)
+    {
+        SceneManager scenes;
+        SceneHandle handle;
+        test.Check(scenes.CreateScene("Multiple view extraction", handle).IsSuccess(), "Multi-view extraction creates its owned scene");
+        Scene* scene = scenes.GetScene(handle);
+        if (!scene) return;
+        const auto id = [](uint64_t low) { return PersistentEntityId::FromWords(0x5330333400001000ULL, low); };
+        Math::TransformTRS moved;
+        moved.translation.x = 3;
+        test.Check(scene->QueueCreate(id(1), "Primary camera", {}).IsSuccess()
+            && scene->QueueCreate(id(2), "Preview camera", moved).IsSuccess()
+            && scene->QueueCreate(id(3), "Shared cube", {}).IsSuccess() && scene->CommitPending().IsSuccess(),
+            "Multi-view source entities commit before camera and mesh components");
+        CameraComponent primary, preview;
+        primary.viewId = 11; primary.priority = 1; primary.lens.verticalFovRadians = Math::Pi * 0.5f;
+        preview.viewId = 22; preview.priority = 2; preview.lens = primary.lens; preview.lens.reversedZ = true;
+        MeshData cube;
+        MeshResourceRef mesh;
+        test.Check(CreateCubeMesh(1.0f, cube).IsSuccess() && CreateMeshResource(cube, mesh).IsSuccess(), "Multi-view fixture creates a sealed shared mesh");
+        test.Check(scene->QueueSetCamera(scene->Resolve(id(1)), primary).IsSuccess()
+            && scene->QueueSetCamera(scene->Resolve(id(2)), preview).IsSuccess()
+            && scene->QueueSetMeshRenderer(scene->Resolve(id(3)), {mesh}).IsSuccess()
+            && scene->CommitPending().IsSuccess() && TransformSystem::Update(*scene).IsSuccess(),
+            "Multiple source cameras and the single mesh use the normal scene safety point");
+        std::array<RenderViewRequest, 3> requests{{
+            {.id=101, .cameraViewId=11, .targetGeneration=5, .viewport={800,400}},
+            {.id=202, .cameraViewId=22, .targetGeneration=9, .viewport={300,600}},
+            {.id=303, .cameraViewId=11, .targetGeneration=2, .viewport={400,400}}
+        }};
+        RenderFramePacket packet;
+        test.Check(RenderExtractSystem::Extract(*scene, 1, requests, packet).IsSuccess() && packet.views.size() == 3,
+            "Explicit view requests produce three cameras including two views of the same source");
+        if (packet.views.size() != 3) return;
+        test.Check(packet.instances.size() == 1 && packet.instances[0].mesh == mesh
+            && packet.views[0].camera == packet.views[2].camera && packet.views[0].camera != packet.views[1].camera,
+            "Camera views share one scene geometry snapshot without duplicating instance data");
+        test.Check(packet.views[0].id == 101 && packet.views[1].id == 202 && packet.views[2].id == 303
+            && packet.views[0].targetGeneration == 5 && packet.views[1].targetGeneration == 9
+            && std::abs(packet.views[0].matrices.projection[0][0] - 0.5f) < 1.0e-5f
+            && std::abs(packet.views[1].matrices.projection[0][0] - 2.0f) < 1.0e-5f
+            && packet.views[1].matrices.position.x == 3 && packet.views[1].lens.reversedZ,
+            "Output identity, target generation, aspect and camera pose remain independent");
+        RenderScene consumer;
+        test.Check(consumer.Apply(packet).IsSuccess(), "RenderScene accepts all validated view matrices and shared instances");
+        auto wrongSource = packet;
+        wrongSource.sequence = 2;
+        wrongSource.views[0].camera = packet.views[1].camera;
+        test.Check(ValidateRenderView(wrongSource.views[0]).IsSuccess()
+            && !consumer.Apply(wrongSource).IsSuccess() && consumer.GetFrame().sequence == 1
+            && consumer.GetFrame().views[0].camera == packet.views[0].camera
+            && consumer.GetFrame().instances[0].mesh == mesh,
+            "A self-consistent camera cannot claim another source transform or replace the accepted multi-view frame");
+        const auto saved = packet;
+        auto invalid = requests;
+        invalid[1].id = invalid[0].id;
+        test.Check(!RenderExtractSystem::Extract(*scene, 2, invalid, packet).IsSuccess()
+            && packet.sequence == saved.sequence && packet.views.size() == 3 && packet.instances[0].mesh == mesh,
+            "Duplicate output identity preserves the complete previously extracted frame");
+        invalid = requests; invalid[1].cameraViewId = 999;
+        test.Check(!RenderExtractSystem::Extract(*scene, 2, invalid, packet).IsSuccess() && packet.sequence == 1,
+            "A missing explicitly requested enabled camera is not silently replaced by another camera");
+        invalid = requests; invalid[1].viewport.width = 0;
+        test.Check(RenderExtractSystem::Extract(*scene, 2, invalid, packet).IsSuccess() && packet.views.size() == 2
+            && packet.views[0].id == 101 && packet.views[1].id == 303 && packet.instances.size() == 1,
+            "Closing a zero-size view removes only that camera while shared scene data remains");
+        test.Check(RenderExtractSystem::Extract(*scene, 3, std::span<const RenderViewRequest>{}, packet).IsSuccess()
+            && packet.views.empty() && packet.instances.size() == 1, "An empty request list explicitly extracts no output views");
+        test.Check(RenderExtractSystem::Extract(*scene, 4, 640, 480, packet).IsSuccess() && packet.views.size() == 1
+            && packet.views[0].id == 22, "The existing window entry retains highest-priority source camera identity");
+        test.Check(scenes.Unload(handle).IsSuccess() && consumer.GetFrame().views.size() == 3
+            && consumer.GetFrame().instances[0].mesh == mesh, "Accepted multi-view frame and sealed geometry survive source scene unload");
+    }
 }

@@ -14,11 +14,6 @@ namespace Catalpa {
                     if (!std::isfinite(matrix[column][row])) return false;
             return true;
         }
-        // 相机位置与坐标轴也必须全部为有限值。
-        bool IsFinite(const Math::Vec3& value) noexcept
-        {
-            return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
-        }
     }
 
     Math::MathStatus BuildRenderMeshInstance(RenderInstanceId id, const MeshResourceRef& mesh,
@@ -104,15 +99,14 @@ namespace Catalpa {
                 if (view.id == 0 || view.historyRevision == 0 || !views.insert(view.id).second
                     || !view.camera.HasValue() || view.camera.scene != packet.sceneIdentity || !instances.contains(view.camera))
                     return { Math::MathError::OutOfRange, "Render view has invalid or duplicate identity or missing source transform" };
-                if (view.viewport.width == 0 || view.viewport.height == 0
-                    || !std::isfinite(view.viewport.jitterPixelsX) || !std::isfinite(view.viewport.jitterPixelsY))
-                    return { Math::MathError::OutOfRange, "Render view has invalid extent or jitter" };
-                if (const auto status = ValidateCameraLens(view.lens); !status.IsSuccess()) return status;
-                const auto& camera = view.matrices;
-                if (!IsFinite(camera.position) || !IsFinite(camera.right) || !IsFinite(camera.up) || !IsFinite(camera.forward)
-                    || !IsFinite(camera.view) || !IsFinite(camera.projection) || !IsFinite(camera.viewProjection)
-                    || !IsFinite(camera.inverseView) || !IsFinite(camera.inverseProjection) || !IsFinite(camera.inverseViewProjection))
-                    return { Math::MathError::NonFinite, "Render view matrices or camera axes are not finite" };
+                if (const auto status = ValidateRenderView(view); !status.IsSuccess()) return status;
+                // 本批view来自Scene相机；自洽矩阵还须对应同一源身份，不能借另一实体的姿态。
+                const auto source = std::find_if(packet.transforms.begin(), packet.transforms.end(),
+                    [&](const RenderTransform& transform) { return transform.id == view.camera; });
+                for (int column = 0; column < 4; ++column)
+                    for (int row = 0; row < 4; ++row)
+                        if (view.matrices.inverseView[column][row] != source->worldMatrix[column][row])
+                            return { Math::MathError::OutOfRange, "Render camera and source transform snapshot disagree" };
             }
             m_Frame = std::move(packet);
             return {};

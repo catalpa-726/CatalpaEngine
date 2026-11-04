@@ -66,4 +66,27 @@ namespace Catalpa::Tests {
         CAT_INFO("[S03.3 CPU] {0} checks, {1} failures.", context.GetCheckCount(), context.GetFailureCount());
         return context.GetFailureCount() == 0 ? 0 : 1;
     }
+    int RunS034Tests()
+    {
+        CAT_INFO("[S03.4 CPU] Previous CPU contracts, independent view extraction/history/packing and frustum visibility. No window/GPU initialization.");
+        TestContext context("S03.4 CPU");
+        try {
+            RunWorldTests(context);
+            RunTransformHierarchyTests(context);
+            RunSystemSchedulerTests(context);
+            RunInputRoutingTests(context);
+            RunProjectionFrustumTests(context);
+            RunSimulationPipelineTests(context);
+            RunMeshValidationTests(context);
+            RunGeometrySnapshotTests(context);
+            RunFramePackingTests(context);
+            RunFrustumVisibilityTests(context);
+            RunMultiViewTests(context);
+            RunMultiViewPackingTests(context);
+            RunMultiViewExtractionTests(context);
+        } catch (const std::exception& error) { context.Check(false, error.what()); }
+        catch (...) { context.Check(false, "Unexpected non-standard exception"); }
+        CAT_INFO("[S03.4 CPU] {0} checks, {1} failures.", context.GetCheckCount(), context.GetFailureCount());
+        return context.GetFailureCount() == 0 ? 0 : 1;
+    }
 }

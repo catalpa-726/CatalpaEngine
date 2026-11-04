@@ -7,6 +7,7 @@
 #include "RHI/RHITypes.h"
 #include "Images/PixelFormat.h"
 #include "Renderer/RenderFramePacket.h"
+#include "Renderer/Visibility/VisibilitySystem.h"
 
 namespace Catalpa {
     class RHIDevice;
@@ -48,7 +49,8 @@ namespace Catalpa {
     // data包含已清零的对齐间隙；每个binding使用自己的精确range，不把整个buffer误作一个UBO。
     struct PackedFrameUniforms {
         std::vector<std::byte> data;
-        uint64_t viewOffset = 0;
+        // 与packet.views逐项对应；Frame和共享Draw只保存一份，各view拥有精确独立range。
+        std::vector<uint64_t> viewOffsets;
         std::vector<uint64_t> drawOffsets;
     };
 
@@ -71,13 +73,23 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus Prepare(uint32_t slot, const RenderFramePacket& packet, const RendererProfile& profile, Extent2D targetExtent);
         [[nodiscard]] BufferHandle GetBuffer(uint32_t slot) const noexcept;
         [[nodiscard]] const PackedFrameUniforms* GetPacking(uint32_t slot) const noexcept;
+        // 借用该帧槽已准备的实际目标相机/可见清单；不存在的槽或view返回nullptr。
+        [[nodiscard]] const RenderView* GetView(uint32_t slot, size_t index = 0) const noexcept;
+        [[nodiscard]] const VisibilityResult* GetVisibility(uint32_t slot, size_t index = 0) const noexcept;
+        // 历史只在整批图命令被队列接受后推进；获取/录制/提交失败均丢弃pending。
+        void OnSubmitted() noexcept { m_ViewHistory.OnSubmitted(); }
+        void OnCancelled() noexcept { m_ViewHistory.OnCancelled(); }
+        void ClearHistory() noexcept { m_ViewHistory.Clear(); }
     private:
         struct Slot {
             BufferHandle buffer{};
             uint64_t capacity = 0;
             PackedFrameUniforms packing;
+            std::vector<RenderView> views;
+            std::vector<VisibilityResult> visibility;
         };
         RHIDevice& m_Device;
         std::vector<Slot> m_Slots;
+        RenderViewHistory m_ViewHistory;
     };
 }

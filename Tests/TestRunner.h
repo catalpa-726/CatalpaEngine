@@ -36,4 +36,10 @@ namespace Catalpa::Tests {
     // Frame/View/Draw字节布局、对齐与配置解析；此入口不创建窗口或GPU。
     void RunFramePackingTests(TestContext& context);
     int RunS033Tests();
+    // 多view CPU请求/独立历史/逐view UBO及视锥可见性；离屏GPU与UI验收另外执行。
+    void RunFrustumVisibilityTests(TestContext& context);
+    void RunMultiViewTests(TestContext& context);
+    void RunMultiViewPackingTests(TestContext& context);
+    void RunMultiViewExtractionTests(TestContext& context);
+    int RunS034Tests();
 }

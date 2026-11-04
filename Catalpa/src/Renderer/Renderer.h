@@ -27,7 +27,7 @@ namespace Catalpa {
         // 接收并拥有CPU快照；GPU资源仅由渲染方经现有设备/上传链派生。
         [[nodiscard]] Math::MathStatus SetSceneFrame(RenderFramePacket packet) { return m_Scene.Apply(std::move(packet)); }
         [[nodiscard]] const RenderFramePacket& GetSceneFrame() const noexcept { return m_Scene.GetFrame(); }
-        void ClearSceneFrame() noexcept { m_Scene.Clear(); }
+        void ClearSceneFrame() noexcept { m_Scene.Clear(); m_FrameUniforms.ClearHistory(); }
 
         // 将固定字体 atlas 交给同一上传链；UI 帧通过自有 CPU packet 传入。
         [[nodiscard]] RHIStatus InitUI(std::span<const std::byte> pixels, Extent2D extent) { return m_UI.InitFont(m_Uploads, pixels, extent); }

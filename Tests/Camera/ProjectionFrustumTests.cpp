@@ -1,7 +1,10 @@
 #include "TestRunner.h"
 
 #include "Camera/CameraProjection.h"
+#include "Camera/Frustum.h"
 #include "Renderer/RenderScene.h"
+#include "Renderer/Visibility/VisibilitySystem.h"
+#include "Geometry/PrimitiveMesh.h"
 #include "Runtime/Systems/CameraSystem.h"
 #include "Runtime/Systems/RenderExtractSystem.h"
 #include "Runtime/Systems/TransformSystem.h"
@@ -47,7 +50,7 @@ namespace Catalpa::Tests {
             return clip.z / clip.w;
         }
 
-        // 直接核对同一 [0,1] clip 条件；Frustum 平面提取/Bounds 剔除仍属 S03.4。
+        // 直接核对同一 [0,1] clip 条件，作为平面算法之外的点分类参照。
         bool InClip(const Math::Mat4& matrix, const Math::Vec3& point)
         {
             const Math::Vec4 p = matrix * Math::Vec4(point, 1.0f);
@@ -246,11 +249,180 @@ namespace Catalpa::Tests {
         }
     }
 
-    // 本步只验投影与 clip 条件；真正的 Frustum/Bounds 剔除实现留 S03.4。
+    // 既有投影/相机回归入口；Frustum与多view剔除由独立分组接续。
     void RunProjectionFrustumTests(TestContext& context)
     {
         CheckProjection(context);
         CheckCameraAndExtraction(context);
+    }
+
+    // 独立核算可见范围/平面方向，覆盖归一化、裁剪误差和逐view的稳定可见列表。
+    void RunFrustumVisibilityTests(TestContext& context)
+    {
+        CameraLens lens;
+        lens.verticalFovRadians = Math::Pi / 2.0f;
+        lens.nearPlane = 1.0f;
+        lens.farPlane = 11.0f;
+        CameraViewport viewport{ 200, 100, 0.0f, 0.0f, false };
+        Math::Mat4 projection{ 1.0f }, inverse{ 1.0f };
+        Frustum frustum;
+        const auto plane = [&](FrustumSide side) -> const FrustumPlane& { return frustum.planes[static_cast<size_t>(side)]; };
+        const auto pointBounds = [](Math::Vec3 point) { return Aabb{ point, point, false }; };
+        const auto classified = [&](const Aabb& bounds, bool expected) {
+            bool visible = !expected;
+            return IntersectsFrustum(frustum, bounds, visible).IsSuccess() && visible == expected;
+        };
+        context.Check(BuildCameraProjection(lens, viewport, projection, inverse).IsSuccess()
+            && BuildFrustum(projection, lens, frustum).IsSuccess(), "Extract finite frustum from the final column-vector projection");
+        const auto nearValue = plane(FrustumSide::Near).coefficients;
+        const auto farValue = plane(FrustumSide::Far).coefficients;
+        const auto leftValue = plane(FrustumSide::Left).coefficients;
+        context.Check(Near(static_cast<float>(nearValue[2]), -1.0f) && Near(static_cast<float>(nearValue[3]), -1.0f)
+            && Near(static_cast<float>(farValue[2]), 1.0f) && Near(static_cast<float>(farValue[3]), 11.0f)
+            && Near(static_cast<float>(leftValue[0]), 1.0f / std::sqrt(5.0f))
+            && Near(static_cast<float>(leftValue[2]), -2.0f / std::sqrt(5.0f)),
+            "Near, far and aspect-dependent side planes match independent analytic unit coefficients");
+        context.Check(classified(pointBounds({ 0, 0, -2 }), true)
+            && classified(pointBounds({ -4, -2, -2 }), true) && classified(pointBounds({ 4, 2, -2 }), true)
+            && classified(pointBounds({ 4.1f, 0, -2 }), false) && classified(pointBounds({ 0, 2.1f, -2 }), false)
+            && classified(pointBounds({ 0, 0, -0.5f }), false) && classified(pointBounds({ 0, 0, -12 }), false)
+            && classified(pointBounds({ 0, 0, 2 }), false), "Frustum keeps boundaries and rejects all finite clip exclusions");
+        context.Check(classified(Aabb{ { -20, -20, -20 }, { 20, 20, 20 }, false }, true)
+            && classified(Aabb{ { 3.9f, -0.1f, -2.1f }, { 5, 0.1f, -1.9f }, false }, true)
+            && classified(Aabb{}, false), "Maximum-support testing retains enclosing and intersecting bounds while empty bounds draw nothing");
+
+        // 对相同可见体积，reversed-Z仅交换近/远clip条件，不反转平面内部方向。
+        for (const bool reversed : { false, true }) {
+            lens.reversedZ = reversed;
+            for (const bool flipY : { false, true }) {
+                viewport.flipY = flipY;
+                context.Check(BuildCameraProjection(lens, viewport, projection, inverse).IsSuccess()
+                    && BuildFrustum(projection, lens, frustum).IsSuccess()
+                    && classified(pointBounds({ 0, 0, -1 }), true) && classified(pointBounds({ 0, 0, -11 }), true)
+                    && classified(pointBounds({ 0, 0, -0.99f }), false) && classified(pointBounds({ 0, 0, -11.01f }), false)
+                    && classified(pointBounds({ 0, 2, -2 }), true), "Finite depth semantics and boundary retention survive reversed-Z and a single Y flip");
+                lens.infiniteFar = true;
+                context.Check(BuildCameraProjection(lens, viewport, projection, inverse).IsSuccess()
+                    && BuildFrustum(projection, lens, frustum).IsSuccess()
+                    && !plane(FrustumSide::Far).active && plane(FrustumSide::Near).active
+                    && classified(pointBounds({ 0, 0, -1.0e30f }), true)
+                    && classified(pointBounds({ 0, 0, -0.5f }), false)
+                    && classified(pointBounds({ 0, 0, 1 }), false), "Infinite forward/reversed perspective omits only far while keeping near and behind-camera rejection");
+                lens.infiniteFar = false;
+            }
+        }
+        lens.reversedZ = false;
+        viewport = { 200, 100, 0, 0, false };
+        lens.projection = ProjectionType::Orthographic;
+        lens.orthographicHeight = 4.0f;
+        for (const bool reversed : { false, true }) {
+            lens.reversedZ = reversed;
+            context.Check(BuildCameraProjection(lens, viewport, projection, inverse).IsSuccess()
+                && BuildFrustum(projection, lens, frustum).IsSuccess()
+                && classified(pointBounds({ 4, 2, -1 }), true) && classified(pointBounds({ -4, -2, -11 }), true)
+                && classified(pointBounds({ 4.1f, 0, -2 }), false) && classified(pointBounds({ 0, 0, -12 }), false),
+                "Orthographic frustum uses constant horizontal and vertical spans for both depth orders");
+        }
+
+        lens.projection = ProjectionType::Perspective;
+        lens.reversedZ = false;
+        viewport.jitterPixelsX = 10.0f; // NDC +0.1 moves the world-space left/right limits by -0.4 at distance2.
+        viewport.jitterPixelsY = -5.0f; // NDC -0.1 moves the vertical limits by +0.2.
+        context.Check(BuildCameraProjection(lens, viewport, projection, inverse).IsSuccess()
+            && BuildFrustum(projection, lens, frustum).IsSuccess()
+            && classified(pointBounds({ -4.2f, 0, -2 }), true) && classified(pointBounds({ 3.8f, 0, -2 }), false)
+            && classified(pointBounds({ 0, 2.1f, -2 }), true) && classified(pointBounds({ 0, -1.9f, -2 }), false),
+            "Pixel jitter shifts clip bounds once with the view aspect and final NDC axis signs");
+        viewport.jitterPixelsX = viewport.jitterPixelsY = 0;
+        context.Check(BuildCameraProjection(lens, viewport, projection, inverse).IsSuccess(), "Rebuild an unjittered projection for world-coordinate checks");
+        Math::Mat4 worldToView{ 0.0f };
+        worldToView[0][2] = 1;
+        worldToView[1][1] = 1;
+        worldToView[2][0] = -1;
+        worldToView[3] = { 5, -4, -3, 1 };
+        context.Check(BuildFrustum(projection * worldToView, lens, frustum).IsSuccess()
+            && classified(pointBounds({ 1, 4, 5 }), true) && classified(pointBounds({ 5, 4, 5 }), false)
+            && classified(pointBounds({ 1, 4, 10 }), false), "Row extraction correctly includes a translated camera facing world -X");
+        context.Check(BuildFrustum(projection * 1.0e-20f, lens, frustum).IsSuccess()
+            && classified(pointBounds({ 0, 0, -2 }), true), "A uniformly scaled homogeneous VP is not rejected by a fixed determinant threshold");
+
+        // 直接点乘clip作独立参照；取严格内部/外部点，避开GPU float容差形成的保守边缘带。
+        context.Check(BuildFrustum(projection, lens, frustum).IsSuccess(), "Restore the canonical finite frustum");
+        const std::array<Math::Vec3, 5> clipPoints{ Math::Vec3{ 0, 0, -2 }, Math::Vec3{ -2, -1, -3 },
+            Math::Vec3{ 10, 0, -2 }, Math::Vec3{ 0, 5, -2 }, Math::Vec3{ 0, 0, 3 } };
+        for (const Math::Vec3 point : clipPoints)
+            context.Check(classified(pointBounds(point), InClip(projection, point)), "Frustum point classification agrees with an independent homogeneous clip evaluation");
+        const Frustum saved = frustum;
+        auto unchanged = [&]() {
+            for (size_t i = 0; i < frustum.planes.size(); ++i)
+                if (frustum.planes[i].active != saved.planes[i].active
+                    || frustum.planes[i].coefficients != saved.planes[i].coefficients
+                    || frustum.planes[i].absoluteClipCoefficients != saved.planes[i].absoluteClipCoefficients) return false;
+            return true;
+        };
+        auto badMatrix = projection;
+        badMatrix[0][0] = std::numeric_limits<float>::quiet_NaN();
+        context.Check(!BuildFrustum(badMatrix, lens, frustum).IsSuccess() && unchanged()
+            && !BuildFrustum(Math::Mat4{ 0 }, lens, frustum).IsSuccess() && unchanged(),
+            "Nonfinite or singular VP rejects extraction without partially overwriting planes");
+        lens.infiniteFar = true;
+        context.Check(!BuildFrustum(projection, lens, frustum).IsSuccess() && unchanged(), "Infinite lens cannot silently discard a finite VP far plane");
+        lens.infiniteFar = false;
+        bool preserved = true;
+        auto badFrustum = saved;
+        badFrustum.planes[0].active = false;
+        context.Check(!IntersectsFrustum(badFrustum, pointBounds({ 0, 0, -2 }), preserved).IsSuccess() && preserved,
+            "Only far may be inactive and malformed frustum preserves the caller result");
+        badFrustum = saved;
+        badFrustum.planes[5].coefficients[0] = std::numeric_limits<double>::quiet_NaN();
+        context.Check(!IntersectsFrustum(badFrustum, pointBounds({ 100, 0, -2 }), preserved).IsSuccess() && preserved,
+            "Outside classification does not hide a malformed later plane");
+        badFrustum = saved;
+        badFrustum.planes[0].coefficients[0] *= 2;
+        context.Check(!IntersectsFrustum(badFrustum, pointBounds({ 0, 0, -2 }), preserved).IsSuccess() && preserved
+            && !IntersectsFrustum(Frustum{}, Aabb{}, preserved).IsSuccess() && preserved,
+            "Nonunit planes and a default all-inactive frustum are invalid even with empty bounds");
+        context.Check(!IntersectsFrustum(saved, Aabb{ { 1, 0, 0 }, { 0, 1, 1 }, false }, preserved).IsSuccess() && preserved,
+            "Inverted AABB bounds are diagnosed without changing classification output");
+
+        RenderView view;
+        view.lens = lens;
+        view.viewport = viewport;
+        view.matrices.viewProjection = projection;
+        MeshData cubeData, planeData;
+        MeshResourceRef cube, ground;
+        context.Check(CreateCubeMesh(1.0f, cubeData).IsSuccess() && CreateMeshResource(cubeData, cube).IsSuccess()
+            && CreatePlaneMesh(1.0f, 1.0f, planeData).IsSuccess() && CreateMeshResource(planeData, ground).IsSuccess(),
+            "Stable grouping uses two sealed CPU mesh identities without GPU ownership");
+        if (!cube || !ground) return;
+        std::vector<RenderMeshInstance> instances(5);
+        instances[0].mesh = instances[1].mesh = instances[2].mesh = cube;
+        instances[3].mesh = instances[4].mesh = ground;
+        instances[0].worldBounds = pointBounds({ 0, 0, -2 });
+        instances[1].worldBounds = pointBounds({ 100, 0, -2 });
+        instances[2].worldBounds = pointBounds({ 3, 0, -2 });
+        instances[3].worldBounds = pointBounds({ 0.25f, 0, -2 });
+        instances[4].worldBounds = {};
+        VisibilityResult visible;
+        context.Check(VisibilitySystem::Build(view, instances, visible).IsSuccess()
+            && visible.instanceIndices == std::vector<size_t>{ 0, 2, 3 }
+            && visible.groups.size() == 2 && visible.groups[0].mesh == cube && visible.groups[1].mesh == ground
+            && visible.groups[0].instanceIndices == std::vector<size_t>{ 0, 2 }
+            && visible.groups[1].instanceIndices == std::vector<size_t>{ 3 }
+            && instances[1].worldBounds.minimum.x == 100,
+            "Per-view visibility retains original indices and stable first-occurrence grouping without rewriting source bounds");
+        RenderView other = view;
+        other.viewport.width = 50;
+        context.Check(BuildCameraProjection(other.lens, other.viewport, other.matrices.viewProjection, inverse).IsSuccess()
+            && VisibilitySystem::Build(other, instances, visible).IsSuccess()
+            && visible.instanceIndices == std::vector<size_t>{ 0, 3 }, "A second view culls independently using its own aspect");
+        instances[4].worldBounds.minimum.x = std::numeric_limits<float>::quiet_NaN();
+        context.Check(!VisibilitySystem::Build(view, instances, visible).IsSuccess()
+            && visible.instanceIndices == std::vector<size_t>{ 0, 3 } && visible.groups.size() == 2,
+            "Invalid later instance bounds reject the whole visible-list candidate without partial publication");
+        view.viewport.width = 0;
+        context.Check(VisibilitySystem::Build(view, instances, visible).IsSuccess()
+            && visible.instanceIndices.empty() && visible.groups.empty(), "Zero extent skips projection and publishes no visibility work");
     }
 
 }
