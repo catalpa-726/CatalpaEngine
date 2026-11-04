@@ -59,6 +59,19 @@ namespace Catalpa {
 		SetVSync(true);
 
 		// 注册 GLFW 回调，转换为现有 Events 并交给窗口事件回调。
+		glfwSetWindowFocusCallback(m_Window, [](GLFWwindow* window, int focused) {
+			auto& data = *static_cast<WindowData*>(glfwGetWindowUserPointer(window));
+			if (!data.EventCallback) return;
+			if (focused == GLFW_TRUE) {
+				WindowFocusEvent event;
+				data.EventCallback(event);
+			}
+			else {
+				WindowLostFocusEvent event;
+				data.EventCallback(event);
+			}
+		});
+
 		glfwSetWindowSizeCallback(m_Window, [](GLFWwindow* window, int width, int height) {
 			WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
 			data.Width = width;

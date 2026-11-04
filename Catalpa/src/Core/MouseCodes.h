@@ -1,5 +1,8 @@
 ﻿#pragma once
 
+#include "catpch.h"
+
+
 namespace Catalpa
 {
 	using MouseCode = uint16_t;

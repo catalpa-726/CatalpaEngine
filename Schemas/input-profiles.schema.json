@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Catalpa input profile v1",
+  "description": "IDs must be unique. An action may not mix continuous key/button bindings with one-shot pointer bindings; the runtime also validates these semantic constraints. Pointer deltas are logical window units, not framebuffer pixels or rates.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "profile",
+    "actions"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "profile": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9_.-]*$"
+    },
+    "actions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "context",
+          "type",
+          "bindings"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_.-]*$"
+          },
+          "context": {
+            "enum": [
+              "gameplay",
+              "system"
+            ]
+          },
+          "type": {
+            "enum": [
+              "button",
+              "axis"
+            ]
+          },
+          "deadZone": {
+            "type": "number",
+            "minimum": 0,
+            "exclusiveMaximum": 1
+          },
+          "gateMouseButton": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 7
+              },
+              {
+                "enum": [
+                  "left",
+                  "right",
+                  "middle"
+                ]
+              }
+            ]
+          },
+          "bindings": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "source"
+              ],
+              "properties": {
+                "source": {
+                  "enum": [
+                    "key",
+                    "mouseButton",
+                    "mouseDeltaX",
+                    "mouseDeltaY",
+                    "scrollX",
+                    "scrollY"
+                  ]
+                },
+                "code": {},
+                "scale": {
+                  "type": "number",
+                  "minimum": -1000,
+                  "maximum": 1000,
+                  "not": {
+                    "const": 0
+                  }
+                }
+              },
+              "allOf": [
+                {
+                  "if": {
+                    "properties": {
+                      "source": {
+                        "const": "key"
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": [
+                      "code"
+                    ],
+                    "properties": {
+                      "code": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 32,
+                            "maximum": 348
+                          },
+                          {
+                            "type": "string",
+                            "pattern": "^([A-Z0-9]|F[67]|Space|Escape|Enter|Tab|LeftShift|RightShift|LeftControl|RightControl)$"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "source": {
+                        "const": "mouseButton"
+                      }
+                    }
+                  },
+                  "then": {
+                    "required": [
+                      "code"
+                    ],
+                    "properties": {
+                      "code": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 7
+                          },
+                          {
+                            "enum": [
+                              "left",
+                              "right",
+                              "middle"
+                            ]
+                          }
+                        ]
+                      }
+                    }
+                  }
+                },
+                {
+                  "if": {
+                    "properties": {
+                      "source": {
+                        "enum": [
+                          "mouseDeltaX",
+                          "mouseDeltaY",
+                          "scrollX",
+                          "scrollY"
+                        ]
+                      }
+                    }
+                  },
+                  "then": {
+                    "not": {
+                      "required": [
+                        "code"
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "button"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "bindings": {
+                  "items": {
+                    "properties": {
+                      "source": {
+                        "enum": [
+                          "key",
+                          "mouseButton"
+                        ]
+                      },
+                      "scale": {
+                        "const": 1
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

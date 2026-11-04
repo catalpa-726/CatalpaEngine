@@ -11,6 +11,8 @@ namespace Catalpa {
 	class EngineRuntime;
 	class ImGuiLayer;
 	class SceneManager;
+    struct FrameTime;
+    struct RenderFramePacket;
 
 	class CATALPA_API Application {
 	public:
@@ -21,7 +23,8 @@ namespace Catalpa {
 		void Run();
 
 		// 请求主循环有序退出，仍由 Application 完成 Layer 与运行时清理。
-		void RequestClose() { m_Running = false; }
+        void RequestClose(int exitCode = 0) { if (exitCode != 0) m_ExitCode = exitCode; m_Running = false; }
+        [[nodiscard]] int GetExitCode() const noexcept { return m_ExitCode; }
 
 		void OnEvent(Event& e);
 
@@ -31,6 +34,9 @@ namespace Catalpa {
 
 		// 仅开放场景服务；设备、交换链和 Renderer 仍由 Runtime 管理。
 		SceneManager& GetScenes();
+        // 仅借用最近完成的 CPU 时间/场景快照，供沙盒诊断；下一帧可能替换内容。
+        [[nodiscard]] const FrameTime& GetFrameTime() const;
+        [[nodiscard]] const RenderFramePacket& GetSceneFrame() const;
 
 		// 先暂存所有权，初始化成功或当前帧结束后再挂载。
 		void PushLayer(std::unique_ptr<Layer> layer);
@@ -61,6 +67,7 @@ namespace Catalpa {
 		std::vector<PendingLayer> m_PendingLayers;
 
 		bool m_Running = true;
+        int m_ExitCode = 0;
 	};
 
 	Application* CreateApplication();

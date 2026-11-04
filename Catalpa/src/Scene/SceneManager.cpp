@@ -4,8 +4,6 @@
 #include "Runtime/Systems/TransformSystem.h"
 #include "Log/Log.h"
 
-#include <atomic>
-#include <new>
 
 namespace Catalpa {
     namespace {
@@ -38,7 +36,7 @@ namespace Catalpa {
         if (m_OwnerThread != std::this_thread::get_id()) return { WorldError::Busy, "SceneManager belongs to another thread" };
         if (m_Updating) return { WorldError::Busy, "SceneManager is updating its active scene" };
         for (const auto& slot : m_Slots)
-            if (slot.scene && slot.scene->GetWorld().IsAccessActive()) return { WorldError::Busy, "A managed scene is currently borrowed or committing" };
+            if (slot.scene && (slot.scene->GetWorld().IsAccessActive() || slot.scene->GetSystems().IsRunning())) return { WorldError::Busy, "A managed scene is borrowed, committing or executing systems" };
         return {};
     }
 
@@ -117,15 +115,24 @@ namespace Catalpa {
 
     WorldStatus SceneManager::UpdateActive()
     {
+        return WithActive([](Scene& scene) {
+            if (const WorldStatus status = scene.CommitPending(); !status.IsSuccess()) return status;
+            return TransformSystem::Update(scene);
+        });
+    }
+
+    WorldStatus SceneManager::WithActive(const std::function<WorldStatus(Scene&)>& operation)
+    {
+        if (!operation) return { WorldError::InvalidArgument, "Active scene operation is empty" };
         if (const WorldStatus status = CanMutate(); !status.IsSuccess()) return status;
         if (!m_Active.HasValue()) return {};
         if (const WorldStatus status = Validate(m_Active); !status.IsSuccess()) return status;
         m_Updating = true;
         struct ResetFlag { bool& flag; ~ResetFlag() { flag = false; } } reset{ m_Updating };
         Scene& scene = *m_Slots[m_Active.slot.index].scene;
-        // 出错时保留逐命令诊断，不继续消费尚未重新发布的派生矩阵。
-        if (const WorldStatus status = scene.CommitPending(); !status.IsSuccess()) return status;
-        return TransformSystem::Update(scene);
+        try { return operation(scene); }
+        catch (const std::bad_alloc&) { return { WorldError::AllocationFailed, "Active scene operation could not allocate" }; }
+        catch (...) { return { WorldError::CommandFailed, "Active scene operation threw an exception" }; }
     }
 
     WorldStatus SceneManager::Clear() noexcept

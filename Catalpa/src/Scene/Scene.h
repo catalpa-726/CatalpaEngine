@@ -1,17 +1,18 @@
 #pragma once
 
+#include "catpch.h"
+
 #include "ECS/EntityCommandBuffer.h"
 #include "Scene/EntityReference.h"
 #include "Scene/Components/IdentityComponent.h"
 #include "Scene/Components/TransformComponent.h"
 #include "Scene/Components/RelationshipComponent.h"
-#include <map>
-#include <string>
-#include <string_view>
+#include "ECS/SystemScheduler.h"
 
 namespace Catalpa {
 
     class TransformSystem;
+    struct CameraComponent;
 
     // 独占World及其结构命令；本步主线程同步操作，不承担资产加载或GPU资源。
     class CATALPA_API Scene {
@@ -23,12 +24,18 @@ namespace Catalpa {
 
         [[nodiscard]] const std::string& GetName() const noexcept { return m_Name; }
         [[nodiscard]] const World& GetWorld() const noexcept { return m_World; }
+        // 调度器由此 Scene 独占；调用方只在场景有效期间短期借用。
+        [[nodiscard]] SystemScheduler& GetSystems() noexcept { return m_Systems; }
+        [[nodiscard]] const SystemScheduler& GetSystems() const noexcept { return m_Systems; }
 
         // 命令捕获独占值；父节点须在该命令执行时存在。提交前不发布新实体身份。
         [[nodiscard]] WorldStatus QueueCreate(PersistentEntityId persistent, std::string_view name, const Math::TransformTRS& local, EntityId parent = {});
         [[nodiscard]] WorldStatus QueueDestroySubtree(EntityId entity);
         [[nodiscard]] WorldStatus QueueSetLocal(EntityId entity, const Math::TransformTRS& local);
         [[nodiscard]] WorldStatus QueueSetParent(EntityId entity, EntityId parent, bool keepWorld = false);
+        // 可选相机组件也走同一个结构安全点，不向客户端暴露可变 World。
+        [[nodiscard]] WorldStatus QueueSetCamera(EntityId entity, const CameraComponent& camera);
+        [[nodiscard]] WorldStatus QueueRemoveCamera(EntityId entity);
         // FIFO逐命令原子操作，不承诺整批回滚；保留全部结果，返回首个失败。
         [[nodiscard]] WorldStatus CommitPending();
         [[nodiscard]] const EntityCommandApplyResult& GetLastCommandResults() const noexcept { return m_LastCommands; }
@@ -51,6 +58,7 @@ namespace Catalpa {
 
         std::string m_Name;
         World m_World;
+        SystemScheduler m_Systems;
         EntityCommandBuffer m_Commands;
         EntityCommandApplyResult m_LastCommands;
         std::map<PersistentEntityId, EntityId> m_Entities;

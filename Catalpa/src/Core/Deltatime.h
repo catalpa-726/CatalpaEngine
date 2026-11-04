@@ -2,6 +2,7 @@
 
 namespace Catalpa {
 
+	// 保留 Layer 的墙钟秒接口；固定模拟 tick 统一使用 Core/Time/FrameTime。
 	class Deltatime
 	{
 	public:

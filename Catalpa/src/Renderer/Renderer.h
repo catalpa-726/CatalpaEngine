@@ -4,6 +4,7 @@
 #include "RHI/RHISwapchainDesc.h"
 #include "Uploads/UploadScheduler.h"
 #include "UI/ImGuiRenderer.h"
+#include "Renderer/RenderScene.h"
 
 namespace Catalpa {
 
@@ -21,6 +22,10 @@ namespace Catalpa {
 
         // 执行一帧：准备、获取、录制、提交、呈现。
         [[nodiscard]] RHIStatus Render(const ImGuiFrameData* uiFrame = nullptr);
+        // S03.2 先接收并拥有 CPU 相机/变换快照；真正场景几何绘制归 S03.3。
+        [[nodiscard]] Math::MathStatus SetSceneFrame(RenderFramePacket packet) { return m_Scene.Apply(std::move(packet)); }
+        [[nodiscard]] const RenderFramePacket& GetSceneFrame() const noexcept { return m_Scene.GetFrame(); }
+        void ClearSceneFrame() noexcept { m_Scene.Clear(); }
 
         // 将固定字体 atlas 交给同一上传链；UI 帧通过自有 CPU packet 传入。
         [[nodiscard]] RHIStatus InitUI(std::span<const std::byte> pixels, Extent2D extent) { return m_UI.InitFont(m_Uploads, pixels, extent); }
@@ -60,6 +65,7 @@ namespace Catalpa {
         RHISwapchain& m_Swapchain;
         UploadScheduler m_Uploads;
         ImGuiRenderer m_UI;
+        RenderScene m_Scene;
 
         // 帧槽进度与管线对应的交换链格式。
         uint32_t m_FrameSlot = 0;

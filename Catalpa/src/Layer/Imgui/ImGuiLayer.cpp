@@ -81,6 +81,13 @@ namespace Catalpa {
             || (event.IsInCategory(EventCategoryKeyboard) && io.WantCaptureKeyboard);
     }
 
+    InputCapture ImGuiLayer::GetInputCapture() const
+    {
+        if (!m_Ready) return { true, true, false };
+        const auto& io = ImGui::GetIO();
+        return { io.WantCaptureKeyboard, io.WantCaptureMouse, true };
+    }
+
     RHIStatus ImGuiLayer::End()
     {
         ImGui::Render();

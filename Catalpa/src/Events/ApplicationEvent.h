@@ -37,6 +37,19 @@ namespace Catalpa {
 		EVENT_CLASS_CATEGORY(EventCategoryApplication)
 	};
 
+    // 单主窗口焦点边沿用于释放玩法输入；文本/IME 仍通过各自事件处理。
+    class WindowFocusEvent : public Event {
+    public:
+        EVENT_CLASS_TYPE(WindowFocus)
+        EVENT_CLASS_CATEGORY(EventCategoryApplication)
+    };
+
+    class WindowLostFocusEvent : public Event {
+    public:
+        EVENT_CLASS_TYPE(WindowLostFocus)
+        EVENT_CLASS_CATEGORY(EventCategoryApplication)
+    };
+
 	class AppTickEvent : public Event
 	{
 	public:

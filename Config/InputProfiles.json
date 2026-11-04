@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "profile": "sandbox",
+  "actions": [
+    {
+      "id": "move.right",
+      "context": "gameplay",
+      "type": "axis",
+      "deadZone": 0,
+      "bindings": [
+        {
+          "source": "key",
+          "code": "A",
+          "scale": -1
+        },
+        {
+          "source": "key",
+          "code": "D",
+          "scale": 1
+        }
+      ]
+    },
+    {
+      "id": "move.up",
+      "context": "gameplay",
+      "type": "axis",
+      "deadZone": 0,
+      "bindings": [
+        {
+          "source": "key",
+          "code": "Q",
+          "scale": -1
+        },
+        {
+          "source": "key",
+          "code": "E",
+          "scale": 1
+        }
+      ]
+    },
+    {
+      "id": "move.forward",
+      "context": "gameplay",
+      "type": "axis",
+      "deadZone": 0,
+      "bindings": [
+        {
+          "source": "key",
+          "code": "S",
+          "scale": -1
+        },
+        {
+          "source": "key",
+          "code": "W",
+          "scale": 1
+        }
+      ]
+    },
+    {
+      "id": "look.yaw",
+      "context": "gameplay",
+      "type": "axis",
+      "deadZone": 0,
+      "gateMouseButton": "right",
+      "bindings": [
+        {
+          "source": "mouseDeltaX",
+          "scale": 1
+        }
+      ]
+    },
+    {
+      "id": "look.pitch",
+      "context": "gameplay",
+      "type": "axis",
+      "deadZone": 0,
+      "gateMouseButton": "right",
+      "bindings": [
+        {
+          "source": "mouseDeltaY",
+          "scale": 1
+        }
+      ]
+    },
+    {
+      "id": "simulation.pause",
+      "context": "system",
+      "type": "button",
+      "bindings": [
+        {
+          "source": "key",
+          "code": "F6",
+          "scale": 1
+        }
+      ]
+    },
+    {
+      "id": "simulation.step",
+      "context": "system",
+      "type": "button",
+      "bindings": [
+        {
+          "source": "key",
+          "code": "F7",
+          "scale": 1
+        }
+      ]
+    }
+  ]
+}

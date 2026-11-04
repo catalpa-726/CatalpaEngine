@@ -13,13 +13,16 @@ public:
 
     void OnAttach() override {
         CAT_INFO("Box layer attached.");
-        if (!m_Gameplay.Attach(Catalpa::Application::Get().GetScenes())) Catalpa::Application::Get().RequestClose();
+        if (!m_Gameplay.Attach(Catalpa::Application::Get().GetScenes())) Catalpa::Application::Get().RequestClose(1);
     }
     void OnDetach() override {
         m_Gameplay.Detach();
         CAT_INFO("Box layer detached.");
     }
-    void OnUpdate(Catalpa::Deltatime) override { m_Gameplay.Update(); }
+    void OnUpdate(Catalpa::Deltatime) override {
+        const auto& application = Catalpa::Application::Get();
+        m_Gameplay.Update(application.GetFrameTime(), application.GetSceneFrame());
+    }
 
     void OnEvent(Catalpa::Event& event) override
     {
@@ -53,15 +56,15 @@ Catalpa::Application* Catalpa::CreateApplication() {
 Catalpa::ApplicationStartupResult Catalpa::HandleApplicationArguments(int argc, char** argv)
 {
     if (argc == 1) return {};
-    if (argc == 2 && std::string_view(argv[1]) == "--test-s03-1") {
+    if (argc == 2 && (std::string_view(argv[1]) == "--test-s03-1" || std::string_view(argv[1]) == "--test-s03-2")) {
 #if !defined(CATALPA_DIST)
-        return { true, Tests::RunS031Tests() };
+        return { true, std::string_view(argv[1]) == "--test-s03-2" ? Tests::RunS032Tests() : Tests::RunS031Tests() };
 #else
         CAT_ERROR("CPU contracts are available in Debug/Release builds only.");
         return { true, 2 };
 #endif
     }
     const bool help = argc == 2 && std::string_view(argv[1]) == "--help";
-    CAT_INFO("Usage: CatalpaBox [--test-s03-1 | --help]. No arguments opens the workspace.");
+    CAT_INFO("Usage: CatalpaBox [--test-s03-1 | --test-s03-2 | --help]. No arguments opens the workspace.");
     return { true, help ? 0 : 2 };
 }

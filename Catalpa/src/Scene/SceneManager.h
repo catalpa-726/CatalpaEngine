@@ -1,12 +1,10 @@
 #pragma once
 
+#include "catpch.h"
+
 #include "Core/Base.h"
 #include "ECS/World.h"
 #include "Scene/SceneHandle.h"
-#include <memory>
-#include <string>
-#include <thread>
-#include <vector>
 
 namespace Catalpa {
 
@@ -29,6 +27,8 @@ namespace Catalpa {
         [[nodiscard]] Scene* GetActive() noexcept;
         [[nodiscard]] const Scene* GetActive() const noexcept;
         [[nodiscard]] WorldStatus UpdateActive();
+        // 在完整 tick/派生/提取作用域保护 active Scene，回调内禁止卸载/切换场景。
+        [[nodiscard]] WorldStatus WithActive(const std::function<WorldStatus(Scene&)>& operation);
         // 全部场景可卸载后才一次清理；失败不释放任何仍被借用的场景。
         [[nodiscard]] WorldStatus Clear() noexcept;
 

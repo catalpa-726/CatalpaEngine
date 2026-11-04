@@ -28,3 +28,13 @@
 #include <type_traits>
 
 #include <span>
+
+// S03.2 时间/输入/平台路径与确定性调度共用的标准库头。
+#include <atomic>
+#include <compare>
+#include <filesystem>
+#include <fstream>
+#include <initializer_list>
+#include <new>
+#include <optional>
+#include <thread>

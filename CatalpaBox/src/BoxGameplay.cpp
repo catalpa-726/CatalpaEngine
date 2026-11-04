@@ -2,30 +2,51 @@
 
 #include "Scene/SceneManager.h"
 #include "Scene/Scene.h"
-#include "Core/Application.h"
+#include "Scene/Components/CameraComponent.h"
+#include "Core/Time/FrameTime.h"
+#include "Core/Math/CoordinateConvention.h"
+#include "Runtime/RuntimeServices.h"
+#include "Runtime/Input/InputActions.h"
+#include "ECS/SystemContext.h"
+#include "Renderer/RenderFramePacket.h"
 #include "Log/Log.h"
+#include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <numbers>
 
 namespace Catalpa {
     namespace {
-        // 固定样例身份只属于此独立场景，不用运行期 entity 编号生成持久 ID。
         const PersistentEntityId ParentId = PersistentEntityId::FromWords(0x5330333100000001ULL, 1);
         const PersistentEntityId ChildId = PersistentEntityId::FromWords(0x5330333100000001ULL, 2);
+        const PersistentEntityId CameraId = PersistentEntityId::FromWords(0x5330333200000001ULL, 1);
+
+        // 从受捕获/焦点控制的动作快照读取样例轴，不直接轮询平台按键。
+        double Action(const ActionSnapshot* input, std::string_view id)
+        {
+            const auto* action = input ? input->Find(id) : nullptr;
+            return action ? action->value : 0.0;
+        }
     }
+
+    struct BoxGameplay::State {
+        Math::TransformTRS camera;
+        double yaw = 0.0;
+        double pitch = 0.0;
+    };
 
     bool BoxGameplay::Attach(SceneManager& scenes)
     {
+        try {
         m_Scenes = &scenes;
-        m_Stage = 0;
-        WorldStatus status = scenes.CreateScene("S03.1 Transform Sample", m_Scene);
+        m_ReportSeconds = 0.0;
+        m_ReportedHierarchy = false;
+        m_State = std::make_shared<State>();
+        m_State->camera.translation = Math::Vec3{ 0.0f, 2.0f, 6.0f };
+        WorldStatus status = scenes.CreateScene("S03.2 Fixed-step Camera Sample", m_Scene);
         if (status.IsSuccess()) status = scenes.SetActive(m_Scene);
-        if (!status.IsSuccess()) {
-            CAT_ERROR("Cannot install S03.1 sample: {0}", status.message);
-            Detach();
-            return false;
-        }
-        Scene* scene = scenes.GetScene(m_Scene);
+        if (!status.IsSuccess()) { CAT_ERROR("Cannot install sandbox: {0}", status.message); Detach(); return false; }
+        Scene& scene = *scenes.GetScene(m_Scene);
         Math::TransformTRS parent;
         parent.translation = Math::Vec3{ 1.0f, 2.0f, 3.0f };
         const float halfAngle = std::numbers::pi_v<float> / 4.0f;
@@ -33,54 +54,89 @@ namespace Catalpa {
         parent.scale = Math::Vec3{ 2.0f, 3.0f, 4.0f };
         Math::TransformTRS child;
         child.translation = Math::Vec3{ 1.0f, 0.0f, 0.0f };
-        status = scene->QueueCreate(ParentId, "Parent", parent);
-        if (status.IsSuccess()) status = scene->QueueCreate(ChildId, "Child", child);
-        if (!status.IsSuccess()) {
-            CAT_ERROR("Cannot queue S03.1 sample: {0}", status.message);
+        status = scene.QueueCreate(ParentId, "Parent", parent);
+        if (status.IsSuccess()) status = scene.QueueCreate(ChildId, "Child", child);
+        if (status.IsSuccess()) status = scene.QueueCreate(CameraId, "Sandbox Camera", m_State->camera);
+        // Attach 发生在主循环外；此处是明确的启动结构安全点。
+        if (status.IsSuccess()) status = scene.CommitPending();
+        if (status.IsSuccess()) status = scene.QueueSetParent(scene.Resolve(ChildId), scene.Resolve(ParentId));
+        if (status.IsSuccess()) status = scene.QueueSetCamera(scene.Resolve(CameraId), CameraComponent{});
+        if (status.IsSuccess()) status = scene.CommitPending();
+        if (!status.IsSuccess()) { CAT_ERROR("Cannot create sandbox content: {0}", status.message); Detach(); return false; }
+
+        SystemDesc gameplay;
+        gameplay.id = "sandbox.camera-movement";
+        gameplay.phase = SystemPhase::Gameplay;
+        gameplay.accesses = { { "input.actions", SystemAccessMode::Read }, { "scene.commands", SystemAccessMode::Write } };
+        gameplay.execute = [state = m_State](SystemContext& context) -> WorldStatus {
+            const auto* input = context.services.input;
+            const double dx = Action(input, "look.yaw"), dy = Action(input, "look.pitch");
+            state->yaw = std::remainder(state->yaw - dx * 0.0025, 2.0 * std::numbers::pi);
+            // 样例相机的明确俯仰范围，避免在极点翻转；鼠标位移不乘 dt 或 DPI。
+            state->pitch = std::clamp(state->pitch - dy * 0.0025, -std::numbers::pi / 2.0 + 0.01, std::numbers::pi / 2.0 - 0.01);
+            const Math::Quat yaw{ static_cast<float>(std::cos(state->yaw / 2.0)), 0.0f, static_cast<float>(std::sin(state->yaw / 2.0)), 0.0f };
+            const Math::Quat pitch{ static_cast<float>(std::cos(state->pitch / 2.0)), static_cast<float>(std::sin(state->pitch / 2.0)), 0.0f, 0.0f };
+            state->camera.rotation = yaw * pitch;
+            Math::Vec3 direction = (state->camera.rotation * Math::Vec3{ 1.0f, 0.0f, 0.0f }) * static_cast<float>(Action(input, "move.right"))
+                + Math::Vec3{ 0.0f, 1.0f, 0.0f } * static_cast<float>(Action(input, "move.up"))
+                + (state->camera.rotation * Math::Vec3{ 0.0f, 0.0f, -1.0f }) * static_cast<float>(Action(input, "move.forward"));
+            const float distance = glm::length(direction);
+            // 限制样例的合成移动方向，避免同时按多轴时超过 3 m/s；不改原始输入快照。
+            if (distance > 1.0f) direction /= distance;
+            state->camera.translation += direction * static_cast<float>(3.0 * context.time.fixedDeltaSeconds);
+            const EntityId camera = context.scene.Resolve(CameraId);
+            if (!camera.HasValue()) return { WorldError::InvalidEntity, "Sandbox camera no longer exists" };
+            return context.scene.QueueSetLocal(camera, state->camera);
+        };
+        status = m_Module.Install(scene, std::move(gameplay));
+        if (!status.IsSuccess()) { CAT_ERROR("Cannot install sandbox gameplay: {0}", status.message); Detach(); return false; }
+        CAT_INFO("[S03.2] WASD/QE move, hold right mouse to look, F6 pause, F7 step while paused; UI capture suppresses gameplay.");
+        CAT_INFO("[S03.2] Camera and transforms are CPU snapshots; existing triangle drawing remains until S03.3.");
+        return true;
+        } catch (const std::bad_alloc&) {
+            CAT_ERROR("Cannot allocate sandbox gameplay state");
             Detach();
             return false;
         }
-        return true;
     }
 
-    void BoxGameplay::Update()
+    void BoxGameplay::Update(const FrameTime& time, const RenderFramePacket& frame)
     {
-        if (!m_Scenes || m_Stage == 2) return;
-        Scene* scene = m_Scenes->GetScene(m_Scene);
-        if (!scene) { Application::Get().RequestClose(); return; }
-        const EntityId parent = scene->Resolve(ParentId);
-        const EntityId child = scene->Resolve(ChildId);
-        // 第一次主线程安全点尚未提交创建时，等待下一帧，禁止使用未发布实体。
-        if (!parent.HasValue() || !child.HasValue()) return;
-        if (m_Stage == 0) {
-            const WorldStatus status = scene->QueueSetParent(child, parent);
-            if (!status.IsSuccess()) {
-                CAT_ERROR("Cannot queue S03.1 hierarchy: {0}", status.message);
-                Application::Get().RequestClose();
+        if (!m_Scenes || !m_Scene.HasValue()) return;
+        const Scene* scene = m_Scenes->GetScene(m_Scene);
+        if (!scene) return;
+        if (!m_ReportedHierarchy) {
+            TransformComponent transform;
+            if (const auto status = scene->GetTransform(scene->Resolve(ChildId), transform); status.IsSuccess() && transform.worldValid) {
+                const auto& position = transform.worldMatrix[3];
+                CAT_INFO("[S03.1 sample] Child world origin = ({0}, {1}, {2}); expected (1, 2, 1).", position.x, position.y, position.z);
+                m_ReportedHierarchy = true;
             }
-            m_Stage = 1;
-            return;
         }
-        TransformComponent transform;
-        const WorldStatus status = scene->GetTransform(child, transform);
-        if (!status.IsSuccess() || !transform.worldValid) {
-            CAT_ERROR("S03.1 sample world transform was not published: {0}", status.message);
-            Application::Get().RequestClose();
-            return;
-        }
-        const auto& position = transform.worldMatrix[3];
-        CAT_INFO("[S03.1 sample] Child world origin = ({0}, {1}, {2}); expected (1, 2, 1). CPU scene only.", position.x, position.y, position.z);
-        m_Stage = 2;
+        m_ReportSeconds += time.realDeltaSeconds;
+        if (m_ReportSeconds < 1.0 || frame.views.empty() || frame.sceneIdentity != scene->GetWorld().GetIdentity()) return;
+        m_ReportSeconds = 0.0;
+        const auto& position = frame.views.front().matrices.position;
+        CAT_INFO("[S03.2] tick={0}, simulation={1}s, steps={2}, alpha={3}, camera=({4}, {5}, {6})",
+            time.tickCount == 0 ? time.firstTick - 1 : time.firstTick + time.tickCount - 1, time.simulationSeconds, time.tickCount,
+            time.interpolationAlpha, position.x, position.y, position.z);
     }
 
     void BoxGameplay::Detach()
     {
         if (m_Scenes && m_Scene.HasValue()) {
-            const WorldStatus status = m_Scenes->Unload(m_Scene);
-            if (!status.IsSuccess()) CAT_ERROR("Cannot unload S03.1 sample: {0}", status.message);
+            if (Scene* scene = m_Scenes->GetScene(m_Scene)) {
+                const auto stopped = m_Module.Uninstall(*scene);
+                if (!stopped.IsSuccess()) CAT_WARN("Gameplay registration remains until scene unload: {0}", stopped.message);
+                if (const auto status = m_Scenes->Unload(m_Scene); !status.IsSuccess()) {
+                    CAT_CRITICAL("Cannot safely unload sandbox scene: {0}", status.message);
+                    std::abort();
+                }
+            }
         }
+        m_Module.ForgetUnloadedScene();
+        m_State.reset();
         m_Scenes = nullptr;
         m_Scene = {};
-        m_Stage = 0;
     }
 }

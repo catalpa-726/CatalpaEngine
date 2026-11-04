@@ -5,6 +5,8 @@
 #include "Runtime/EngineRuntime.h"
 #include "RHI/RHIBackend.h"
 #include "Layer/Imgui/ImGuiLayer.h"
+#include "Core/Input.h"
+#include "Core/PlatformServices.h"
 
 namespace Catalpa {
 
@@ -15,6 +17,7 @@ namespace Catalpa {
         CAT_CORE_ASSERT(!s_Instance, "Application already exists!");
 
         m_Window = std::unique_ptr<Window>(Window::Create());
+        Input::BindWindow(m_Window.get());
         m_Runtime = std::make_unique<EngineRuntime>();
         m_Window->SetEventCallback(CAT_BIND_EVENT_FN(OnEvent));
 
@@ -27,12 +30,15 @@ namespace Catalpa {
         m_PendingLayers.clear();
         m_ImGuiLayer.reset();
         m_Runtime.reset();
+        Input::BindWindow(nullptr);
         m_Window.reset();
         s_Instance = nullptr;
     }
 
     void Application::OnEvent(Event& e)
     {
+        // 原始事件先进入收集器；玩法是否消费由本帧 UI 捕获与焦点统一决定。
+        if (m_Runtime) m_Runtime->OnInputEvent(e);
         EventDispatcher dispatcher(e);
         dispatcher.Dispatch<WindowCloseEvent>(CAT_BIND_EVENT_FN(Application::OnWindowClose));
         dispatcher.Dispatch<WindowFramebufferResizeEvent>(CAT_BIND_EVENT_FN(Application::OnWindowSurfaceChanged));
@@ -47,6 +53,8 @@ namespace Catalpa {
     void Application::PushOverlay(std::unique_ptr<Layer> overlay) { m_PendingLayers.push_back({ .layer = std::move(overlay), .overlay = true }); }
 
     SceneManager& Application::GetScenes() { return m_Runtime->GetScenes(); }
+    const FrameTime& Application::GetFrameTime() const { return m_Runtime->GetFrameTime(); }
+    const RenderFramePacket& Application::GetSceneFrame() const { return m_Runtime->GetSceneFrame(); }
 
     void Application::AttachPendingLayers()
     {
@@ -64,6 +72,20 @@ namespace Catalpa {
 
     void Application::Run()
     {
+        // 所有提前返回默认为启动失败；初始化完整后才进入正常退出状态。
+        m_ExitCode = 1;
+        std::filesystem::path executableDirectory;
+        std::string pathError;
+        if (!GetExecutableDirectory(executableDirectory, pathError)) { CAT_CORE_ERROR("Cannot locate input profile: {0}", pathError); return; }
+        std::ifstream profile(executableDirectory / "Resources" / "Config" / "InputProfiles.json", std::ios::binary);
+        std::array<char, 65537> profileBytes{};
+        if (!profile) { CAT_CORE_ERROR("Missing Resources/Config/InputProfiles.json; regenerate and build the current project."); return; }
+        profile.read(profileBytes.data(), static_cast<std::streamsize>(profileBytes.size()));
+        if (profile.bad() || profile.gcount() > 65536) { CAT_CORE_ERROR("Cannot read input profile or it exceeds 64 KiB."); return; }
+        if (const auto input = m_Runtime->ConfigureInputProfile(std::string_view(profileBytes.data(), static_cast<size_t>(profile.gcount()))); !input.IsSuccess()) {
+            CAT_CORE_ERROR("Invalid input profile: {0}", input.message);
+            return;
+        }
         // Debug 默认请求同步验证
         RHIBackendDesc backendDesc{};
 
@@ -91,6 +113,7 @@ namespace Catalpa {
             return;
         }
 
+        m_ExitCode = 0;
         AttachPendingLayers();
 
         using Clock = std::chrono::steady_clock;
@@ -101,33 +124,41 @@ namespace Catalpa {
             if (!m_Running) break;
 
             const auto now = Clock::now();
-            const Deltatime timestep{ std::chrono::duration<float>(now - previous).count() };
+            const double realSeconds = std::chrono::duration<double>(now - previous).count();
+            const Deltatime timestep{ static_cast<float>(realSeconds) };
             previous = now;
 
-            for (Layer* layer : m_LayerStack) layer->OnUpdate(timestep);
-            if (!m_Running) break;
-
-            // Layer 本轮产生的场景命令在单一安全点提交，再生成 UI/渲染数据。
-            if (const WorldStatus status = m_Runtime->UpdateScenes(); !status.IsSuccess()) {
-                CAT_CORE_ERROR("Scene update failed: {0}", status.message);
-                break;
-            }
-
+            // 当前帧平台事件已收集，先 NewFrame 取得本帧捕获，再运行玩法。
             m_ImGuiLayer->Begin();
+            for (Layer* layer : m_LayerStack) layer->OnUpdate(timestep);
             for (Layer* layer : m_LayerStack) layer->OnImGuiRender();
+            auto capture = m_ImGuiLayer->GetInputCapture();
+            capture.gameplayActive = !m_Window->IsMinimized();
+            if (m_Running) {
+                const auto [width, height] = m_Window->GetFramebufferSize();
+                if (const auto status = m_Runtime->UpdateSimulation(realSeconds, capture, width, height); !status.IsSuccess()) {
+                    CAT_CORE_ERROR("Simulation/extraction failed: {0}", status.message);
+                    m_ExitCode = 1;
+                    m_Running = false;
+                }
+            }
             if (const RHIStatus status = m_ImGuiLayer->End(); !status.IsSuccess()) {
                 CAT_CORE_ERROR("UI frame failed at {0}. RHI error: {1}", status.operation, static_cast<int>(status.code));
+                m_ExitCode = 1;
                 break;
             }
+            if (!m_Running) break;
 
             if (const RHIStatus status = m_Runtime->Update(*m_Window, &m_ImGuiLayer->GetFrameData()); !status.IsSuccess()) {
                 CAT_CORE_ERROR("Engine update failed at {0}. RHI error: {1}", status.operation, static_cast<int>(status.code));
+                m_ExitCode = 1;
                 break;
             }
 
             AttachPendingLayers();
         }
 
+        m_Runtime->StopSimulation();
         m_LayerStack.Clear();
         m_PendingLayers.clear();
         m_ImGuiLayer.reset();
@@ -141,7 +172,7 @@ namespace Catalpa {
 
     bool Application::OnWindowSurfaceChanged(Event&)
     {
-        m_Runtime->RequestSwapchainUpdate();
+        if (m_Runtime) m_Runtime->RequestSwapchainUpdate();
         return false;
     }
 

@@ -1,5 +1,8 @@
 ﻿#pragma once
 
+#include "catpch.h"
+
+
 namespace Catalpa
 {
 	using KeyCode = uint16_t;

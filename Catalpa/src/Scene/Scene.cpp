@@ -3,10 +3,9 @@
 #include "Core/Math/TransformMath.h"
 #include "ECS/Detail/WorldComponentType.h"
 #include "Runtime/Systems/TransformSystem.h"
+#include "Scene/Components/CameraComponent.h"
+#include "Camera/CameraProjection.h"
 
-#include <limits>
-#include <utility>
-#include <vector>
 
 namespace Catalpa {
 
@@ -14,6 +13,7 @@ namespace Catalpa {
     const ComponentType& ComponentTraits<IdentityComponent>::Get() { return Detail::MakeComponentType<IdentityComponent>(); }
     const ComponentType& ComponentTraits<TransformComponent>::Get() { return Detail::MakeComponentType<TransformComponent>(); }
     const ComponentType& ComponentTraits<RelationshipComponent>::Get() { return Detail::MakeComponentType<RelationshipComponent>(); }
+    const ComponentType& ComponentTraits<CameraComponent>::Get() { return Detail::MakeComponentType<CameraComponent>(); }
 
     Scene::Scene(std::string name) : m_Name(std::move(name)) {}
     Scene::~Scene() = default;
@@ -54,6 +54,22 @@ namespace Catalpa {
         m_LastCommands = m_Commands.Apply(m_World);
         m_Committing = false;
         return m_LastCommands.status;
+    }
+
+    WorldStatus Scene::QueueSetCamera(EntityId entity, const CameraComponent& camera) {
+        if (const auto status = ValidateCameraLens(camera.lens); !status.IsSuccess()) return { WorldError::InvalidArgument, status.message };
+        if (camera.viewId == 0 || camera.historyRevision == 0) return { WorldError::InvalidArgument, "Camera view identity and history revision must be nonzero" };
+        try { return m_Commands.Enqueue([this, entity, camera](World& world) {
+            if (const auto status = ValidateEntity(entity); !status.IsSuccess()) return status;
+            return world.Has<CameraComponent>(entity) ? world.Set(entity, camera) : world.Add(entity, camera);
+        }); } catch (const std::bad_alloc&) { return { WorldError::AllocationFailed, "Cannot capture camera change" }; }
+    }
+
+    WorldStatus Scene::QueueRemoveCamera(EntityId entity) {
+        try { return m_Commands.Enqueue([this, entity](World& world) {
+            if (const auto status = ValidateEntity(entity); !status.IsSuccess()) return status;
+            return world.Remove<CameraComponent>(entity);
+        }); } catch (const std::bad_alloc&) { return { WorldError::AllocationFailed, "Cannot capture camera removal" }; }
     }
 
     WorldStatus Scene::InitializeEntity(EntityId entity, PersistentEntityId persistent, const std::string& name, const Math::TransformTRS& local, EntityId parent) {

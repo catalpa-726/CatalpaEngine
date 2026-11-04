@@ -139,7 +139,8 @@ project "CatalpaBox"
         "CatalpaBox/src/**.cpp",
         -- 以公共头作为部署构建项，DLL 是额外输入，不编译此头。
         "Catalpa/src/Catalpa.h",
-        "Catalpa/Resources/Localization/*.json"
+        "Catalpa/Resources/Localization/*.json",
+        "Config/InputProfiles.json"
     }
 
     includedirs {
@@ -194,6 +195,17 @@ project "CatalpaBox"
         buildoutputs {
             "%{cfg.targetdir}/Resources/Localization/%{file.name}"
         }
+
+    -- 当前宿主部署输入配置；Application 按可执行目录读取，不依赖工作目录。
+    filter { "system:windows", "files:**/InputProfiles.json" }
+        buildmessage "Copying input action profile"
+        buildcommands {
+            '{MKDIR} "%{cfg.targetdir}/Resources/Config"',
+            'if errorlevel 1 exit /b 1',
+            '{COPYFILE} "%{file.abspath}" "%{cfg.targetdir}/Resources/Config/InputProfiles.json"',
+            'if errorlevel 1 exit /b 1'
+        }
+        buildoutputs { "%{cfg.targetdir}/Resources/Config/InputProfiles.json" }
 
 filter {}
 project "CatalpaEditor"

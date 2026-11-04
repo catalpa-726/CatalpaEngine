@@ -1,12 +1,12 @@
 ﻿#pragma once
 
+#include "catpch.h"
+
 #include "Layer/Layer.h"
 #include "Renderer/UI/ImGuiFrameData.h"
 #include "RHI/RHIError.h"
-#include <cstddef>
-#include <limits>
-#include <span>
 #include "RHI/RHITypes.h"
+#include "Runtime/Input/InputActions.h"
 
 namespace Catalpa {
 
@@ -22,6 +22,7 @@ namespace Catalpa {
 		void Begin();
 		[[nodiscard]] RHIStatus End();
 		bool IsReady() const { return m_Ready; }
+        [[nodiscard]] InputCapture GetInputCapture() const;
 		std::span<const std::byte> GetFontPixels() const { return m_FontPixels; }
 		Extent2D GetFontExtent() const { return m_FontExtent; }
 		const ImGuiFrameData& GetFrameData() const { return m_FrameData; }
