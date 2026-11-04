@@ -56,15 +56,17 @@ Catalpa::Application* Catalpa::CreateApplication() {
 Catalpa::ApplicationStartupResult Catalpa::HandleApplicationArguments(int argc, char** argv)
 {
     if (argc == 1) return {};
-    if (argc == 2 && (std::string_view(argv[1]) == "--test-s03-1" || std::string_view(argv[1]) == "--test-s03-2")) {
+    if (argc == 2 && (std::string_view(argv[1]) == "--test-s03-1" || std::string_view(argv[1]) == "--test-s03-2" || std::string_view(argv[1]) == "--test-s03-3")) {
 #if !defined(CATALPA_DIST)
-        return { true, std::string_view(argv[1]) == "--test-s03-2" ? Tests::RunS032Tests() : Tests::RunS031Tests() };
+        const std::string_view mode(argv[1]);
+        if (mode == "--test-s03-3") return { true, Tests::RunS033Tests() };
+        return { true, mode == "--test-s03-2" ? Tests::RunS032Tests() : Tests::RunS031Tests() };
 #else
         CAT_ERROR("CPU contracts are available in Debug/Release builds only.");
         return { true, 2 };
 #endif
     }
     const bool help = argc == 2 && std::string_view(argv[1]) == "--help";
-    CAT_INFO("Usage: CatalpaBox [--test-s03-1 | --test-s03-2 | --help]. No arguments opens the workspace.");
+    CAT_INFO("Usage: CatalpaBox [--test-s03-1 | --test-s03-2 | --test-s03-3 | --help]. No arguments opens the workspace.");
     return { true, help ? 0 : 2 };
 }

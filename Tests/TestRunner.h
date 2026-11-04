@@ -30,4 +30,8 @@ namespace Catalpa::Tests {
     void RunProjectionFrustumTests(TestContext& context);
     void RunSimulationPipelineTests(TestContext& context);
     int RunS032Tests();
+    // CPU几何/边界及场景快照契约；本批尚不覆盖GPU深度/UBO。
+    void RunMeshValidationTests(TestContext& context);
+    void RunGeometrySnapshotTests(TestContext& context);
+    int RunS033Tests();
 }

@@ -13,6 +13,7 @@ namespace Catalpa {
 
     class TransformSystem;
     struct CameraComponent;
+    struct MeshRendererComponent;
 
     // 独占World及其结构命令；本步主线程同步操作，不承担资产加载或GPU资源。
     class CATALPA_API Scene {
@@ -36,6 +37,9 @@ namespace Catalpa {
         // 可选相机组件也走同一个结构安全点，不向客户端暴露可变 World。
         [[nodiscard]] WorldStatus QueueSetCamera(EntityId entity, const CameraComponent& camera);
         [[nodiscard]] WorldStatus QueueRemoveCamera(EntityId entity);
+        // 密封几何引用与显示参数由值捕获，在同一结构安全点增加或替换/移除组件。
+        [[nodiscard]] WorldStatus QueueSetMeshRenderer(EntityId entity, const MeshRendererComponent& renderer);
+        [[nodiscard]] WorldStatus QueueRemoveMeshRenderer(EntityId entity);
         // FIFO逐命令原子操作，不承诺整批回滚；保留全部结果，返回首个失败。
         [[nodiscard]] WorldStatus CommitPending();
         [[nodiscard]] const EntityCommandApplyResult& GetLastCommandResults() const noexcept { return m_LastCommands; }

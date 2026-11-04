@@ -6,6 +6,11 @@
 
 namespace Catalpa {
 
+    // 从受检密封几何与世界矩阵派生normal/bounds；拒绝奇异变换，失败保留output。
+    [[nodiscard]] CATALPA_API Math::MathStatus BuildRenderMeshInstance(RenderInstanceId id,
+        const MeshResourceRef& mesh, const Math::Mat4& world, const Math::Vec4& color,
+        RenderMeshInstance& output) noexcept;
+
     // 渲染方拥有的值快照，不是可独立编辑的第二个 World 或 GPU 资源所有者。
     class CATALPA_API RenderScene {
     public:

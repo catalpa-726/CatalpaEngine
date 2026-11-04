@@ -3,6 +3,8 @@
 #include "Runtime/Systems/CameraSystem.h"
 #include "Scene/Scene.h"
 #include "Scene/Components/CameraComponent.h"
+#include "Scene/Components/MeshRendererComponent.h"
+#include "Renderer/RenderScene.h"
 
 
 namespace Catalpa {
@@ -16,6 +18,7 @@ namespace Catalpa {
             candidate.sequence = sequence;
             candidate.sceneIdentity = scene.GetWorld().GetIdentity();
             candidate.transforms.reserve(scene.GetWorld().GetEntityCount());
+            candidate.instances.reserve(scene.GetWorld().GetEntityCount());
             EntityId selected;
             CameraComponent selectedCamera;
             PersistentEntityId selectedPersistent;
@@ -24,6 +27,17 @@ namespace Catalpa {
                 if (const auto result = scene.GetTransform(entity, transform); !result.IsSuccess()) return result;
                 if (!transform.worldValid) return { WorldError::InvalidArgument, "Transform must be updated before render extraction" };
                 candidate.transforms.push_back({ { entity.world, entity.index, entity.generation }, transform.worldMatrix });
+                if (scene.GetWorld().Has<MeshRendererComponent>(entity)) {
+                    MeshRendererComponent renderer;
+                    if (const auto result = scene.GetWorld().Get(entity, renderer); !result.IsSuccess()) return result;
+                    if (renderer.visible) {
+                        RenderMeshInstance instance;
+                        if (const auto result = BuildRenderMeshInstance({ entity.world, entity.index, entity.generation },
+                            renderer.mesh, transform.worldMatrix, renderer.color, instance); !result.IsSuccess())
+                            return { WorldError::InvalidArgument, result.message };
+                        candidate.instances.push_back(std::move(instance));
+                    }
+                }
                 if (!scene.GetWorld().Has<CameraComponent>(entity)) return {};
                 CameraComponent camera;
                 if (const auto result = scene.GetWorld().Get(entity, camera); !result.IsSuccess()) return result;

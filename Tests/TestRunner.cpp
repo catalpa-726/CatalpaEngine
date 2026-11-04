@@ -47,4 +47,22 @@ namespace Catalpa::Tests {
         CAT_INFO("[S03.2] {0} checks, {1} failures.", context.GetCheckCount(), context.GetFailureCount());
         return context.GetFailureCount() == 0 ? 0 : 1;
     }
+    int RunS033Tests()
+    {
+        CAT_INFO("[S03.3 CPU] S03.1/S03.2 regression, geometry validation and owned instances. GPU depth/UBO tests are not included.");
+        TestContext context("S03.3 CPU");
+        try {
+            RunWorldTests(context);
+            RunTransformHierarchyTests(context);
+            RunSystemSchedulerTests(context);
+            RunInputRoutingTests(context);
+            RunProjectionFrustumTests(context);
+            RunSimulationPipelineTests(context);
+            RunMeshValidationTests(context);
+            RunGeometrySnapshotTests(context);
+        } catch (const std::exception& error) { context.Check(false, error.what()); }
+        catch (...) { context.Check(false, "Unexpected non-standard exception"); }
+        CAT_INFO("[S03.3 CPU] {0} checks, {1} failures.", context.GetCheckCount(), context.GetFailureCount());
+        return context.GetFailureCount() == 0 ? 0 : 1;
+    }
 }

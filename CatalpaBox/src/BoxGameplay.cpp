@@ -3,6 +3,9 @@
 #include "Scene/SceneManager.h"
 #include "Scene/Scene.h"
 #include "Scene/Components/CameraComponent.h"
+#include "Scene/Components/MeshRendererComponent.h"
+#include "Geometry/PrimitiveMesh.h"
+#include "Geometry/MeshValidation.h"
 #include "Core/Time/FrameTime.h"
 #include "Core/Math/CoordinateConvention.h"
 #include "Runtime/RuntimeServices.h"
@@ -61,6 +64,16 @@ namespace Catalpa {
         if (status.IsSuccess()) status = scene.CommitPending();
         if (status.IsSuccess()) status = scene.QueueSetParent(scene.Resolve(ChildId), scene.Resolve(ParentId));
         if (status.IsSuccess()) status = scene.QueueSetCamera(scene.Resolve(CameraId), CameraComponent{});
+        // 一个引擎生成并密封的立方体供两个实体共享；Box不创建或拥有GPU buffer。
+        MeshData cube;
+        MeshResourceRef geometry;
+        if (status.IsSuccess()) {
+            auto meshStatus = CreateCubeMesh(1.0f, cube);
+            if (meshStatus.IsSuccess()) meshStatus = CreateMeshResource(cube, geometry);
+            if (!meshStatus.IsSuccess()) { CAT_ERROR("Cannot prepare sandbox geometry: {0}", meshStatus.message); Detach(); return false; }
+            status = scene.QueueSetMeshRenderer(scene.Resolve(ParentId), { geometry, Math::Vec4{ 0.1f, 0.8f, 0.5f, 1.0f }, true });
+            if (status.IsSuccess()) status = scene.QueueSetMeshRenderer(scene.Resolve(ChildId), { geometry, Math::Vec4{ 0.9f, 0.4f, 0.2f, 1.0f }, true });
+        }
         if (status.IsSuccess()) status = scene.CommitPending();
         if (!status.IsSuccess()) { CAT_ERROR("Cannot create sandbox content: {0}", status.message); Detach(); return false; }
 
@@ -91,7 +104,7 @@ namespace Catalpa {
         status = m_Module.Install(scene, std::move(gameplay));
         if (!status.IsSuccess()) { CAT_ERROR("Cannot install sandbox gameplay: {0}", status.message); Detach(); return false; }
         CAT_INFO("[S03.2] WASD/QE move, hold right mouse to look, F6 pause, F7 step while paused; UI capture suppresses gameplay.");
-        CAT_INFO("[S03.2] Camera and transforms are CPU snapshots; existing triangle drawing remains until S03.3.");
+        CAT_INFO("Geometry snapshot sample: two instances share one sealed cube. GPU depth/UBO drawing is pending the next batch.");
         return true;
         } catch (const std::bad_alloc&) {
             CAT_ERROR("Cannot allocate sandbox gameplay state");
@@ -117,6 +130,8 @@ namespace Catalpa {
         if (m_ReportSeconds < 1.0 || frame.views.empty() || frame.sceneIdentity != scene->GetWorld().GetIdentity()) return;
         m_ReportSeconds = 0.0;
         const auto& position = frame.views.front().matrices.position;
+        const bool sharedGeometry = frame.instances.size() == 2 && frame.instances[0].mesh == frame.instances[1].mesh;
+        CAT_INFO("Geometry snapshot: {0} instances, shared mesh = {1}", frame.instances.size(), sharedGeometry);
         CAT_INFO("[S03.2] tick={0}, simulation={1}s, steps={2}, alpha={3}, camera=({4}, {5}, {6})",
             time.tickCount == 0 ? time.firstTick - 1 : time.firstTick + time.tickCount - 1, time.simulationSeconds, time.tickCount,
             time.interpolationAlpha, position.x, position.y, position.z);

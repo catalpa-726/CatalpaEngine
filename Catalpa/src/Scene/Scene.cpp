@@ -5,6 +5,8 @@
 #include "Runtime/Systems/TransformSystem.h"
 #include "Scene/Components/CameraComponent.h"
 #include "Camera/CameraProjection.h"
+#include "Scene/Components/MeshRendererComponent.h"
+#include "Geometry/MeshValidation.h"
 
 
 namespace Catalpa {
@@ -14,6 +16,7 @@ namespace Catalpa {
     const ComponentType& ComponentTraits<TransformComponent>::Get() { return Detail::MakeComponentType<TransformComponent>(); }
     const ComponentType& ComponentTraits<RelationshipComponent>::Get() { return Detail::MakeComponentType<RelationshipComponent>(); }
     const ComponentType& ComponentTraits<CameraComponent>::Get() { return Detail::MakeComponentType<CameraComponent>(); }
+    const ComponentType& ComponentTraits<MeshRendererComponent>::Get() { return Detail::MakeComponentType<MeshRendererComponent>(); }
 
     Scene::Scene(std::string name) : m_Name(std::move(name)) {}
     Scene::~Scene() = default;
@@ -70,6 +73,27 @@ namespace Catalpa {
             if (const auto status = ValidateEntity(entity); !status.IsSuccess()) return status;
             return world.Remove<CameraComponent>(entity);
         }); } catch (const std::bad_alloc&) { return { WorldError::AllocationFailed, "Cannot capture camera removal" }; }
+    }
+
+    WorldStatus Scene::QueueSetMeshRenderer(EntityId entity, const MeshRendererComponent& renderer) {
+        if (const auto status = ValidateMeshResource(renderer.mesh); !status.IsSuccess()) return { WorldError::InvalidArgument, status.message };
+        // 本步颜色为线性RGB及[0,1] alpha；允许有限HDR值，不静默裁剪或改写源参数。
+        for (int channel = 0; channel < 4; ++channel) {
+            if (!std::isfinite(renderer.color[channel]) || renderer.color[channel] < 0.0f
+                || (channel == 3 && renderer.color[channel] > 1.0f))
+                return { WorldError::InvalidArgument, "Mesh renderer color must be finite nonnegative RGB and alpha in [0,1]" };
+        }
+        try { return m_Commands.Enqueue([this, entity, renderer](World& world) {
+            if (const auto status = ValidateEntity(entity); !status.IsSuccess()) return status;
+            return world.Has<MeshRendererComponent>(entity) ? world.Set(entity, renderer) : world.Add(entity, renderer);
+        }); } catch (const std::bad_alloc&) { return { WorldError::AllocationFailed, "Cannot capture mesh renderer change" }; }
+    }
+
+    WorldStatus Scene::QueueRemoveMeshRenderer(EntityId entity) {
+        try { return m_Commands.Enqueue([this, entity](World& world) {
+            if (const auto status = ValidateEntity(entity); !status.IsSuccess()) return status;
+            return world.Remove<MeshRendererComponent>(entity);
+        }); } catch (const std::bad_alloc&) { return { WorldError::AllocationFailed, "Cannot capture mesh renderer removal" }; }
     }
 
     WorldStatus Scene::InitializeEntity(EntityId entity, PersistentEntityId persistent, const std::string& name, const Math::TransformTRS& local, EntityId parent) {

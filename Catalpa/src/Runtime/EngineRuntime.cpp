@@ -126,7 +126,7 @@ namespace Catalpa {
             SystemDesc extract;
             extract.id = "engine.extract";
             extract.phase = SystemPhase::Extract;
-            extract.accesses = { { "scene.transform", SystemAccessMode::Read }, { "scene.camera", SystemAccessMode::Read }, { "render.frame", SystemAccessMode::Write } };
+            extract.accesses = { { "scene.transform", SystemAccessMode::Read }, { "scene.camera", SystemAccessMode::Read }, { "scene.mesh-renderer", SystemAccessMode::Read }, { "render.frame", SystemAccessMode::Write } };
             extract.after = { "engine.transform" };
             extract.execute = [](SystemContext& context) -> WorldStatus {
                 const auto& services = context.services;
