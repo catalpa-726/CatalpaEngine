@@ -7,12 +7,39 @@
 #include "Assets/AssetManifest.h"
 #include "Core/IO/AtomicFileWriter.h"
 #include "Core/PlatformServices.h"
+#include "AssetCompiler/AssetCompilerOptions.h"
+#include "AssetPipeline/AssetCooker.h"
 namespace Catalpa::Tools {
     ToolCommandResult ToolCommandRunner::Run(std::span<const std::string> args,CancellationToken cancellation){
         ToolCommandResult result;
         auto fail=[&](std::string message,int code=1){result.exitCode=cancellation.IsCancellationRequested()?130:code;result.diagnostics.push_back(std::move(message));return result;};
         try {
-            if(args.empty()||args[0]!="--cook-shaders")return fail("expected --cook-shaders --source-root <absolute> --output-root <absolute> [--sdk-root <absolute>] [--define NAME=VALUE]",2);
+            if (!args.empty() && (args[0] == "--build-assets" || args[0] == "--cook-assets")) {
+                AssetBuildRequest request;
+                std::string error;
+                if (!AssetCompilerOptions::Parse(args, request, error))
+                    return fail(error, 2);
+                request.cancellation = cancellation;
+                const auto built = AssetCooker::Build(std::move(request));
+                for (const auto& d : built.diagnostics)
+                    result.diagnostics.push_back(d.element + ": " + d.message);
+                if (!built.success)
+                    return fail(built.error);
+                result.exitCode = 0;
+                result.outputs = {built.manifest, built.report};
+                result.diagnostics.push_back(std::string(built.cacheHit ? "Cache hit: " : "Cooked: ") +
+                                             std::to_string(built.records.size()) +
+                                             " assets; primary=" + built.primary.ToString());
+                result.diagnostics.push_back("Catalog: " + AssetPathText(built.manifest));
+                result.diagnostics.push_back("Source mapping and conversion report: " +
+                                             AssetPathText(built.report));
+                return result;
+            }
+            if (args.empty() || args[0] != "--cook-shaders")
+                return fail("expected --cook-assets/--build-assets --project <file> --source <file> "
+                            "--shader-root <directory>, or --cook-shaders --source-root <directory> "
+                            "--output-root <directory> [--sdk-root <directory>] [--define NAME=VALUE]",
+                            2);
             std::filesystem::path source,output,sdk;std::map<std::string,std::string,std::less<>> defines;
             std::set<std::string> seen;
             for(size_t i=1;i<args.size();++i){const auto& option=args[i];if(i+1==args.size())return fail("missing value for "+option,2);const auto& value=args[++i];

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "catpch.h"
 
@@ -7,7 +7,7 @@ namespace Catalpa {
 
     enum class VertexFormat { Float2, Float3, Float4 };
     // CPU 几何描述保留语义；旧的纯管线布局可继续使用 Unknown。
-    enum class VertexSemantic { Unknown, Position, Normal, TexCoord0, Color0 };
+    enum class VertexSemantic { Unknown, Position, Normal, TexCoord0, Color0, Tangent };
 
     [[nodiscard]] constexpr uint32_t GetVertexFormatByteSize(VertexFormat format) noexcept
     {

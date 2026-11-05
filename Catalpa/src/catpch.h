@@ -49,3 +49,7 @@
 #include <typeindex>
 
 #include <tuple>
+
+// 有界日志订阅及工具进度值快照共用，不传播UI对象到日志生产线程。
+#include <mutex>
+#include <deque>

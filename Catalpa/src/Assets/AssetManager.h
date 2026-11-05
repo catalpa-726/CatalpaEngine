@@ -38,6 +38,9 @@ namespace Catalpa {
         bool SetFallback(AssetId, std::type_index, std::string& error);
         template<class T> bool SetFallback(AssetId id, std::string& error) { return SetFallback(id, std::type_index(typeid(T)), error); }
         bool ReplaceRegistry(AssetRegistry, std::string& error);
+        // 主线程安装 Cooked 目录。传入完整 manifest 时，撤下同一挂载中已移除的记录。
+        bool InstallCookedCatalog(const std::filesystem::path& absoluteRoot, const AssetRegistry& catalog,
+                                  std::string& error, bool replaceMountContents = false);
         // Cooked versions are opaque nonzero content keys; request generations provide ordering.
         bool Request(AssetId, std::string& error, bool forceReload = false);
         void Cancel(AssetId);

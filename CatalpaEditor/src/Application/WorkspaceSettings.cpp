@@ -126,8 +126,8 @@ namespace Catalpa::Editor {
         }
         if (language == document.end() || !language->is_string() || vsync == document.end() || !vsync->is_boolean() ||
             layout == document.end() || !layout->is_string() || checksum == document.end() || !checksum->is_string() ||
-            panels == document.end() || !panels->is_object() || panels->size() != 4) {
-            error = "Workspace language/layout/layout_checksum must be strings, vsync a boolean, and panels a four-field object.";
+            panels == document.end() || !panels->is_object() || (panels->size() != 4 && panels->size() != 8)) {
+            error = "Workspace language/layout/layout_checksum must be strings, vsync a boolean, and panels a supported four/eight-field object.";
             return WorkspaceLoadResult::Failed;
         }
 
@@ -147,6 +147,12 @@ namespace Catalpa::Editor {
         if (!readPanel("scene", parsed.showScene) || !readPanel("assets", parsed.showAssets) ||
             !readPanel("inspector", parsed.showInspector) || !readPanel("settings", parsed.showSettings) ||
             !ValidateSettings(parsed, error)) return WorkspaceLoadResult::Failed;
+        // 旧四面板配置保持兼容；新配置一次保存全部八个稳定面板键。
+        if (panels->size() == 8 &&
+            (!readPanel("content", parsed.showContent) || !readPanel("build", parsed.showBuild) ||
+             !readPanel("console", parsed.showConsole) ||
+             !readPanel("dependencies", parsed.showDependencies)))
+            return WorkspaceLoadResult::Failed;
 
         const auto& storedChecksum = *checksum->get_ptr<const std::string*>();
         if (storedChecksum.size() != 16 || storedChecksum != LayoutChecksum(parsed.layout)) {
@@ -162,15 +168,20 @@ namespace Catalpa::Editor {
     {
         error.clear();
         if (!ValidateSettings(settings, error)) return false;
-        const nlohmann::json document{
-            { "schema_version", 1 }, { "language", settings.language }, { "vsync", settings.vsync },
-            { "panels", {
-                { "scene", settings.showScene }, { "assets", settings.showAssets },
-                { "inspector", settings.showInspector }, { "settings", settings.showSettings }
-            } },
-            { "layout", settings.layout },
-            { "layout_checksum", LayoutChecksum(settings.layout) }
-        };
+        const nlohmann::json document{{"schema_version", 1},
+                                      {"language", settings.language},
+                                      {"vsync", settings.vsync},
+                                      {"panels",
+                                       {{"scene", settings.showScene},
+                                        {"assets", settings.showAssets},
+                                        {"inspector", settings.showInspector},
+                                        {"settings", settings.showSettings},
+                                        {"content", settings.showContent},
+                                        {"build", settings.showBuild},
+                                        {"console", settings.showConsole},
+                                        {"dependencies", settings.showDependencies}}},
+                                      {"layout", settings.layout},
+                                      {"layout_checksum", LayoutChecksum(settings.layout)}};
         const std::string text = document.dump(2) + '\n';
         if (text.size() > MaxWorkspaceBytes) {
             error = "Serialized workspace settings exceed the 1 MiB limit.";

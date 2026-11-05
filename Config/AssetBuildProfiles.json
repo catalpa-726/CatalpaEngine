@@ -6,7 +6,8 @@
       "architecture": "x86_64",
       "shaderTarget": "spirv",
       "shaderProfile": "spirv_1_5",
-      "targetEnvironment": "vulkan1.3"
+      "targetEnvironment": "vulkan1.3",
+      "assetPipeline": "static-model-v1"
     }
   }
 }

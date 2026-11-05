@@ -1,8 +1,37 @@
 #include "catpch.h"
 #include "Assets/AssetManager.h"
 #include "Assets/AssetContainerReader.h"
+#include "Assets/AssetDependencyGraph.h"
 #include "Log/Log.h"
 namespace Catalpa {
+    namespace {
+        // 父资产持有解码时的确切依赖版本。即使父记录未改，依赖移动或换版也须重新验证。
+        std::set<AssetId> ChangedAssets(const AssetRegistry& previous, const AssetRegistry& next) {
+            std::map<AssetId, std::vector<AssetId>> dependents;
+            std::set<AssetId> affected;
+            for (const auto& record : next.GetRecords()) {
+                for (auto dependency : record.dependencies) dependents[dependency].push_back(record.id);
+                const auto* old = previous.Find(record.id);
+                if (!old || old->type != record.type || old->version != record.version ||
+                    old->contentHash != record.contentHash || old->dependencies != record.dependencies ||
+                    old->locator.kind != record.locator.kind || old->locator.path != record.locator.path) {
+                    affected.insert(record.id);
+                }
+            }
+            for (const auto& record : previous.GetRecords()) {
+                if (!next.Find(record.id)) affected.insert(record.id);
+            }
+            std::vector<AssetId> queue(affected.begin(), affected.end());
+            for (size_t i = 0; i < queue.size(); ++i) {
+                const auto found = dependents.find(queue[i]);
+                if (found == dependents.end()) continue;
+                for (auto parent : found->second) {
+                    if (affected.insert(parent).second) queue.push_back(parent);
+                }
+            }
+            return affected;
+        }
+    }
     struct AssetManager::Impl {
         struct Retained {
             AssetLoadResult decoded;
@@ -35,6 +64,7 @@ namespace Catalpa {
         std::map<std::string, AssetLoader, std::less<>> loaders;
         std::map<AssetId, Entry> entries;
         std::map<std::pair<AssetId, uint64_t>, std::string> knownDigests;
+        std::map<std::string, std::filesystem::path, std::less<>> installedRoots;
         std::vector<Pending> pending;
         bool closed = false;
         Impl(JobSystem& j, VirtualFileSystem f, AssetRegistry r, AssetManagerConfig c)
@@ -180,15 +210,114 @@ namespace Catalpa {
                     }
                 }
             }
+            const auto affected = ChangedAssets(m_Impl->registry, registry);
             m_Impl->registry = std::move(registry);
             for (auto& [id, entry] : m_Impl->entries) {
+                if (!affected.contains(id) && entry.status != AssetStatus::Failed && entry.status != AssetStatus::Cancelled) continue;
                 entry.job.Cancel(); ++entry.generation;
-                // Generated builtins are outside the cooked registry and keep their ready version.
-                if (!(entry.builtin && entry.current.asset.value && !m_Impl->registry.Find(id))) entry.status = AssetStatus::Unloaded;
+                if (!entry.builtin) {
+                    entry.status = AssetStatus::Unloaded;
+                    if (!m_Impl->registry.Find(id)) {
+                        // 已交付场景的快照继续由场景持有；撤下的记录不能供新调用再次获取。
+                        entry.current = {};
+                        entry.contentHash.clear();
+                    }
+                }
                 entry.diagnostic.clear();
             }
             error.clear(); return true;
         } catch (const std::exception& exception) { error = exception.what(); return false; }
+    }
+
+    bool AssetManager::InstallCookedCatalog(const std::filesystem::path& absoluteRoot,
+                                            const AssetRegistry& catalog, std::string& error,
+                                            bool replaceMountContents) {
+        try {
+            if (!m_Impl->Owner(error))
+                return false;
+            if (!absoluteRoot.is_absolute() || catalog.GetRecords().empty()) {
+                error = "Cooked catalog requires an absolute root and records";
+                return false;
+            }
+            const auto root = std::filesystem::canonical(absoluteRoot);
+            auto files = m_Impl->files;
+            auto roots = m_Impl->installedRoots;
+            std::map<AssetId, AssetRecord> merged;
+            for (const auto& r : m_Impl->registry.GetRecords())
+                merged.emplace(r.id, r);
+            std::vector<AssetId> changed;
+            std::set<AssetId> replaced;
+            std::set<std::string> publishedMounts;
+            for (const auto& r : catalog.GetRecords()) {
+                publishedMounts.insert(r.locator.path.MountName());
+                replaced.insert(r.id);
+                const auto* old = m_Impl->registry.Find(r.id);
+                if (old && (old->version != r.version || old->contentHash != r.contentHash))
+                    changed.push_back(r.id);
+            }
+            if (replaceMountContents) {
+                for (const auto& old : m_Impl->registry.GetRecords()) {
+                    if (publishedMounts.contains(old.locator.path.MountName()) && !replaced.contains(old.id))
+                        changed.push_back(old.id);
+                }
+            }
+            AssetDependencyGraph oldGraph;
+            if (!oldGraph.Build(m_Impl->registry.GetRecords(), error))
+                return false;
+            for (auto id : oldGraph.Affected(changed))
+                if (!replaced.contains(id))
+                    merged.erase(id);
+            for (const auto& r : catalog.GetRecords()) {
+                if (r.locator.kind != AssetLocationKind::Cooked || r.contentHash.empty()) {
+                    error = "Catalog contains a non-cooked or unhashed asset";
+                    return false;
+                }
+                const auto& mount = r.locator.path.MountName();
+                const auto knownRoot = roots.find(mount);
+                if (knownRoot == roots.end()) {
+                    if (!files.MountReadOnly(mount, root, 0, error))
+                        return false;
+                    roots.emplace(mount, root);
+                } else if (knownRoot->second != root) {
+                    error = "Cooked mount already belongs to another directory";
+                    return false;
+                }
+                const auto old = merged.find(r.id);
+                if (old != merged.end() && old->second.version == r.version) {
+                    if (old->second.type != r.type || old->second.contentHash != r.contentHash ||
+                        old->second.dependencies != r.dependencies) {
+                        error = "Cooked catalog reuses an identity/version with different content";
+                        return false;
+                    }
+                    // 项目可打包内置着色器的同一份字节，保留引擎在启动时为它建立的挂载。
+                    // 工具安装的记录则采用最新位置，项目移动后仍能重新加载同一内容版本。
+                    if (r.type.ToString() == "shader" &&
+                        !m_Impl->installedRoots.contains(old->second.locator.path.MountName()))
+                        continue;
+                }
+                merged.insert_or_assign(r.id, r);
+            }
+            std::vector<AssetRecord> records;
+            records.reserve(merged.size());
+            for (auto& [id, r] : merged) {
+                (void)id;
+                records.push_back(std::move(r));
+            }
+            AssetRegistry next;
+            AssetDependencyGraph graph;
+            if (!next.Replace(records, error) || !graph.Build(records, error))
+                return false;
+            // 文件挂载在ReplaceRegistry成功后通过无分配swap发布；失败不改变当前挂载。
+            if (!ReplaceRegistry(std::move(next), error))
+                return false;
+            m_Impl->files.Swap(files);
+            m_Impl->installedRoots.swap(roots);
+            error.clear();
+            return true;
+        } catch (const std::exception& exception) {
+            error = exception.what();
+            return false;
+        }
     }
     bool AssetManager::Request(AssetId id, std::string& error, bool forceReload) {
         try { if (!m_Impl->Owner(error)) return false; std::set<AssetId> stack; return m_Impl->Begin(id, stack, error, forceReload); }

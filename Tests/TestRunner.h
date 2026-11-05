@@ -63,4 +63,6 @@ namespace Catalpa::Tests {
     void RunShaderMetadataTests(TestContext&);
     void RunGpuCacheTests(TestContext&);
     int RunS04Tests();
+    void RunAssetPipelineTests(TestContext&);
+    int RunS05S06Tests(); // CPU/IO：真实解析器、Cook/DDC、加载/实例化和关闭协议。
 }

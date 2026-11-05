@@ -12,6 +12,7 @@ namespace Catalpa {
 	class ImGuiLayer;
 	class SceneManager;
     class AssetManager;
+    class JobSystem;
     struct FrameTime;
     struct RenderFramePacket;
 
@@ -36,6 +37,7 @@ namespace Catalpa {
 		// 仅开放场景服务；设备、交换链和 Renderer 仍由 Runtime 管理。
 		SceneManager& GetScenes();
         AssetManager& GetAssets(); // 仅Layer挂载后借用运行期服务，GPU仍封装在Runtime。
+        JobSystem& GetJobs(); // 借用Runtime唯一CPU调度器；Layer只能取消/等待自己提交的任务。
         // 仅借用最近完成的 CPU 时间/场景快照，供沙盒诊断；下一帧可能替换内容。
         [[nodiscard]] const FrameTime& GetFrameTime() const;
         [[nodiscard]] const RenderFramePacket& GetSceneFrame() const;

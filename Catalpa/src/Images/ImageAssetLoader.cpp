@@ -7,7 +7,9 @@ namespace Catalpa {
     bool ImageAssetLoader::EncodePayload(const ImageAsset& asset, std::vector<std::byte>& output, std::string& error) {
         try {
             if (!ValidateImageAsset(asset, error)) return false;
-            const auto& image = asset.image; BinaryWriter writer;
+            // 4K RGBA8恰为64MiB，额外容纳布局/来源头；仍不压缩或重采样像素。
+            const auto& image = asset.image;
+            BinaryWriter writer(80 * 1024 * 1024);
             writer.U32(static_cast<uint32_t>(image.format)); writer.U32(static_cast<uint32_t>(image.dimension));
             writer.U32(image.width); writer.U32(image.height); writer.U32(image.depth); writer.U32(image.arrayLayers); writer.U32(image.mipLevels);
             writer.U32(static_cast<uint32_t>(image.colorSpace)); writer.U32(static_cast<uint32_t>(image.alphaMode)); writer.U32(static_cast<uint32_t>(image.semantic));

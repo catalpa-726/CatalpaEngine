@@ -16,6 +16,16 @@ IncludeDir["GLM"] = "Catalpa/third_party/glm"
 IncludeDir["EnTT"] = "Catalpa/third_party/entt/src"
 IncludeDir["EnkiTS"] = "Catalpa/third_party/enkiTS/src"
 IncludeDir["SPIRVReflect"] = "Catalpa/third_party/SPIRV-Reflect"
+-- S05/S06源资产解析器只由Tools消费，不向Catalpa Runtime增加依赖。
+IncludeDir["fastgltf"] = "Catalpa/third_party/fastgltf/include"
+IncludeDir["simdjson"] = "Catalpa/third_party/simdjson/singleheader"
+IncludeDir["simdutf"] = "Catalpa/third_party/simdutf"
+IncludeDir["stb"] = "Catalpa/third_party/stb"
+IncludeDir["MikkTSpace"] = "Catalpa/third_party/MikkTSpace"
+IncludeDir["assimp"] = "Catalpa/third_party/assimp/include"
+IncludeDir["AssimpConfig"] = "out/generated/Assimp/include"
+IncludeDir["AssimpZlib"] = "Catalpa/third_party/assimp/contrib/zlib"
+IncludeDir["AssimpZlibConfig"] = "out/generated/Assimp/zlib"
 
 -- 工程生成前检查外部源码依赖和生成的 GLAD；获取版本见 Dependencies.lock.json。
 local requiredDependencies = {
@@ -36,7 +46,20 @@ local requiredDependencies = {
     "Catalpa/third_party/enkiTS/src/LockLessMultiReadPipe.h",
     "Catalpa/third_party/SPIRV-Reflect/spirv_reflect.c",
     "Catalpa/third_party/SPIRV-Reflect/spirv_reflect.h",
-    "Catalpa/third_party/SPIRV-Reflect/include/spirv/unified1/spirv.h"
+    "Catalpa/third_party/SPIRV-Reflect/include/spirv/unified1/spirv.h",
+    "Catalpa/third_party/fastgltf/src/parser.cpp",
+    "Catalpa/third_party/fastgltf/include/fastgltf/core.hpp",
+    "Catalpa/third_party/simdjson/singleheader/simdjson.cpp",
+    "Catalpa/third_party/simdjson/singleheader/simdjson.h",
+    "Catalpa/third_party/simdutf/simdutf.cpp",
+    "Catalpa/third_party/simdutf/simdutf.h",
+    "Catalpa/third_party/stb/stb_image.h",
+    "Catalpa/third_party/MikkTSpace/mikktspace.c",
+    "Catalpa/third_party/MikkTSpace/mikktspace.h",
+    "Catalpa/third_party/assimp/CMakeLists.txt",
+    "Catalpa/third_party/assimp/include/assimp/config.h.in",
+    "Catalpa/third_party/assimp/include/assimp/revision.h.in",
+    "Catalpa/third_party/assimp/contrib/zlib/zconf.h.cmakein"
 }
 for _, dependency in ipairs(requiredDependencies) do
     if not os.isfile(path.join(_MAIN_SCRIPT_DIR, dependency)) then
@@ -93,6 +116,10 @@ include "Script/Build/GLAD.lua"
 include "Script/Build/EnkiTS.lua"
 -- SPIR-V反射由Tools私有消费；Runtime只读取cooked ShaderAsset。
 include "Script/Build/SPIRVReflect.lua"
+-- 工具依赖均由Premake直接编译；Assimp的派生头也由Lua生成。
+include "Script/Build/AssetImport.lua"
+include "Script/Build/Assimp.lua"
+filter {}
 
 
 project "Catalpa"
@@ -175,7 +202,9 @@ project "CatalpaBox"
     links {
         "Catalpa",
         "CatalpaEditor",
-        "Tools"
+        "Tools",
+        -- 最终宿主显式链接工具静态闭包，避免依赖StaticLib传递链接的差异。
+        "fastgltf", "simdjson", "simdutf", "MikkTSpace", "assimp", "AssimpZlib"
     }
 
     -- 开发配置调用验证库；Dist 的入口由现有 CATALPA_DIST 分支禁用。
@@ -239,9 +268,16 @@ project "Tools"
     kind "StaticLib"
 
     files { "Tools/**.h", "Tools/**.cpp" }
-    includedirs { "Tools", "Catalpa/src", "%{IncludeDir.SPIRVReflect}" }
+    -- 导入/Cook的JSON适配及领域数学头由Tools直接消费，沿用现有依赖路径与ABI。
+    includedirs { "Tools", "Catalpa/src", "%{IncludeDir.SPIRVReflect}",
+        "%{IncludeDir.JSON}", "%{IncludeDir.GLM}",
+        "%{IncludeDir.fastgltf}", "%{IncludeDir.simdjson}", "%{IncludeDir.stb}",
+        "%{IncludeDir.MikkTSpace}", "%{IncludeDir.assimp}", "%{IncludeDir.AssimpConfig}",
+        "%{IncludeDir.AssimpZlib}", "%{IncludeDir.AssimpZlibConfig}" }
+    -- 与fastgltf静态实现的公开数值ABI保持一致；stb实现由后续唯一TextureImporter提供。
+    defines { "FASTGLTF_USE_64BIT_FLOAT=0" }
     -- 反射是Tools的私有实现依赖；最终宿主通过项目引用链接所需静态实现。
-    links { "Catalpa", "SPIRV-Reflect" }
+    links { "Catalpa", "SPIRV-Reflect", "fastgltf", "MikkTSpace", "assimp", "AssimpZlib" }
 
     filter "system:windows"
         defines { "CATALPA_PLATFORM_WINDOW" }

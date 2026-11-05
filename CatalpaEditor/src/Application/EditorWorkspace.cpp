@@ -1,6 +1,10 @@
 #include "catpch.h"
 #include "EditorWorkspace.h"
 #include "EditorProject.h"
+#include "Panels/BuildPanel.h"
+#include "Panels/ContentBrowserPanel.h"
+#include "Panels/ConsolePanel.h"
+#include "Panels/DependencyPanel.h"
 #include "Platform/WorkspaceFiles.h"
 #include "Core/Application.h"
 #include "Log/Log.h"
@@ -166,6 +170,11 @@ namespace Catalpa::Editor {
         m_SettingsPath = m_ExecutableDirectory / "Saved" / "Workspace.json";
         m_BrowseDirectory = m_ExecutableDirectory / "Resources";
         LoadLanguage();
+        auto& app = Application::Get();
+        m_Build = std::make_unique<BuildPanel>(app.GetJobs(), app.GetAssets(), app.GetScenes());
+        m_Content = std::make_unique<ContentBrowserPanel>();
+        m_Console = std::make_unique<ConsolePanel>();
+        m_Dependencies = std::make_unique<DependencyPanel>();
         if (!m_ProjectFile.empty()) {
             auto project = std::make_unique<EditorProject>();
             if (!project->Load(m_ProjectFile, error)) {
@@ -240,10 +249,43 @@ namespace Catalpa::Editor {
     {
         if (!m_Attached) return;
         const Action action = std::exchange(m_Action, Action::None);
-        if (action == Action::Reload) ReloadWorkspace();
+        if (action == Action::OpenProject) {
+            std::string error;
+            auto candidate = std::make_unique<EditorProject>();
+            if (!candidate->Load(std::filesystem::u8path(m_ProjectPathInput.data()), error))
+                Report("status.project_failed", "Project open failed", error);
+            else {
+                if (m_Build)
+                    m_Build->CloseProject();
+                m_Project = std::move(candidate);
+                m_ProjectFile = m_Project->GetSession()->config.projectFile;
+                m_BrowseDirectory = m_Project->GetSession()->config.contentRoot;
+                m_SelectedFile.clear();
+                if (m_Content)
+                    m_Content->Reset();
+                RefreshFiles();
+                m_Settings.showContent = m_Settings.showBuild = true;
+                m_Dirty = true;
+                Report("status.project_opened", "Project opened");
+            }
+        } else if (action == Action::CloseProject) {
+            if (m_Build)
+                m_Build->CloseProject();
+            m_Project.reset();
+            m_ProjectFile.clear();
+            m_SelectedFile.clear();
+            if (m_Content)
+                m_Content->Reset();
+            m_BrowseDirectory = m_ExecutableDirectory / "Resources";
+            RefreshFiles();
+            Report("status.project_closed", "Project closed");
+        } else if (action == Action::Reload)
+            ReloadWorkspace();
         else if (action == Action::ResetLayout) {
             m_Settings.showScene = m_Settings.showAssets = m_Settings.showInspector = true;
             m_Settings.showSettings = false;
+            m_Settings.showContent = m_Settings.showBuild = true;
+            m_Settings.showConsole = m_Settings.showDependencies = false;
             m_ResetLayout = true;
             m_Dirty = true;
             Report("status.reset", "Default layout restored");
@@ -256,6 +298,10 @@ namespace Catalpa::Editor {
             m_CloseRequested = false;
         } else if (m_AutoSave && !m_ResetLayout && m_FrameSeen
             && (m_Dirty || ImGui::GetIO().WantSaveIniSettings)) SaveWorkspace();
+        if (m_Build)
+            m_Build->Update();
+        if (m_Console)
+            m_Console->Update();
     }
 
     void EditorWorkspace::OnDetach()
@@ -264,7 +310,11 @@ namespace Catalpa::Editor {
         if (!m_SavedForExit && m_AutoSave && m_FrameSeen && ImGui::GetCurrentContext()) SaveWorkspace();
         m_Files.clear();
         m_SelectedFile.clear();
-        m_Project.reset(); // 当前只含同步项目/索引；未来文档与Jobs须先收束再关闭会话。
+        m_Build.reset();
+        m_Content.reset();
+        m_Console.reset();
+        m_Dependencies.reset();
+        m_Project.reset(); // 本工作区任务先取消并等待，再释放作者会话；Runtime调度器仍由Runtime收束。
         m_Attached = false;
     }
 
@@ -286,6 +336,10 @@ namespace Catalpa::Editor {
         ImGui::DockBuilderDockWindow("###Catalpa.Inspector", right);
         ImGui::DockBuilderDockWindow("###Catalpa.Settings", right);
         ImGui::DockBuilderDockWindow("###Catalpa.Assets", bottom);
+        ImGui::DockBuilderDockWindow("###Catalpa.Content", bottom);
+        ImGui::DockBuilderDockWindow("###Catalpa.Console", bottom);
+        ImGui::DockBuilderDockWindow("###Catalpa.Build", right);
+        ImGui::DockBuilderDockWindow("###Catalpa.Dependencies", right);
         ImGui::DockBuilderFinish(dockId);
         m_ResetLayout = false;
         m_Dirty = true;
@@ -296,6 +350,16 @@ namespace Catalpa::Editor {
         if (!ImGui::BeginMainMenuBar()) return;
         ImGui::TextUnformatted("CATALPA");
         if (ImGui::BeginMenu(Label("menu.file", "File", "File").c_str())) {
+            if (ImGui::MenuItem(Label("action.open_project", "Open Project...", "OpenProject").c_str()))
+                m_OpenProjectPopup = true;
+            if (ImGui::MenuItem(Label("action.close_project", "Close Project", "CloseProject").c_str(),
+                                nullptr, false, bool(m_Project)))
+                m_Action = Action::CloseProject;
+            if (ImGui::MenuItem(Label("action.import", "Import / Build Source", "ImportSource").c_str())) {
+                m_Settings.showContent = m_Settings.showBuild = true;
+                m_Dirty = true;
+            }
+            ImGui::Separator();
             if (ImGui::MenuItem(Label("action.save", "Save Workspace", "Save").c_str())) m_Action = Action::Save;
             if (ImGui::MenuItem(Label("action.reload", "Reload Workspace", "Reload").c_str())) m_Action = Action::Reload;
             ImGui::Separator();
@@ -305,8 +369,18 @@ namespace Catalpa::Editor {
         if (ImGui::BeginMenu(Label("menu.view", "View", "View").c_str())) {
             m_Dirty |= ImGui::MenuItem(Label("panel.scene", "Scene", "Scene").c_str(), nullptr, &m_Settings.showScene);
             m_Dirty |= ImGui::MenuItem(Label("panel.assets", "Assets", "Assets").c_str(), nullptr, &m_Settings.showAssets);
-            m_Dirty |= ImGui::MenuItem(Label("panel.inspector", "Inspector", "Inspector").c_str(), nullptr, &m_Settings.showInspector);
-            m_Dirty |= ImGui::MenuItem(Label("panel.settings", "Settings", "Settings").c_str(), nullptr, &m_Settings.showSettings);
+            m_Dirty |= ImGui::MenuItem(Label("panel.inspector", "Inspector", "Inspector").c_str(), nullptr,
+                                       &m_Settings.showInspector);
+            m_Dirty |= ImGui::MenuItem(Label("panel.settings", "Settings", "Settings").c_str(), nullptr,
+                                       &m_Settings.showSettings);
+            m_Dirty |= ImGui::MenuItem(Label("panel.content", "Content Browser", "Content").c_str(), nullptr,
+                                       &m_Settings.showContent);
+            m_Dirty |= ImGui::MenuItem(Label("panel.build", "Build", "Build").c_str(), nullptr,
+                                       &m_Settings.showBuild);
+            m_Dirty |= ImGui::MenuItem(Label("panel.console", "Console", "Console").c_str(), nullptr,
+                                       &m_Settings.showConsole);
+            m_Dirty |= ImGui::MenuItem(Label("panel.dependencies", "Dependencies", "Dependencies").c_str(),
+                                       nullptr, &m_Settings.showDependencies);
             ImGui::Separator();
             if (ImGui::MenuItem(Label("action.reset", "Reset Layout", "Reset").c_str())) m_Action = Action::ResetLayout;
             ImGui::EndMenu();
@@ -325,6 +399,26 @@ namespace Catalpa::Editor {
             ImGui::EndMenu();
         }
         ImGui::EndMainMenuBar();
+        if (m_OpenProjectPopup) {
+            ImGui::OpenPopup(Label("panel.open_project", "Open Project", "Catalpa.OpenProject").c_str());
+            m_OpenProjectPopup = false;
+        }
+        if (ImGui::BeginPopupModal(Label("panel.open_project", "Open Project", "Catalpa.OpenProject").c_str(),
+                                   nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextWrapped(
+                "%s", Text("project.path_hint", "Enter the absolute path of a .catalpaproj author project."));
+            ImGui::SetNextItemWidth(650);
+            ImGui::InputText(Label("project.path", "Project file", "ProjectPath").c_str(),
+                             m_ProjectPathInput.data(), m_ProjectPathInput.size());
+            if (ImGui::Button(Label("project.open", "Open", "ConfirmOpenProject").c_str())) {
+                m_Action = Action::OpenProject;
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(Label("project.cancel", "Cancel", "CancelOpenProject").c_str()))
+                ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+        }
     }
 
     void EditorWorkspace::DrawScene()
@@ -337,8 +431,10 @@ namespace Catalpa::Editor {
                 m_Dirty = true;
             }
             ImGui::Separator();
+            if (const auto* scene = Application::Get().GetScenes().GetActive())
+                ImGui::TextWrapped("%s", scene->GetName().c_str());
             ImGui::TextWrapped("%s", Text("scene.preview", "The central area shows the current render preview."));
-            ImGui::TextWrapped("%s", Text("scene.scope", "Scene editing and model import are not available yet."));
+            ImGui::TextWrapped("%s", Text("scene.scope", "Use Content Browser to build a source, then Build to instantiate the selected model. The central area previews the active scene."));
             ImGui::Spacing();
             ImGui::TextWrapped("%s", Text("workspace.docking", "Drag panel title bars to arrange the workspace. Use View to reopen panels."));
         }
@@ -459,7 +555,7 @@ namespace Catalpa::Editor {
                 }
                 if (error) ImGui::TextWrapped("%s", error.message().c_str());
                 ImGui::Separator();
-                ImGui::TextWrapped("%s", Text("inspector.file_scope", "File information only. Importing and editing assets are not available yet."));
+                ImGui::TextWrapped("%s", Text("inspector.file_scope", "Open an author project and use Content Browser to import supported source files."));
             }
         }
         ImGui::End();
@@ -497,12 +593,28 @@ namespace Catalpa::Editor {
         DrawMenu();
         BuildDefaultLayout();
         ImGui::DockSpaceOverViewport(ImHashStr(DockspaceName), ImGui::GetMainViewport(), DockFlags);
-        const std::array before{ m_Settings.showScene, m_Settings.showAssets, m_Settings.showInspector, m_Settings.showSettings };
+        const std::array before{m_Settings.showScene,    m_Settings.showAssets,      m_Settings.showInspector,
+                                m_Settings.showSettings, m_Settings.showContent,     m_Settings.showBuild,
+                                m_Settings.showConsole,  m_Settings.showDependencies};
         DrawScene();
         DrawAssets();
         DrawInspector();
         DrawSettings();
-        const std::array after{ m_Settings.showScene, m_Settings.showAssets, m_Settings.showInspector, m_Settings.showSettings };
+        const PanelText text = [this](const char* key, const char* fallback, const char* id) {
+            return id ? Label(key, fallback, id) : std::string(Text(key, fallback));
+        };
+        if (m_Content && m_Build)
+            m_Content->Draw(m_Settings.showContent, m_Project ? m_Project->GetSession() : nullptr,
+                            m_ExecutableDirectory / "Resources" / "Shaders", *m_Build, text);
+        if (m_Build)
+            m_Build->Draw(m_Settings.showBuild, text);
+        if (m_Console)
+            m_Console->Draw(m_Settings.showConsole, text);
+        if (m_Dependencies && m_Build)
+            m_Dependencies->Draw(m_Settings.showDependencies, m_Build->Result(), text);
+        const std::array after{m_Settings.showScene,    m_Settings.showAssets,      m_Settings.showInspector,
+                               m_Settings.showSettings, m_Settings.showContent,     m_Settings.showBuild,
+                               m_Settings.showConsole,  m_Settings.showDependencies};
         m_Dirty |= before != after;
         m_FrameSeen = true;
     }

@@ -60,3 +60,15 @@ __pycache__/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+/Catalpa/third_party/fastgltf/
+
+/Catalpa/third_party/simdjson/
+
+/Catalpa/third_party/simdutf/
+
+/Catalpa/third_party/stb/
+
+/Catalpa/third_party/MikkTSpace/
+
+/Catalpa/third_party/assimp/

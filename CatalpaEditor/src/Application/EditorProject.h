@@ -10,7 +10,7 @@ namespace Catalpa::Editor {
         bool Load(const std::filesystem::path& absoluteProjectFile, std::string& error);
         bool Save(std::string& error) const;
         [[nodiscard]] const Tools::ProjectSession* GetSession() const noexcept { return m_Session.get(); }
-        // 当前只释放项目值/只读挂载；未声称完成未来 Document/Jobs 的关闭协议。
+        // 调用方先取消并等待本项目的Build任务，再释放作者值；未来Document会话另行接入。
         void Close() noexcept { m_Session.reset(); }
     private:
         std::unique_ptr<Tools::ProjectSession> m_Session;

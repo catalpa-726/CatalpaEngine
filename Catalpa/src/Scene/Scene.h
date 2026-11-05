@@ -58,6 +58,7 @@ namespace Catalpa {
 
     private:
         friend class TransformSystem;
+        friend class ModelInstantiation;
         [[nodiscard]] WorldStatus ValidateEntity(EntityId entity) const noexcept;
         [[nodiscard]] WorldStatus InitializeEntity(EntityId entity, PersistentEntityId persistent, const std::string& name, const Math::TransformTRS& local, EntityId parent);
         [[nodiscard]] WorldStatus DestroySubtree(EntityId entity);

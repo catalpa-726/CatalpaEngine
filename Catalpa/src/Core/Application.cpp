@@ -53,6 +53,7 @@ namespace Catalpa {
     void Application::PushOverlay(std::unique_ptr<Layer> overlay) { m_PendingLayers.push_back({ .layer = std::move(overlay), .overlay = true }); }
 
     AssetManager& Application::GetAssets() { return m_Runtime->GetAssets(); }
+    JobSystem& Application::GetJobs() { return m_Runtime->GetJobs(); }
     SceneManager& Application::GetScenes() { return m_Runtime->GetScenes(); }
     const FrameTime& Application::GetFrameTime() const { return m_Runtime->GetFrameTime(); }
     const RenderFramePacket& Application::GetSceneFrame() const { return m_Runtime->GetSceneFrame(); }

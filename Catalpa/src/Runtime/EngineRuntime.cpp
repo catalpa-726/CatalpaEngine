@@ -119,7 +119,12 @@ namespace Catalpa {
         VirtualFileSystem files; AssetRegistry registry;
         if(!ShaderLibrary::ReadBuiltinCatalog(shaders,"shaders",records,error)
             ||!registry.Replace(records,error)||!files.MountReadOnly("shaders",shaders,0,error)) return false;
-        m_Assets=std::make_unique<AssetManager>(m_Jobs,std::move(files),std::move(registry));
+        // 4K RGBA8加布局需超过64MiB；逐资产准入，含解码工作区的同一CPU预算为1GiB。
+        AssetManagerConfig assetConfig;
+        assetConfig.maxFileBytes = 96 * 1024 * 1024;
+        assetConfig.maxResidentBytes = 160 * 1024 * 1024;
+        assetConfig.memoryBudgetBytes = 1024 * 1024 * 1024;
+        m_Assets = std::make_unique<AssetManager>(m_Jobs, std::move(files), std::move(registry), assetConfig);
         if(!RegisterRuntimeAssetLoaders(*m_Assets,error)) return false;
         // 启动只等待必须的内置shader。实际读取/解码始终在worker，发布仍在本线程。
         // 逐项等待避免文件数增长时把队列预算误当可无限并行的承诺。

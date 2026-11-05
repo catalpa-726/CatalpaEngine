@@ -9,6 +9,8 @@ namespace Catalpa {
     // Roots are explicit absolute directories. No current-directory or sandbox fallback is provided.
     class CATALPA_API VirtualFileSystem {
     public:
+        // 候选挂载表准备成功后一次无分配发布，供Runtime安装Cooked catalog事务使用。
+        void Swap(VirtualFileSystem& other) noexcept { m_Mounts.swap(other.m_Mounts); }
         // Higher priority wins. Equal priorities or duplicate roots for a mount are rejected.
         [[nodiscard]] bool MountReadOnly(std::string_view mount, const std::filesystem::path& absoluteRoot,
             int priority, std::string& error);

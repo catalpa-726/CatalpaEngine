@@ -29,6 +29,7 @@ namespace Catalpa {
         [[nodiscard]] WorldStatus Unload(SceneHandle handle);
         [[nodiscard]] WorldStatus SetActive(SceneHandle handle);
         [[nodiscard]] Scene* GetActive() noexcept;
+        [[nodiscard]] SceneHandle GetActiveHandle() const noexcept { return m_Active; }
         [[nodiscard]] const Scene* GetActive() const noexcept;
         [[nodiscard]] WorldStatus UpdateActive();
         // 在完整 tick/派生/提取作用域保护 active Scene，回调内禁止卸载/切换场景。

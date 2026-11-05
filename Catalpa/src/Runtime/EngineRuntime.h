@@ -39,6 +39,7 @@ namespace Catalpa {
         // 宿主传绝对部署资源根；Runtime不从Box目录或源项目推导路径。
         [[nodiscard]] bool ConfigureResources(std::filesystem::path absoluteRoot, std::string& error);
         AssetManager& GetAssets() { return *m_Assets; }
+        JobSystem& GetJobs() noexcept { return m_Jobs; }
         const ComponentRegistry* GetComponentSchemas() const noexcept { return m_ComponentSchemas.get(); }
 
 

@@ -110,6 +110,23 @@ namespace Catalpa::Tests {
         CAT_INFO("[S04.1 CPU/IO] {0} checks, {1} failures.", context.GetCheckCount(), context.GetFailureCount());
         return context.GetFailureCount() == 0 ? 0 : 1;
     }
+
+    int RunS05S06Tests() {
+        CAT_INFO("[S05/S06 CPU/IO] Read-only glTF/GLB/FBX/OBJ, image decode, Cook/DDC, runtime loading and "
+                 "scene transactions. No window/GPU initialization.");
+        TestContext context("S05/S06 CPU/IO");
+        try {
+            context.Check(RunS04Tests() == 0, "Existing identity/domain/job CPU regression remains valid");
+            RunAssetPipelineTests(context);
+        } catch (const std::exception& exception) {
+            context.Check(false, exception.what());
+        } catch (...) {
+            context.Check(false, "Unexpected non-standard exception");
+        }
+        CAT_INFO("[S05/S06 CPU/IO] {0} checks, {1} failures.", context.GetCheckCount(),
+                 context.GetFailureCount());
+        return context.GetFailureCount() == 0 ? 0 : 1;
+    }
     int RunS04Tests()
     {
         CAT_INFO("[S04 CPU/IO] Unified identity, schemas, cooked shader ABI, owned GPU-cache contracts, jobs and async versions. No window/GPU initialization.");

@@ -6,6 +6,10 @@
 
 namespace Catalpa::Editor {
     class EditorProject;
+    class BuildPanel;
+    class ContentBrowserPanel;
+    class ConsolePanel;
+    class DependencyPanel;
 
     // 编辑工作区由宿主应用挂载；只借用引擎服务和既有 ImGui 上下文。
     class EditorWorkspace final : public Layer {
@@ -20,7 +24,7 @@ namespace Catalpa::Editor {
 
     private:
         // 菜单只排队请求，文件和布局操作在下一次 NewFrame 前执行。
-        enum class Action { None, Save, Reload, ResetLayout };
+        enum class Action { None, Save, Reload, ResetLayout, OpenProject, CloseProject };
         struct FileEntry {
             std::filesystem::path path;
             std::string name;
@@ -48,6 +52,12 @@ namespace Catalpa::Editor {
         WorkspaceSettings m_Settings;
         std::filesystem::path m_ProjectFile;
         std::unique_ptr<EditorProject> m_Project;
+        std::unique_ptr<BuildPanel> m_Build;
+        std::unique_ptr<ContentBrowserPanel> m_Content;
+        std::unique_ptr<ConsolePanel> m_Console;
+        std::unique_ptr<DependencyPanel> m_Dependencies;
+        std::array<char, 2048> m_ProjectPathInput{};
+        bool m_OpenProjectPopup = false;
         std::filesystem::path m_ExecutableDirectory;
         std::filesystem::path m_SettingsPath;
         std::filesystem::path m_BrowseDirectory;

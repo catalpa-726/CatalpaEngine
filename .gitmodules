@@ -22,6 +22,27 @@
 	path = Catalpa/third_party/SPIRV-Reflect
 	url = https://github.com/KhronosGroup/SPIRV-Reflect.git
 
+[submodule "Catalpa/third_party/fastgltf"]
+	path = Catalpa/third_party/fastgltf
+	url = https://github.com/spnda/fastgltf.git
+[submodule "Catalpa/third_party/simdjson"]
+	path = Catalpa/third_party/simdjson
+	url = https://github.com/simdjson/simdjson.git
+[submodule "Catalpa/third_party/stb"]
+	path = Catalpa/third_party/stb
+	url = https://github.com/nothings/stb.git
+[submodule "Catalpa/third_party/MikkTSpace"]
+	path = Catalpa/third_party/MikkTSpace
+	url = https://github.com/mmikk/MikkTSpace.git
+[submodule "Catalpa/third_party/assimp"]
+	path = Catalpa/third_party/assimp
+	url = https://github.com/assimp/assimp.git
+[submodule "Catalpa/third_party/simdutf"]
+	path = Catalpa/third_party/simdutf
+	url = https://github.com/simdutf/simdutf.git
+
 # GLM, EnTT, enkiTS and SPIRV-Reflect currently come from complete upstream archives.
 # These entries declare submodule paths/URLs; gitlink registration is not performed here.
 # Ordinary source files are ignored; acquisition facts remain in Dependencies.lock.json.
+
+# Asset import dependencies above are user-provided directories; no gitlink registration or acquisition audit was performed.

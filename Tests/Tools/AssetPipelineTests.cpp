@@ -1,0 +1,922 @@
+#include "catpch.h"
+#include "TestRunner.h"
+#include "AssetCompiler/AssetCompilerOptions.h"
+#include "AssetPipeline/AssetCooker.h"
+#include "AssetPipeline/AssetArchiveWriter.h"
+#include "AssetPipeline/Cookers/TextureCooker.h"
+#include "AssetPipeline/AssetImportRegistry.h"
+#include "AssetPipeline/Importers/GltfImporter.h"
+#include "AssetPipeline/Importers/AssimpImporter.h"
+#include "AssetPipeline/Importers/TextureImporter.h"
+#include "Assets/AssetDependencyGraph.h"
+#include "Assets/AssetManifest.h"
+#include "Assets/AssetContainerReader.h"
+#include "Images/ImageAssetLoader.h"
+#include "Core/IO/AtomicFileWriter.h"
+#include "Core/PlatformServices.h"
+#include "Core/Id/StableIdGenerator.h"
+#include "ECS/ComponentRegistry.h"
+#include "Runtime/RuntimeRegistration.h"
+#include "Scene/ModelInstantiation.h"
+#include "Scene/Components/MeshRendererComponent.h"
+#include "Panels/BuildPanel.h"
+#include "Log/LogSubscription.h"
+#include "Log/Log.h"
+#include <spdlog/sinks/sink.h>
+
+namespace Catalpa::Tests {
+    namespace {
+        using namespace Tools;
+
+        // bool操作结束后才构造错误文本视图，位置仍指向实际用例调用点。
+        bool CheckOperation(TestContext& context, bool success, const std::string& error,
+                            std::source_location location = std::source_location::current()) {
+            context.Check(success, error, location);
+            return success;
+        }
+
+        void CheckOperation(TestContext& context, bool success, std::string_view prefix,
+                            const std::string& error,
+                            std::source_location location = std::source_location::current()) {
+            context.Check(success, std::string(prefix) + error, location);
+        }
+
+        // 所有写入/负例仅发生在独占临时项目；不使用或改写用户assets。
+        struct Fixture {
+            std::filesystem::path root, canonicalRoot;
+            std::unique_ptr<ProjectSession> session;
+            bool owned = false;
+
+            ~Fixture() {
+                if (!owned || canonicalRoot.empty())
+                    return;
+                std::error_code code;
+                const auto current = std::filesystem::canonical(root, code);
+                if (!code && current == canonicalRoot)
+                    std::filesystem::remove_all(root, code);
+            }
+
+            bool Store(const std::filesystem::path& path, std::string_view text, std::string& error) {
+                return AtomicFileWriter::Write(root / path, text, error);
+            }
+
+            bool StoreBytes(const std::filesystem::path& path, std::span<const std::byte> bytes,
+                            std::string& error) {
+                return AtomicFileWriter::Write(root / path, bytes, error);
+            }
+
+            bool Create(std::string& error) {
+                StableId id;
+                if (!GenerateStableId(id, error))
+                    return false;
+                root = std::filesystem::temp_directory_path() / ("CatalpaImport-" + id.ToString());
+                owned = std::filesystem::create_directory(root);
+                if (!owned) {
+                    error = "Cannot create exclusive import fixture";
+                    return false;
+                }
+                canonicalRoot = std::filesystem::canonical(root);
+                root = canonicalRoot;
+                for (auto directory : {"Content", "Raw", "Other"})
+                    std::filesystem::create_directory(root / directory);
+                return Store(
+                           "Fixture.catalpaproj",
+                           R"({"schemaVersion":1,"id":"11111111-2222-4333-8444-555555555555","name":"ImportFixture","contentRoot":"Content","externalSourceRoots":{"raw":"Raw"},"derivedDataRoot":"DDC","cookedRoot":"Cooked","metadata":"assets.json","buildProfiles":"profiles.json","buildProfile":"desktop-vulkan","targetPlatform":"windows","buildConfiguration":"Debug","startupScene":null,"modules":[]})",
+                           error) &&
+                       Store("Content/assets.json", R"({"schemaVersion":1,"assets":[]})", error) &&
+                       Store(
+                           "profiles.json",
+                           R"({"schemaVersion":1,"profiles":{"desktop-vulkan":{"platform":"windows","architecture":"x86_64","shaderTarget":"spirv","shaderProfile":"spirv_1_5","targetEnvironment":"vulkan1.3","assetPipeline":"static-model-v1"}}})",
+                           error) &&
+                       LoadProject(root / "Fixture.catalpaproj", session, error);
+            }
+
+            AssetBuildRequest Request(const char* source, const std::filesystem::path& shaders) const {
+                AssetBuildRequest r;
+                r.project = session->config;
+                r.source = root / "Raw" / source;
+                r.shaderRoot = shaders;
+                return r;
+            }
+        };
+
+        bool Read(const std::filesystem::path& file, std::vector<std::byte>& bytes, std::string& error) {
+            VirtualFileSystem fs;
+            VirtualPath path;
+            return fs.MountReadOnly("fixture", file.parent_path(), 0, error) &&
+                   VirtualPath::Parse("fixture:/" + AssetPathText(file.filename()), path, error) &&
+                   fs.ReadFile(path, 64 * 1024 * 1024, bytes, error);
+        }
+
+        std::string Replace(std::string text, std::string_view from, std::string_view to) {
+            const auto at = text.find(from);
+            if (at == std::string::npos)
+                throw std::logic_error("Fixture replacement marker is missing");
+            text.replace(at, from.size(), to);
+            return text;
+        }
+
+        std::vector<std::byte> TriangleBytes(float width = 1) {
+            const std::array<float, 24> values{0, 0, 0, 0, 0, 1, 0, 0, width, 0, 0, 0,
+                                               0, 1, 1, 0, 0, 1, 0, 0, 0,     1, 0, 1};
+            std::vector<std::byte> bytes;
+            for (float value : values) {
+                uint32_t bits;
+                std::memcpy(&bits, &value, 4);
+                for (unsigned i = 0; i < 4; ++i)
+                    bytes.push_back(std::byte((bits >> (i * 8)) & 255));
+            }
+            for (uint16_t value : {uint16_t(0), uint16_t(1), uint16_t(2)}) {
+                bytes.push_back(std::byte(value & 255));
+                bytes.push_back(std::byte(value >> 8));
+            }
+            return bytes;
+        }
+
+        const std::string Gltf =
+            R"({"asset":{"version":"2.0"},"buffers":[{"uri":"buffer.bin","byteLength":102}],"bufferViews":[{"buffer":0,"byteLength":96,"byteStride":32},{"buffer":0,"byteOffset":96,"byteLength":6}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},{"bufferView":0,"byteOffset":12,"componentType":5126,"count":3,"type":"VEC3"},{"bufferView":0,"byteOffset":24,"componentType":5126,"count":3,"type":"VEC2"},{"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}],"images":[{"uri":"pixels.png"}],"textures":[{"source":0}],"materials":[{"name":"Red","pbrMetallicRoughness":{"baseColorFactor":[1,0,0,1],"metallicFactor":0.1,"roughnessFactor":0.2,"baseColorTexture":{"index":0}}},{"name":"Green","pbrMetallicRoughness":{"baseColorFactor":[0,1,0,1],"metallicFactor":0.7,"roughnessFactor":0.8}}],"meshes":[{"name":"Shared","primitives":[{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3,"material":0},{"attributes":{"POSITION":0,"NORMAL":1,"TEXCOORD_0":2},"indices":3,"material":1}]}],"nodes":[{"name":"First","mesh":0},{"name":"Second","mesh":0,"translation":[2,0,0]}],"scenes":[{"nodes":[0,1]}],"scene":0})";
+
+        std::vector<std::byte> Png() {
+            constexpr unsigned char values[] = {
+                0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49,
+                0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02, 0x08, 0x06,
+                0x00, 0x00, 0x00, 0x72, 0xb6, 0x0d, 0x24, 0x00, 0x00, 0x00, 0x13, 0x49, 0x44,
+                0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0x0c, 0x19, 0x18,
+                0xfe, 0x83, 0x01, 0x00, 0x49, 0xc8, 0x09, 0xf7, 0x14, 0x63, 0x32, 0x9d, 0x00,
+                0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82};
+            std::vector<std::byte> bytes;
+            for (auto v : values)
+                bytes.push_back(std::byte(v));
+            return bytes;
+        }
+
+        std::vector<std::byte> Glb() {
+            const auto from = std::string("\"uri\":\"buffer.bin\",");
+            auto json = Replace(Gltf, from, "");
+            while (json.size() % 4)
+                json += ' ';
+            auto bin = TriangleBytes();
+            while (bin.size() % 4)
+                bin.push_back(std::byte{0});
+            std::vector<std::byte> bytes;
+            auto u32 = [&](uint32_t n) {
+                for (unsigned i = 0; i < 4; ++i)
+                    bytes.push_back(std::byte((n >> (8 * i)) & 255));
+            };
+            u32(0x46546c67);
+            u32(2);
+            u32(uint32_t(12 + 8 + json.size() + 8 + bin.size()));
+            u32(uint32_t(json.size()));
+            u32(0x4e4f534a);
+            const auto jsonBytes = std::as_bytes(std::span(json.data(), json.size()));
+            bytes.insert(bytes.end(), jsonBytes.begin(), jsonBytes.end());
+            u32(uint32_t(bin.size()));
+            u32(0x004e4942);
+            bytes.insert(bytes.end(), bin.begin(), bin.end());
+            return bytes;
+        }
+
+        constexpr std::string_view Obj = R"(mtllib triangle.mtl
+o Triangle
+v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0 0
+vt 1 0
+vt 0 1
+vn 0 0 1
+usemtl Red
+f 1/1/1 2/2/1 3/3/1
+)";
+        constexpr std::string_view Fbx = R"(; FBX 7.4.0 project file -- synthetic Catalpa test data
+FBXHeaderExtension: {
+    FBXHeaderVersion: 1003
+    FBXVersion: 7400
+    Creator: "Catalpa test fixture"
+}
+GlobalSettings: {
+    Version: 1000
+    Properties70: {
+        P: "UpAxis", "int", "Integer", "",1
+        P: "UpAxisSign", "int", "Integer", "",1
+        P: "FrontAxis", "int", "Integer", "",2
+        P: "FrontAxisSign", "int", "Integer", "",1
+        P: "CoordAxis", "int", "Integer", "",0
+        P: "CoordAxisSign", "int", "Integer", "",1
+        P: "UnitScaleFactor", "double", "Number", "",1
+        P: "OriginalUnitScaleFactor", "double", "Number", "",1
+    }
+}
+Definitions: {
+    Version: 100
+    Count: 3
+    ObjectType: "Model" { Count: 1 }
+    ObjectType: "Geometry" { Count: 1 }
+    ObjectType: "Material" { Count: 1 }
+}
+Objects: {
+    Geometry: 1000, "Geometry::Triangle", "Mesh" {
+        Vertices: *9 { a: 0,0,0,100,0,0,0,100,0 }
+        PolygonVertexIndex: *3 { a: 0,1,-3 }
+        LayerElementMaterial: 0 {
+            Version: 101
+            Name: ""
+            MappingInformationType: "AllSame"
+            ReferenceInformationType: "IndexToDirect"
+            Materials: *1 { a: 0 }
+        }
+        Layer: 0 {
+            Version: 100
+            LayerElement: {
+                Type: "LayerElementMaterial"
+                TypedIndex: 0
+            }
+        }
+    }
+    Model: 1001, "Model::Triangle", "Mesh" {
+        Version: 232
+        Properties70: {
+            P: "Lcl Translation", "Lcl Translation", "", "A",0,0,0
+            P: "Lcl Rotation", "Lcl Rotation", "", "A",0,0,0
+            P: "Lcl Scaling", "Lcl Scaling", "", "A",1,1,1
+        }
+        Shading: T
+        Culling: "CullingOff"
+    }
+    Material: 1002, "Material::Red", "" {
+        Version: 102
+        ShadingModel: "phong"
+        MultiLayer: 0
+        Properties70: { P: "DiffuseColor", "Color", "", "A",1,0,0 }
+    }
+}
+Connections: {
+    C: "OO",1000,1001
+    C: "OO",1002,1001
+    C: "OO",1001,0
+}
+)";
+
+        bool LoadAll(AssetManager& manager, const std::vector<AssetRecord>& records, std::string& error) {
+            AssetDependencyGraph graph;
+            if (!graph.Build(records, error))
+                return false;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+            for (auto id : graph.Order()) {
+                if (!manager.Request(id, error))
+                    return false;
+                while (manager.GetStatus(id) == AssetStatus::Loading ||
+                       manager.GetStatus(id) == AssetStatus::WaitingForDependencies) {
+                    if (std::chrono::steady_clock::now() > deadline) {
+                        error = "Asset load deadline exceeded";
+                        return false;
+                    }
+                    manager.Pump();
+                    std::this_thread::yield();
+                }
+                if (manager.GetStatus(id) != AssetStatus::Ready) {
+                    error = manager.GetDiagnostic(id);
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // 4K边界独立于用户原件，验证旧64MiB上限之外的容器及CPU解码准入。
+        void LargeImageContract(TestContext& context) {
+            ImageAsset image;
+            image.sourceUri = "synthetic:4k-rgba";
+            auto& v = image.image;
+            v.width = v.height = 4096;
+            v.format = PixelFormat::RGBA8_SRGB;
+            v.colorSpace = ImageColorSpace::SRGB;
+            v.pixels.resize(size_t(4096) * 4096 * 4);
+            v.subresources.push_back({0, 0, 0, 4096, 4096, 1, 0, 4096 * 4, v.pixels.size(), v.pixels.size()});
+            std::string error;
+            std::vector<std::byte> payload;
+            AssetBuildProduct product;
+            const auto encoded =
+                TextureCooker::Encode(image, payload, error) &&
+                AssetArchiveWriter::Encode(AssetId::FromWords(5, 6), "image", payload, {}, product, error);
+            CheckOperation(context, encoded, "4K RGBA plus metadata fits bounded cooked format: ", error);
+            if (!encoded)
+                return;
+            image = {};
+            payload.clear();
+            payload.shrink_to_fit();
+            AssetContainer container;
+            const auto read = AssetContainerReader::Read(product.bytes, container, error, 96 * 1024 * 1024);
+            product.bytes.clear();
+            product.bytes.shrink_to_fit();
+            AssetDecodeContext limits;
+            limits.maxResidentBytes = 160 * 1024 * 1024;
+            AssetLoadResult decoded;
+            const auto loaded =
+                read && ImageAssetLoader::DecodePayload(container.payload, limits, decoded, error);
+            CheckOperation(context, loaded, "4K exact pixels decode without resize: ", error);
+            if (loaded)
+                context.Check(
+                    std::static_pointer_cast<const ImageAsset>(decoded.value)->image.pixels.size() ==
+                        size_t(4096) * 4096 * 4,
+                    "4K decoded pixel count is unchanged");
+        }
+
+        void SceneContracts(AssetManager& manager, const AssetBuildResult& built, TestContext& context) {
+            std::string error;
+            bool fallback = false;
+            AssetVersionRef<ModelAsset> model;
+            CheckOperation(context, manager.Acquire(built.primary, model, fallback, error) && !fallback,
+                           error);
+            if (!model.HasValue())
+                return;
+            std::vector<AssetVersionRef<MeshAsset>> meshes;
+            std::vector<AssetVersionRef<MaterialInstance>> materials;
+            for (const auto& record : built.records) {
+                if (record.type.ToString() == "mesh") {
+                    AssetVersionRef<MeshAsset> v;
+                    if (manager.Acquire(record.id, v, fallback, error))
+                        meshes.push_back(v);
+                } else if (record.type.ToString() == "material_instance") {
+                    AssetVersionRef<MaterialInstance> v;
+                    if (manager.Acquire(record.id, v, fallback, error))
+                        materials.push_back(v);
+                }
+            }
+            auto schemas = std::make_shared<ComponentRegistry>();
+            CheckOperation(context, RegisterRuntimeComponentSchemas(*schemas, error), error);
+            Scene scene("Imported", schemas);
+            std::shared_ptr<ModelInstantiationResult> first, second, cancelled, stale;
+            const auto count = model.Get()->nodes.size();
+            context.Check(ModelInstantiation::Queue(scene, model, meshes, materials, first, error) &&
+                              scene.GetWorld().GetEntityCount() == 0,
+                          "Queueing model does not publish entities before safe point");
+            context.Check(scene.CommitPending().IsSuccess() && first && first->complete && first->success &&
+                              scene.GetWorld().GetEntityCount() == count,
+                          "Whole model commits with preserved hierarchy");
+            context.Check(ModelInstantiation::Queue(scene, model, meshes, materials, second, error) &&
+                              scene.CommitPending().IsSuccess() && second->success &&
+                              scene.GetWorld().GetEntityCount() == count * 2,
+                          "Repeated instantiation creates fresh identities");
+            if (first && second && first->success && second->success) {
+                context.Check(!first->roots.empty() && !second->roots.empty() &&
+                                  first->roots.front().persistent != second->roots.front().persistent,
+                              "Instance identities differ while source mapping remains stable");
+                for (const auto& instance : model.Get()->meshes) {
+                    if (instance.node >= first->nodes.size() || instance.node >= second->nodes.size()) {
+                        context.Check(false, "Both instances must map every model node");
+                        continue;
+                    }
+                    MeshRendererComponent a, b;
+                    const auto sa =
+                                   scene.GetWorld().Get(scene.Resolve(first->nodes[instance.node].second), a),
+                               sb = scene.GetWorld().Get(scene.Resolve(second->nodes[instance.node].second),
+                                                         b);
+                    context.Check(sa.IsSuccess() && sb.IsSuccess() && a.mesh == b.mesh &&
+                                      a.materials.size() == instance.materials.size(),
+                                  "Repeated models share immutable mesh payload and preserve material slots");
+                }
+            }
+            if (model.Get()->meshes.empty() || model.Get()->meshes.front().materials.empty()) {
+                context.Check(false, "The model fixture must have a mesh and an authored material");
+                return;
+            }
+            const auto sourceId = model.Get()->meshes.front().materials.front().id;
+            const auto sourceMapping =
+                std::find_if(built.mappings.begin(), built.mappings.end(),
+                             [&](const auto& m) { return m.asset == sourceId && m.kind == "material"; });
+            context.Check(sourceMapping != built.mappings.end(), "Authored material has a source mapping");
+            if (sourceMapping != built.mappings.end()) {
+                const auto previewMapping =
+                    std::find_if(built.mappings.begin(), built.mappings.end(), [&](const auto& m) {
+                        return m.sourceKey == sourceMapping->sourceKey + "/preview" &&
+                               m.kind == "material_preview";
+                    });
+                context.Check(previewMapping != built.mappings.end(), "Preview material has its own mapping");
+                if (previewMapping != built.mappings.end()) {
+                    const auto preview = std::find_if(materials.begin(), materials.end(), [&](const auto& m) {
+                        return m.GetId() == previewMapping->asset;
+                    });
+                    context.Check(preview != materials.end(), "Mapped preview material loaded");
+                    if (preview != materials.end()) {
+                        const std::array<ModelMaterialOverride, 1> overrides{{{sourceId, *preview}}};
+                        std::shared_ptr<ModelInstantiationResult> display;
+                        const auto queued = ModelInstantiation::Queue(scene, model, meshes, materials,
+                                                                      display, error, {}, overrides);
+                        context.Check(queued && scene.CommitPending().IsSuccess() && display->success,
+                                      "Explicit preview override instantiates through the same transaction");
+                        if (display && display->success &&
+                            model.Get()->meshes.front().node >= display->nodes.size()) {
+                            context.Check(false, "Preview is missing the entity mapped to its source mesh");
+                        } else if (display && display->success) {
+                            MeshRendererComponent renderer;
+                            const auto loaded = scene.GetWorld().Get(
+                                scene.Resolve(display->nodes[model.Get()->meshes.front().node].second),
+                                renderer);
+                            context.Check(loaded.IsSuccess() && !renderer.materials.empty() &&
+                                              renderer.materials.front().GetId() == preview->GetId() &&
+                                              model.Get()->meshes.front().materials.front().id == sourceId,
+                                          "Preview binding changes presentation without editing authored "
+                                          "model references");
+                        }
+                    }
+                }
+            }
+            const auto before = scene.GetWorld().GetEntityCount();
+            CheckOperation(
+                context, ModelInstantiation::Queue(scene, model, meshes, materials, cancelled, error), error);
+            if (cancelled)
+                cancelled->cancelRequested = true;
+            context.Check(scene.CommitPending().IsSuccess() && cancelled && cancelled->complete &&
+                              !cancelled->success && scene.GetWorld().GetEntityCount() == before,
+                          "Cancellation consumes transaction and publishes no partial entities");
+            PersistentEntityId parent;
+            CheckOperation(context, GeneratePersistentEntityId(parent, error), error);
+            context.Check(scene.QueueCreate(parent, "Transient parent", {}).IsSuccess() &&
+                              scene.CommitPending().IsSuccess(),
+                          "Create isolated parent for stale-parent rollback");
+            const auto parentEntity = scene.Resolve(parent);
+            context.Check(scene.QueueDestroySubtree(parentEntity).IsSuccess(),
+                          "Queue parent removal before model transaction");
+            CheckOperation(
+                context,
+                ModelInstantiation::Queue(scene, model, meshes, materials, stale, error, parentEntity),
+                error);
+            context.Check(
+                scene.CommitPending().IsSuccess() && stale && stale->complete && !stale->success &&
+                    scene.GetWorld().GetEntityCount() == before,
+                "Stale-parent transaction reports failure without publishing half a model or stopping scene");
+            auto bad = meshes;
+            if (!bad.empty())
+                bad.pop_back();
+            auto retained = first;
+            context.Check(!ModelInstantiation::Queue(scene, model, bad, materials, first, error) &&
+                              first == retained && scene.GetWorld().GetEntityCount() == before,
+                          "Missing mesh rejects before queue and preserves previous output");
+            const auto authored = std::find_if(materials.begin(), materials.end(), [&](const auto& material) {
+                return material.GetId() == sourceId;
+            });
+            if (authored != materials.end()) {
+                auto ambiguous = materials;
+                ambiguous.push_back(*authored);
+                context.Check(!ModelInstantiation::Queue(scene, model, meshes, ambiguous, first, error) &&
+                                  first == retained && scene.GetWorld().GetEntityCount() == before,
+                              "Duplicate material versions cannot create an ambiguous slot binding");
+            }
+        }
+
+        // 各格式共用加载器和 world-space 包围盒，单位转换只应发生一次。
+        void CheckCrossFormatImports(const Fixture& fixture, const std::filesystem::path& shaders,
+                                     TestContext& context) {
+            std::string error;
+            for (auto file : {"model.glb", "triangle.obj", "triangle.fbx"}) {
+                AssetBuildContext input(fixture.Request(file, shaders));
+                AssetImportResult result;
+                const auto importers = AssetImportRegistry::Defaults();
+                const auto* importer = importers.Find(file);
+                const bool imported =
+                    input.Initialize(error) && importer && importer->Import(input, result, error);
+                context.Check(imported, std::string(file) + ": " + error);
+                if (imported) {
+                    context.Check(result.primary.HasValue() && !result.assets.empty(),
+                                  "Other formats enter the same domain representation");
+                    std::vector<AssetVersionRef<MeshAsset>> fixedMeshes;
+                    for (const auto& asset : result.assets)
+                        if (const auto* mesh = std::get_if<MeshAsset>(&asset.value)) {
+                            AssetVersionRef<MeshAsset> reference;
+                            if (!CheckOperation(context,
+                                                AssetVersionRef<MeshAsset>::TryCreate(
+                                                    asset.id, 1, std::make_shared<const MeshAsset>(*mesh),
+                                                    reference, error),
+                                                error))
+                                continue;
+                            fixedMeshes.push_back(std::move(reference));
+                        }
+                    const auto modelItem =
+                        std::find_if(result.assets.begin(), result.assets.end(), [](const auto& asset) {
+                            return std::holds_alternative<ModelAsset>(asset.value);
+                        });
+                    if (modelItem == result.assets.end()) {
+                        context.Check(false, "Importer did not return a model");
+                        continue;
+                    }
+                    Aabb bounds;
+                    const auto bounded = ComputeModelBounds(std::get<ModelAsset>(modelItem->value),
+                                                            fixedMeshes, bounds, error);
+                    const float expectedX = std::string_view(file) == "model.glb" ? 3.0f : 1.0f;
+                    context.Check(bounded && !bounds.empty &&
+                                      std::abs(bounds.maximum.x - expectedX) < 1e-4f &&
+                                      std::abs(bounds.maximum.y - 1.0f) < 1e-4f,
+                                  "Cross-format world dimensions agree in metres before any camera framing");
+                    if (std::string_view(file) == "triangle.fbx") {
+                        const auto& converted = std::get<ModelAsset>(modelItem->value);
+                        context.Check(!converted.nodes.empty() &&
+                                          std::abs(std::abs(converted.nodes.back().local.scale.x) - .01f) <
+                                              1e-6f,
+                                      "FBX centimetre metadata is converted once at the model root");
+                    }
+                }
+            }
+        }
+
+        // OBJ 和 MTL 旁各有一个同名文件，贴图引用应按声明它的 MTL 定位。
+        void MaterialLibraryPathContract(Fixture& fixture, const std::filesystem::path& shaders,
+                                         TestContext& context) {
+            std::string error;
+            const auto materialDir = fixture.root / "Raw" / "Materials";
+            std::filesystem::create_directories(materialDir);
+            const auto obj = Replace(std::string(Obj), "triangle.mtl", "Materials/nested.mtl");
+            if (!CheckOperation(context,
+                                fixture.Store("Raw/nested.obj", obj, error) &&
+                                    fixture.Store("Raw/Materials/nested.mtl",
+                                                  "newmtl Red\nKd 1 1 1\nmap_Kd albedo.png\n", error) &&
+                                    fixture.StoreBytes("Raw/Materials/albedo.png", Png(), error) &&
+                                    fixture.Store("Raw/albedo.png", "different file beside the OBJ", error),
+                                error))
+                return;
+            AssetBuildContext input(fixture.Request("nested.obj", shaders));
+            AssetImportResult result;
+            if (!CheckOperation(
+                    context, input.Initialize(error) && AssimpImporter{}.Import(input, result, error), error))
+                return;
+            const auto& inputs = input.Dependencies();
+            context.Check(
+                std::any_of(inputs.begin(), inputs.end(),
+                            [&](const auto& dep) { return dep.path == materialDir / "albedo.png"; }),
+                "MTL texture resolves relative to its material library");
+        }
+
+        // 同一内容版本改在新根下提供。旧根没有该容器，读取成功只能来自新定位。
+        void RelocatedImageContract(const Fixture& fixture, const AssetRecord& image,
+                                    const std::filesystem::path& cookedRoot, JobSystem& jobs,
+                                    TestContext& context) {
+            std::string error;
+            const auto oldRoot = fixture.root / "PreviousCooked";
+            std::filesystem::create_directories(oldRoot);
+            auto previous = image;
+            if (!CheckOperation(
+                    context, VirtualPath::Parse("old-cooked:/image.catasset", previous.locator.path, error),
+                    error))
+                return;
+            AssetManager moved(jobs);
+            AssetRegistry catalog;
+            if (!CheckOperation(context,
+                                RegisterRuntimeAssetLoaders(moved, error) &&
+                                    catalog.Replace({previous}, error) &&
+                                    moved.InstallCookedCatalog(oldRoot, catalog, error) &&
+                                    catalog.Replace({image}, error) &&
+                                    moved.InstallCookedCatalog(cookedRoot, catalog, error),
+                                error))
+                return;
+            CheckOperation(context, LoadAll(moved, catalog.GetRecords(), error),
+                           "Load unchanged content from the moved cook root: ", error);
+        }
+
+        // 撤掉贴图并保留原文件，验证旧文件既不再参与缓存键，也不再占用活动目录中的记录。
+        void RemovedTextureContract(Fixture& fixture, const AssetBuildRequest& request, AssetId texture,
+                                    AssetManager& manager, TestContext& context) {
+            auto untextured = Replace(Gltf, "\"images\":[{\"uri\":\"pixels.png\"}],", "");
+            untextured = Replace(untextured, "\"textures\":[{\"source\":0}],", "");
+            untextured = Replace(untextured, ",\"baseColorTexture\":{\"index\":0}", "");
+            std::string error;
+            if (!CheckOperation(context, fixture.Store("Raw/model.gltf", untextured, error), error))
+                return;
+
+            const auto built = AssetCooker::Build(request);
+            CheckOperation(context, built.success && !built.cacheHit,
+                           "Cook after removing texture: ", built.error);
+            if (!built.success)
+                return;
+            AssetRegistry complete;
+            if (!CheckOperation(context, complete.Replace(built.publishedCatalog, error), error))
+                return;
+            context.Check(complete.Find(texture) == nullptr && complete.Find(built.primary) != nullptr,
+                          "Published catalog withdraws the removed texture but keeps its model");
+            if (!CheckOperation(context,
+                                manager.InstallCookedCatalog(built.cookedRoot, complete, error, true), error))
+                return;
+            context.Check(!manager.Request(texture, error), "Runtime cannot request a withdrawn texture");
+
+            // 专用临时夹具中的旧 PNG 已无引用，改变其字节不应触发模型重建。
+            if (!CheckOperation(context, fixture.Store("Raw/pixels.png", "obsolete fixture content", error),
+                                error))
+                return;
+            const auto cached = AssetCooker::Build(request);
+            context.Check(cached.success && cached.cacheHit && cached.key == built.key,
+                          "A detached source file no longer affects the build fingerprint");
+        }
+    }
+
+    void RunAssetPipelineTests(TestContext& context) {
+        std::string error;
+        std::filesystem::path executable;
+        if (!GetExecutableDirectory(executable, error)) {
+            CheckOperation(context, false, error);
+            return;
+        }
+        const auto shaders = executable / "Resources" / "Shaders";
+        Fixture fixture;
+        if (!fixture.Create(error)) {
+            CheckOperation(context, false, error);
+            return;
+        }
+        const auto initial = TriangleBytes();
+        const auto pixels = Png();
+        if (!fixture.Store("Raw/model.gltf", Gltf, error) ||
+            !fixture.StoreBytes("Raw/buffer.bin", initial, error) ||
+            !fixture.StoreBytes("Raw/pixels.png", pixels, error) ||
+            !fixture.StoreBytes("Raw/model.glb", Glb(), error) ||
+            !fixture.Store("Raw/triangle.obj", Obj, error) ||
+            !fixture.Store("Raw/triangle.mtl", "newmtl Red\nKd 1 0 0\nNs 30\nmap_Kd pixels.png\n", error) ||
+            !fixture.Store("Raw/triangle.fbx", Fbx, error)) {
+            CheckOperation(context, false, error);
+            return;
+        }
+        AssetBuildRequest request = fixture.Request("model.gltf", shaders);
+        AssetBuildContext gltfContext(request);
+        AssetImportResult gltf;
+        CheckOperation(context,
+                       gltfContext.Initialize(error) && GltfImporter{}.Import(gltfContext, gltf, error),
+                       "glTF interleaved/UV/multi-material: ", error);
+        if (!gltf.primary.HasValue())
+            return;
+        const auto model = std::find_if(gltf.assets.begin(), gltf.assets.end(), [](const auto& asset) {
+            return std::holds_alternative<ModelAsset>(asset.value);
+        });
+        context.Check(model != gltf.assets.end(), "glTF import contains a domain model");
+        if (model == gltf.assets.end())
+            return;
+        const auto& domain = std::get<ModelAsset>(model->value);
+        context.Check(domain.meshes.size() == 4 && domain.meshes[0].mesh == domain.meshes[2].mesh,
+                      "Multiple nodes share primitive mesh identities without flattening hierarchy");
+        if (domain.meshes.size() < 2 || domain.meshes[0].materials.empty() ||
+            domain.meshes[1].materials.empty()) {
+            context.Check(false, "The first two primitives must both have a material slot");
+            return;
+        }
+        context.Check(domain.meshes[0].materials[0] != domain.meshes[1].materials[0],
+                      "Primitive material mapping is preserved");
+        const auto authored = std::find_if(gltf.assets.begin(), gltf.assets.end(), [&](const auto& asset) {
+            return asset.id == domain.meshes[0].materials[0].id;
+        });
+        context.Check(authored != gltf.assets.end() &&
+                          std::holds_alternative<ImportedMaterial>(authored->value),
+                      "Domain model keeps authored material IDs, not presentation-only preview IDs");
+        context.Check(std::any_of(gltf.mappings.begin(), gltf.mappings.end(),
+                                  [](const auto& m) { return m.kind == "node" && m.node.HasValue(); }),
+                      "Source node IDs are represented separately from model AssetId");
+        const auto image = std::find_if(gltf.assets.begin(), gltf.assets.end(), [](const auto& asset) {
+            return std::holds_alternative<ImageAsset>(asset.value);
+        });
+        context.Check(image != gltf.assets.end(), "Referenced glTF image is imported");
+        if (image == gltf.assets.end())
+            return;
+        const auto& decoded = std::get<ImageAsset>(image->value).image;
+        context.Check(decoded.width == 2 && decoded.height == 2 &&
+                          decoded.colorSpace == ImageColorSpace::SRGB && decoded.pixels.size() == 16 &&
+                          decoded.pixels[0] == std::byte{255} && decoded.pixels[1] == std::byte{0} &&
+                          decoded.pixels[8] == std::byte{0} && decoded.pixels[10] == std::byte{255},
+                      "PNG decode retains top/bottom pixel order and explicit color-space semantics");
+        auto again = request;
+        again.project.externalSourceRoots.emplace("aaa", fixture.root / "Other");
+        AssetBuildContext moved(again);
+        context.Check(moved.Initialize(error) && moved.Identity("model") == gltf.primary,
+                      "Adding another source root does not renumber existing source identities");
+        auto overlap = request;
+        overlap.project.cookedRoot = fixture.root / "Raw";
+        AssetBuildContext overlapping(overlap);
+        context.Check(!overlapping.Initialize(error),
+                      "Cooked root cannot overlap original source directories");
+        std::filesystem::path outside = request.source;
+        context.Check(!gltfContext.Resolve(request.source, "../profiles.json", outside, error) &&
+                          outside == request.source,
+                      "Dependency resolution rejects source-root escape without replacing prior path");
+        auto boundedRequest = request;
+        boundedRequest.settings.maxSourceBytes = 8;
+        AssetBuildContext boundedContext(boundedRequest);
+        AssetImportResult boundedOutput = gltf;
+        const auto boundedImport =
+            boundedContext.Initialize(error) && GltfImporter{}.Import(boundedContext, boundedOutput, error);
+        context.Check(!boundedImport && boundedOutput.primary == gltf.primary,
+                      "Source byte bound rejects import before parsing or publishing output");
+        CheckCrossFormatImports(fixture, shaders, context);
+        MaterialLibraryPathContract(fixture, shaders, context);
+
+        const auto negative = [&](std::string source) {
+            if (!CheckOperation(context, fixture.Store("Raw/bad.gltf", source, error), error))
+                return;
+            AssetBuildContext input(fixture.Request("bad.gltf", shaders));
+            AssetImportResult result = gltf;
+            const bool accepted = input.Initialize(error) && GltfImporter{}.Import(input, result, error);
+            context.Check(!accepted && result.primary == gltf.primary && !error.empty(),
+                          "Invalid glTF rejected with diagnostic while previous output remains intact");
+        };
+        negative(Replace(Gltf, "buffer.bin", "missing.bin"));
+        negative(Replace(Gltf, "pixels.png", "missing.png"));
+        negative(Replace(Gltf, "\"count\":3,\"type\":\"VEC3\"", "\"count\":999,\"type\":\"VEC3\""));
+        negative(
+            Replace(Gltf, "\"name\":\"First\",\"mesh\":0", "\"name\":\"First\",\"mesh\":0,\"children\":[0]"));
+        negative(Replace(Gltf, "\"byteOffset\":24,\"componentType\":5126",
+                         "\"byteOffset\":24,\"componentType\":5123"));
+        negative(Replace(Gltf, "\"asset\"", "\"extensionsUsed\":[\"EXT_meshopt_compression\"],\"asset\""));
+        if (!CheckOperation(
+                context,
+                fixture.Store("Raw/remapped.gltf", Replace(Gltf, "buffer.bin", "missing.bin"), error), error))
+            return;
+        auto remap = fixture.Request("remapped.gltf", shaders);
+        remap.settings.dependencyRemaps.emplace("missing.bin", "buffer.bin");
+        AssetBuildContext remapContext(remap);
+        AssetImportResult remapped;
+        context.Check(remapContext.Initialize(error) &&
+                          GltfImporter{}.Import(remapContext, remapped, error) &&
+                          !remapContext.diagnostics.empty(),
+                      "Explicit dependency remapping resolves without editing the source document");
+        auto badIndices = initial;
+        badIndices[100] = std::byte{9};
+        if (!CheckOperation(context, fixture.StoreBytes("Raw/buffer.bin", badIndices, error), error))
+            return;
+        negative(Gltf);
+        if (!CheckOperation(context, fixture.StoreBytes("Raw/buffer.bin", initial, error), error))
+            return;
+        std::vector<std::byte> sourceBefore;
+        if (!CheckOperation(context, Read(request.source, sourceBefore, error), error))
+            return;
+        const auto cooked = AssetCooker::Build(request);
+        CheckOperation(context, cooked.success, "Cook complete catalog: ", cooked.error);
+        if (!cooked.success)
+            return;
+        AssetDependencyGraph graph;
+        CheckOperation(context, graph.Build(cooked.records, error), error);
+        const auto originalOrder = graph.Order();
+        auto cyclic = cooked.records;
+        if (cyclic.empty()) {
+            context.Check(false, "Cook did not publish any records");
+            return;
+        }
+        cyclic.front().dependencies.push_back(cyclic.front().id);
+        context.Check(!graph.Build(cyclic, error) && graph.Order() == originalOrder,
+                      "Invalid dependency replacement preserves the last valid graph");
+        const auto cached = AssetCooker::Build(request);
+        context.Check(cached.success && cached.cacheHit && cached.key == cooked.key &&
+                          cached.primary == cooked.primary,
+                      "Second build uses verified cache with identical stable identity");
+        const auto object =
+            std::find_if(cooked.records.begin(), cooked.records.end(),
+                         [](const auto& record) { return record.type.ToString() == "image"; });
+        if (object == cooked.records.end()) {
+            context.Check(false, "Cook did not publish the fixture image");
+            return;
+        }
+        const auto objectPath =
+            cooked.cookedRoot / std::filesystem::u8path(object->locator.path.RelativePath());
+        std::vector<std::byte> objectBytes;
+        const auto objectRead = Read(objectPath, objectBytes, error);
+        CheckOperation(context, objectRead, error);
+        if (!objectRead || objectBytes.empty())
+            return;
+        const auto shortBytes = std::span(objectBytes).first(objectBytes.size() - 1);
+        const auto shortened = AtomicFileWriter::Write(objectPath, shortBytes, error);
+        CheckOperation(context, shortened, error);
+        if (!shortened)
+            return;
+        const auto truncated = AssetCooker::Build(request);
+        context.Check(!truncated.success && !truncated.cacheHit,
+                      "Truncated immutable artifact cannot be accepted as a cache hit or silently replaced");
+        const auto restored = AtomicFileWriter::Write(objectPath, objectBytes, error);
+        CheckOperation(context, restored, error);
+        if (!restored)
+            return;
+        const auto objectTime = std::filesystem::last_write_time(objectPath);
+        std::vector<std::byte> sourceAfter;
+        context.Check(Read(request.source, sourceAfter, error) && sourceAfter == sourceBefore,
+                      "Import/Cook never edits source bytes");
+        std::vector<std::byte> oldManifest;
+        if (!CheckOperation(context, Read(cooked.manifest, oldManifest, error), error))
+            return;
+        CancellationSource cancellation;
+        cancellation.Cancel();
+        auto cancelledRequest = request;
+        cancelledRequest.cancellation = cancellation.Token();
+        context.Check(!AssetCooker::Build(cancelledRequest).success,
+                      "Cancelled build does not report success");
+        std::vector<std::byte> sameManifest;
+        context.Check(Read(cooked.manifest, sameManifest, error) && sameManifest == oldManifest,
+                      "Cancelled build preserves previous main manifest");
+        JobSystem jobs;
+        if (!jobs.Start({2, 64}, error)) {
+            CheckOperation(context, false, error);
+            return;
+        }
+        AssetManager manager(jobs);
+        CheckOperation(context, RegisterRuntimeAssetLoaders(manager, error), error);
+        AssetRegistry registry;
+        CheckOperation(context,
+                       registry.Replace(cooked.publishedCatalog, error) &&
+                           manager.InstallCookedCatalog(cooked.cookedRoot, registry, error, true) &&
+                           LoadAll(manager, cooked.records, error),
+                       "Runtime loads actual cooked domain dependencies: ", error);
+        if (manager.GetStatus(cooked.primary) == AssetStatus::Ready)
+            SceneContracts(manager, cooked, context);
+        AssetVersionRef<ModelAsset> oldModel;
+        bool fallback = false;
+        if (!CheckOperation(context, manager.Acquire(cooked.primary, oldModel, fallback, error) && !fallback,
+                            error))
+            return;
+        auto changed = TriangleBytes();
+        changed[27] = std::byte{0x3f};
+        if (!CheckOperation(context, fixture.StoreBytes("Raw/buffer.bin", changed, error), error))
+            return;
+        const auto rebuilt = AssetCooker::Build(request);
+        context.Check(
+            rebuilt.success && !rebuilt.cacheHit && rebuilt.primary == cooked.primary &&
+                rebuilt.key != cooked.key,
+            "Dependency content change invalidates source closure while logical identity remains stable");
+        if (rebuilt.success) {
+            const auto first = std::find_if(cooked.records.begin(), cooked.records.end(),
+                                            [&](const auto& r) { return r.id == cooked.primary; });
+            const auto next = std::find_if(rebuilt.records.begin(), rebuilt.records.end(),
+                                           [&](const auto& r) { return r.id == cooked.primary; });
+            context.Check(first != cooked.records.end() && next != rebuilt.records.end() &&
+                              first->version != next->version,
+                          "Model content version includes exact mesh dependency versions");
+            const auto reused = std::find_if(rebuilt.records.begin(), rebuilt.records.end(),
+                                             [&](const auto& record) { return record.id == object->id; });
+            context.Check(
+                reused != rebuilt.records.end() && reused->contentHash == object->contentHash &&
+                    reused->locator.path == object->locator.path &&
+                    reused->locator.kind == object->locator.kind &&
+                    std::filesystem::last_write_time(objectPath) == objectTime,
+                "Unchanged image artifact is reused without a write while the geometry closure changes");
+            CheckOperation(context,
+                           registry.Replace(rebuilt.publishedCatalog, error) &&
+                               manager.InstallCookedCatalog(rebuilt.cookedRoot, registry, error, true) &&
+                               LoadAll(manager, rebuilt.records, error),
+                           error);
+            AssetVersionRef<ModelAsset> newModel;
+            context.Check(manager.Acquire(rebuilt.primary, newModel, fallback, error) &&
+                              oldModel.HasValue() && oldModel.GetVersion() != newModel.GetVersion() &&
+                              oldModel.Get()->nodes.size() == newModel.Get()->nodes.size(),
+                          "Reload keeps old model snapshot alive while publishing new version");
+        }
+        // 在写入不可变产物时取消，主目录应仍指向上一次成功构建。
+        auto scale = request;
+        scale.settings.unitScale = 2;
+        CancellationSource midCancel;
+        scale.cancellation = midCancel.Token();
+        scale.progress = [&](std::string_view phase, size_t, size_t) {
+            if (phase == "Writing immutable cooked artifacts")
+                midCancel.Cancel();
+        };
+        if (!CheckOperation(context, Read(cooked.manifest, oldManifest, error), error))
+            return;
+        const auto stopped = AssetCooker::Build(scale);
+        context.Check(!stopped.success && Read(cooked.manifest, sameManifest, error) &&
+                          sameManifest == oldManifest,
+                      "Mid-build cancellation cannot publish an incomplete batch");
+        {
+            SceneManager scenes;
+            Editor::BuildPanel panel(jobs, manager, scenes);
+            CheckOperation(context, panel.Start(request, error), error);
+            panel.CloseProject();
+            jobs.CollectCompleted();
+            context.Check(!panel.Busy() && jobs.IsRunning(),
+                          "Project close waits only its own task and keeps shared scheduler running");
+        }
+        RelocatedImageContract(fixture, *object, cooked.cookedRoot, jobs, context);
+        RemovedTextureContract(fixture, request, object->id, manager, context);
+        manager.Shutdown();
+        jobs.Shutdown();
+        LargeImageContract(context);
+        AssetBuildRequest parsed;
+        std::vector<std::string> args{"--cook-assets",
+                                      "--project",
+                                      AssetPathText(fixture.root / "Fixture.catalpaproj"),
+                                      "--source",
+                                      AssetPathText(request.source),
+                                      "--shader-root",
+                                      AssetPathText(shaders),
+                                      "--remap",
+                                      "missing.png=pixels.png"};
+        context.Check(AssetCompilerOptions::Parse(args, parsed, error) &&
+                          parsed.settings.dependencyRemaps.contains("missing.png"),
+                      "CLI accepts explicit roots and remaps through common options parser");
+        args.push_back("--unknown");
+        args.push_back("x");
+        context.Check(!AssetCompilerOptions::Parse(args, parsed, error),
+                      "Unknown command option is not ignored");
+        LogSubscription subscription;
+        if (!Log::GetCoreLogger() || Log::GetCoreLogger()->sinks().empty()) {
+            context.Check(false, "Core logger must have a console sink");
+            return;
+        }
+        const auto console = Log::GetCoreLogger()->sinks().front();
+        const auto consoleLevel = console->level();
+        console->set_level(spdlog::level::off);
+        for (int i = 0; i < 2100; ++i)
+            CAT_CORE_TRACE("Bounded log test {0}", i);
+        console->set_level(consoleLevel);
+        uint64_t dropped = 0;
+        const auto logs = subscription.Drain(2048, dropped);
+        context.Check(logs.size() <= 2048 && dropped >= 52,
+                      "Log subscription is bounded and reports overwritten records");
+    }
+}

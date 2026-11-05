@@ -29,7 +29,7 @@ namespace Catalpa {
             switch (attribute.semantic) {
             case VertexSemantic::Position: case VertexSemantic::Normal: return attribute.format == VertexFormat::Float3;
             case VertexSemantic::TexCoord0: return attribute.format == VertexFormat::Float2;
-            case VertexSemantic::Color0: return attribute.format == VertexFormat::Float4;
+            case VertexSemantic::Color0: case VertexSemantic::Tangent: return attribute.format == VertexFormat::Float4;
             default: return false;
             }
         }
@@ -104,11 +104,17 @@ namespace Catalpa {
                         for (uint32_t component = 0; component < components; ++component) {
                             const float value = ReadFloat(mesh.vertexData, start + attribute.offset + component * sizeof(float));
                             finite = finite && std::isfinite(value);
-                            squaredLength += static_cast<double>(value) * value;
+                            if (component < 3) squaredLength += static_cast<double>(value) * value;
                         }
                         if (!finite) issue(MeshError::NonFinite, "Vertex attribute contains NaN or infinity", vertex);
                         else if (attribute.semantic == VertexSemantic::Normal && squaredLength == 0.0)
                             issue(MeshError::InvalidArgument, "Normal semantic cannot contain a zero vector", vertex);
+                        else if (attribute.semantic == VertexSemantic::Tangent) {
+                            // xyz 是切线方向，w 只记录重建副切线时的符号。
+                            const float sign = ReadFloat(mesh.vertexData, start + attribute.offset + 3 * sizeof(float));
+                            if (squaredLength == 0.0 || std::abs(std::abs(sign) - 1.0f) > 1e-5f)
+                                issue(MeshError::InvalidArgument, "Tangent requires a nonzero direction and handedness +/-1", vertex);
+                        }
                     }
                     if (boundsValid) {
                         for (int axis = 0; axis < 3; ++axis) {

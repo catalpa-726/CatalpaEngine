@@ -51,7 +51,7 @@ namespace Catalpa {
             if (!r.U32(data.vertexCount) || !r.U32(data.vertexStride) || !r.U32(type) || type > 1 || !r.U32(count) || count > 64 || count > r.Remaining() / 16) { error = "Invalid mesh header"; return false; }
             if (!charge(size_t(count) * sizeof(VertexAttribute))) return false;
             data.indexType = static_cast<MeshIndexType>(type); data.attributes.resize(count);
-            for (auto& a : data.attributes) { uint32_t format, semantic; if (!r.U32(a.location) || !r.U32(format) || !r.U32(a.offset) || !r.U32(semantic) || format > 2 || semantic > 4) { error = "Invalid mesh attribute"; return false; } a.format = static_cast<VertexFormat>(format); a.semantic = static_cast<VertexSemantic>(semantic); }
+            for (auto& a : data.attributes) { uint32_t format, semantic; if (!r.U32(a.location) || !r.U32(format) || !r.U32(a.offset) || !r.U32(semantic) || format > 2 || semantic > static_cast<uint32_t>(VertexSemantic::Tangent)) { error = "Invalid mesh attribute"; return false; } a.format = static_cast<VertexFormat>(format); a.semantic = static_cast<VertexSemantic>(semantic); }
             uint64_t bytes;
             if (!r.U64(bytes) || bytes % 4 || bytes > r.Remaining() || bytes > context.maxResidentBytes / 2) { error = "Invalid vertex byte range"; return false; }
             if (!charge(static_cast<size_t>(bytes))) return false;

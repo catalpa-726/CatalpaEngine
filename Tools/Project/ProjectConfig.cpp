@@ -200,7 +200,13 @@ namespace Catalpa::Tools {
                 AssetType key;
                 const auto path = ArchiveChildPath("/profiles", name);
                 if (!AssetType::TryParse(name, key)) return Fail(error, path, "invalid profile key");
-                if (!Fields(profile, { "platform", "architecture", "shaderTarget", "shaderProfile", "targetEnvironment" }, path, error)) return false;
+                if (!Fields(profile, { "platform", "architecture", "shaderTarget", "shaderProfile", "targetEnvironment", "assetPipeline" }, path, error)) return false;
+                if (const auto* pipeline = profile.Find("assetPipeline")) {
+                    const auto* text = std::get_if<std::string>(&pipeline->data);
+                    if (!text || *text != "static-model-v1")
+                        return Fail(error, ArchiveChildPath(path, "assetPipeline"),
+                                    "unsupported asset pipeline; expected static-model-v1");
+                }
                 std::string platform, architecture, target, shaderProfile, environment;
                 if (!Text(profile, "platform", platform, path, error, 32)
                     || !Text(profile, "architecture", architecture, path, error, 32)
