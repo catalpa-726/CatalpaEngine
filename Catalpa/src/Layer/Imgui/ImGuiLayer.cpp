@@ -1,4 +1,4 @@
-#include "catpch.h"
+﻿#include "catpch.h"
 #include "ImGuiLayer.h"
 
 #include "Core/Application.h"
@@ -30,6 +30,17 @@ namespace Catalpa {
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
         io.BackendRendererName = "Catalpa_RenderGraph";
         io.IniFilename = nullptr; // 宿主工作区通过内存接口保存布局，不让 ImGui 隐式写入当前目录。
+
+        ImFontConfig config;
+        config.OversampleH = 3;
+        config.OversampleV = 2;
+        config.PixelSnapH = false;
+        io.FontDefault = io.Fonts->AddFontFromFileTTF(
+            "F:\\C\\work\\shader\\Engine\\CatalpaEngine\\Catalpa\\Resources\\Fonts\\Inter\\extras\\ttf\\Inter-Regular.ttf",
+            24.0f,
+            &config
+        );
+
         ImGui::StyleColorsDark();
 
         auto* window = static_cast<GLFWwindow*>(Application::Get().GetWindow().GetNativeWindow());
