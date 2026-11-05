@@ -14,6 +14,7 @@
 
 #include "Platform/Vulkan/VulkanBackend.h"
 #include "Scene/Scene.h"
+#include "Camera/CameraProjection.h"
 #include "ECS/SystemContext.h"
 #include "Runtime/RuntimeServices.h"
 #include "Runtime/Systems/TransformSystem.h"
@@ -66,6 +67,8 @@ namespace Catalpa {
         }
 
         m_Renderer = std::make_unique<Renderer>(*m_Device, *m_Swapchain, *m_Assets, m_RendererProfile);
+        if (m_EditorViewportActive)
+            m_Renderer->SetMainScenePresentation(MainScenePresentation::OffscreenOnly);
         m_SimulationStopped = false;
         m_FrameSequence = 0;
         m_InputSceneIdentity = 0;
@@ -79,6 +82,8 @@ namespace Catalpa {
         StopSimulation();
         m_PreviewRequests.clear();
         m_LastPreviewError.clear();
+        m_LastSceneCameraError.clear();
+        m_EditorViewportActive = false;
         m_EnvironmentRequestErrors.clear();
         // 停止资产发布并等待CPU任务；旧固定版本仍由场景/渲染快照保活。
         if (m_Assets) m_Assets->Shutdown();
@@ -180,17 +185,62 @@ namespace Catalpa {
 
     bool EngineRuntime::SetEditorPreview(SceneHandle scene, uint64_t viewId, Extent2D extent, std::string& error)
     {
+        return StorePreviewRequest(scene, viewId, extent, std::nullopt, error);
+    }
+
+    bool EngineRuntime::SetEditorCameraPreview(SceneHandle scene, uint64_t viewId, Extent2D extent,
+        const Math::TransformTRS& pose, const CameraLens& lens, uint64_t historyRevision, std::string& error)
+    {
+        RenderView view;
+        view.id = viewId;
+        view.independentCamera = true;
+        view.historyRevision = historyRevision;
+        view.viewport = { .width = extent.width, .height = extent.height };
+        view.lens = lens;
+        Math::Mat4 world;
+        if (const auto status = Math::ComposeTRS(pose, world); !status.IsSuccess()) {
+            error = status.message;
+            return false;
+        }
+        if (const auto status = BuildCameraMatrices(world, lens, view.viewport, view.matrices); !status.IsSuccess()) {
+            error = status.message;
+            return false;
+        }
+        if (const auto status = ValidateRenderView(view); !status.IsSuccess()) {
+            error = status.message;
+            return false;
+        }
+        return StorePreviewRequest(scene, viewId, extent, std::move(view), error);
+    }
+
+    void EngineRuntime::SetEditorViewportActive(bool active)
+    {
+        if (active == m_EditorViewportActive) return;
+        m_EditorViewportActive = active;
+        m_Input.ResetGameplayContext();
+        if (m_Renderer)
+            m_Renderer->SetMainScenePresentation(active ? MainScenePresentation::OffscreenOnly : MainScenePresentation::MainWindow);
+    }
+
+    bool EngineRuntime::StorePreviewRequest(SceneHandle scene, uint64_t viewId, Extent2D extent,
+        std::optional<RenderView> independentView, std::string& error)
+    {
         if (!m_Renderer || !m_Scenes.GetScene(scene) || viewId == 0 || extent.IsEmpty()) {
             error = "Preview requires a live scene, nonzero view ID and nonempty extent";
             return false;
         }
         const auto& caps = m_Device->GetCapabilities();
-        if (extent.width > caps.maxRenderTargetExtent.width || extent.height > caps.maxRenderTargetExtent.height) {
+        if (extent.width > 8192 || extent.height > 8192 ||
+            extent.width > caps.maxRenderTargetExtent.width || extent.height > caps.maxRenderTargetExtent.height) {
             error = "Preview extent exceeds render-target limits";
             return false;
         }
         const auto previous = m_PreviewRequests.find(viewId);
-        if (previous != m_PreviewRequests.end() && previous->second.scene == scene && previous->second.extent == extent) {
+        if (previous != m_PreviewRequests.end() && previous->second.scene == scene && previous->second.extent == extent
+            && previous->second.independentView.has_value() == independentView.has_value()) {
+            // 位姿改变只更新相机值，不重新分配 GPU 目标，也不让已显示帧的点击失去身份。
+            if (independentView) independentView->targetGeneration = previous->second.generation;
+            previous->second.independentView = std::move(independentView);
             error.clear();
             return true;
         }
@@ -199,9 +249,8 @@ namespace Catalpa {
             return false;
         }
         try {
-            auto candidate = m_PreviewRequests;
-            candidate.insert_or_assign(viewId, PreviewRequest{ scene, extent, m_NextPreviewGeneration });
-            m_PreviewRequests.swap(candidate);
+            if (independentView) independentView->targetGeneration = m_NextPreviewGeneration;
+            m_PreviewRequests.insert_or_assign(viewId, PreviewRequest{ scene, extent, m_NextPreviewGeneration, std::move(independentView) });
             ++m_NextPreviewGeneration;
             error.clear();
             return true;
@@ -291,13 +340,26 @@ namespace Catalpa {
             const RenderViewRequest request{ .id = it->first, .targetGeneration = it->second.generation,
                 .viewport = { .width = it->second.extent.width, .height = it->second.extent.height } };
             RenderFramePacket packet;
-            auto status = scene->CommitPending();
-            if (status.IsSuccess()) status = TransformSystem::Update(*scene);
-            if (status.IsSuccess()) status = RenderExtractSystem::Extract(*scene, sequence, { &request, 1 }, packet);
+            const auto& independent = it->second.independentView;
+            const auto& primary = m_Renderer->GetSceneFrame();
+            WorldStatus status;
+            if (independent && scene == m_Scenes.GetActive() && primary.sequence == sequence
+                && primary.sceneIdentity == scene->GetWorld().GetIdentity()) {
+                // 复用同一安全点的场景快照；编辑镜头不会写回相机组件或重新运行玩法。
+                packet = primary;
+                packet.views.clear();
+            } else {
+                status = scene->CommitPending();
+                if (status.IsSuccess()) status = TransformSystem::Update(*scene);
+                const auto views = independent ? std::span<const RenderViewRequest>{}
+                    : std::span<const RenderViewRequest>{ &request, 1 };
+                if (status.IsSuccess()) status = RenderExtractSystem::Extract(*scene, sequence, views, packet);
+            }
             if (!status.IsSuccess()) {
                 // 候选预览失败保持上次显示帧；不能为了一个编辑窗口终止整个引擎。
                 if (error.empty()) error = status.message;
             } else {
+                if (independent) packet.views.push_back(*independent);
                 packet.time = m_FrameTime;
                 RequestFrameAssets(packet);
                 std::string currentError;
@@ -339,6 +401,9 @@ namespace Catalpa {
             extract.execute = [](SystemContext& context) -> WorldStatus {
                 const auto& services = context.services;
                 if (!services.renderFrame) return { WorldError::InvalidArgument, "Render extraction target is missing" };
+                if (!services.extractSceneCamera)
+                    return RenderExtractSystem::Extract(context.scene, services.renderFrame->sequence,
+                        std::span<const RenderViewRequest>{}, *services.renderFrame);
                 return RenderExtractSystem::Extract(context.scene, services.renderFrame->sequence,
                     services.targetWidth, services.targetHeight, *services.renderFrame);
             };
@@ -358,9 +423,10 @@ namespace Catalpa {
             const uint64_t activeIdentity = active ? active->GetWorld().GetIdentity() : 0;
             if (activeIdentity != m_InputSceneIdentity) {
                 m_Input.ResetGameplayContext();
+                m_LastSceneCameraError.clear();
                 m_InputSceneIdentity = activeIdentity;
             }
-            capture.gameplayActive = capture.gameplayActive && activeIdentity != 0;
+            capture.gameplayActive = capture.gameplayActive && activeIdentity != 0 && !m_EditorViewportActive;
             const auto& actions = m_Input.BeginFrame(capture);
             if (const auto* pause = actions.Find("simulation.pause"); pause && pause->pressed) {
                 m_Clock.SetPaused(!m_Clock.IsPaused());
@@ -373,7 +439,7 @@ namespace Catalpa {
             if (m_FrameTime.droppedSeconds > 0.0) CAT_CORE_WARN("[S03.2] Dropped {0} simulation seconds at catch-up limit", m_FrameTime.droppedSeconds);
             RenderFramePacket packet;
             packet.sequence = m_FrameSequence + 1;
-            RuntimeServices services{ &actions, width, height, &packet };
+            RuntimeServices services{ &actions, width, height, &packet, !m_EditorViewportActive };
             const auto status = m_Scenes.WithActive([&](Scene& scene) -> WorldStatus {
                 if (const auto ready = EnsureSceneSystems(scene); !ready.IsSuccess()) return ready;
                 // 提交此前的宿主命令，即使这一展示帧没有模拟 tick 也发布派生状态。
@@ -386,7 +452,7 @@ namespace Catalpa {
                     tick.firstTick += index;
                     tick.simulationSeconds -= (m_FrameTime.tickCount - 1 - index) * tick.fixedDeltaSeconds;
                     const ActionSnapshot tickInput = m_Input.ConsumeTick();
-                    RuntimeServices tickServices{ &tickInput, width, height, &packet };
+                    RuntimeServices tickServices{ &tickInput, width, height, &packet, !m_EditorViewportActive };
                     SystemContext context{ scene, tick, tickServices };
                     if (const auto executed = systems.RunPhase(SystemPhase::Gameplay, context); !executed.IsSuccess()) return executed;
                     if (const auto updated = systems.RunPhase(SystemPhase::Transform, context); !updated.IsSuccess()) return updated;
@@ -394,9 +460,23 @@ namespace Catalpa {
                 if (const auto camera = systems.RunPhase(SystemPhase::Camera, presentation); !camera.IsSuccess()) return camera;
                 return systems.RunPhase(SystemPhase::Extract, presentation);
             });
-            if (!status.IsSuccess()) return status;
-            // Extract替换整个包后才附加展示帧时间；所有权随快照交给Renderer。
-            packet.time = m_FrameTime;
+            if (status.code == WorldError::InvalidPresentationView) {
+                // 保留同一场景的最近有效画面；新场景没有有效帧时只绘制工作区。
+                // 展示序号继续推进，下一轮输入/模拟可修正相机；其他系统错误仍由宿主处理。
+                if (m_LastSceneCameraError != status.message) {
+                    CAT_CORE_WARN("Scene camera frame rejected: {0}. Waiting for a valid pose or lens.", status.message);
+                    m_LastSceneCameraError = status.message;
+                }
+                const auto& previous = m_Renderer->GetSceneFrame();
+                packet = previous.sceneIdentity == activeIdentity ? previous : RenderFramePacket{};
+                packet.sceneIdentity = activeIdentity;
+                packet.sequence = m_FrameSequence + 1;
+            } else {
+                if (!status.IsSuccess()) return status;
+                if (!m_LastSceneCameraError.empty()) CAT_CORE_INFO("Scene camera recovered; publishing the current view.");
+                m_LastSceneCameraError.clear();
+                packet.time = m_FrameTime;
+            }
             RequestFrameAssets(packet);
             if (const auto applied = m_Renderer->SetSceneFrame(std::move(packet)); !applied.IsSuccess()) return { WorldError::InvalidArgument, applied.message };
             ++m_FrameSequence;

@@ -50,6 +50,13 @@ namespace Catalpa {
 
         // 宿主表现桥：值请求和快照，不公开 Renderer、原生窗口或 GPU 资源所有者。
         [[nodiscard]] bool SetEditorPreview(SceneHandle scene, uint64_t viewId, Extent2D extent, std::string& error);
+        // 独立编辑相机按值提交；材质等使用场景相机的预览继续走上面的入口。
+        [[nodiscard]] bool SetEditorCameraPreview(SceneHandle scene, uint64_t viewId, Extent2D extent,
+            const Math::TransformTRS& cameraPose, const CameraLens& lens, uint64_t historyRevision, std::string& error);
+        // 挂载工作区时由视口呈现场景，卸载后恢复宿主主窗口的场景呈现。
+        void SetEditorViewportActive(bool active);
+        // 工作区仅在当前帧的视口接收导航时放行系统按键；玩法输入另由 Runtime 隔离。
+        void AllowEditorViewportSystemKeys() noexcept { m_AllowEditorSystemKeys = true; }
         [[nodiscard]] bool GetEditorPreview(uint64_t viewId, RenderSurfaceSnapshot& surface) const;
         void CloseEditorPreview(uint64_t viewId);
         [[nodiscard]] bool SetEditorPreviewImage(uint64_t viewId, const AssetVersionRef<ImageAsset>& image,
@@ -90,6 +97,7 @@ namespace Catalpa {
 
 		bool m_Running = true;
         int m_ExitCode = 0;
+        bool m_AllowEditorSystemKeys = false;
 	};
 
 	Application* CreateApplication();

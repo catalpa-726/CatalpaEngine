@@ -16,8 +16,8 @@
 namespace Catalpa::Editor {
     namespace {
         constexpr const char* DockspaceName = "Catalpa.Workspace.Dockspace";
-        constexpr ImGuiDockNodeFlags DockFlags = ImGuiDockNodeFlags_PassthruCentralNode
-            | ImGuiDockNodeFlags_NoDockingOverCentralNode;
+        // 中央节点现在承载场景图像；侧边节点和保存的分割比例仍由原 DockSpace 管理。
+        constexpr ImGuiDockNodeFlags DockFlags = ImGuiDockNodeFlags_None;
 
         // 文件路径以 UTF-8 展示；磁盘访问始终保留 Windows 原生宽字符路径。
         std::string DisplayPath(const std::filesystem::path& path)
@@ -162,6 +162,8 @@ namespace Catalpa::Editor {
         IMGUI_CHECKVERSION();
         m_Attached = true;
         ApplyTheme();
+        auto& app = Application::Get();
+        m_Editing = std::make_unique<WorkspaceEditing>(app);
         std::string error;
         if (!GetWorkspacePaths(m_ExecutableDirectory, error)) {
             m_AutoSave = false;
@@ -171,8 +173,6 @@ namespace Catalpa::Editor {
         m_SettingsPath = m_ExecutableDirectory / "Saved" / "Workspace.json";
         m_BrowseDirectory = m_ExecutableDirectory / "Resources";
         LoadLanguage();
-        auto& app = Application::Get();
-        m_Editing = std::make_unique<WorkspaceEditing>(app);
         m_Build = std::make_unique<BuildPanel>(app.GetJobs(), app.GetAssets(), app.GetScenes());
         m_Content = std::make_unique<ContentBrowserPanel>();
         m_Console = std::make_unique<ConsolePanel>();
@@ -344,6 +344,7 @@ namespace Catalpa::Editor {
         const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.19f, nullptr, &center);
         const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.27f, nullptr, &center);
         const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.26f, nullptr, &center);
+        ImGui::DockBuilderDockWindow("###Catalpa.Viewport", center);
         ImGui::DockBuilderDockWindow("###Catalpa.Scene", left);
         ImGui::DockBuilderDockWindow("###Catalpa.Inspector", right);
         ImGui::DockBuilderDockWindow("###Catalpa.Settings", right);
@@ -659,7 +660,9 @@ namespace Catalpa::Editor {
                 const auto asset = m_Build->TakeOpenAsset();
                 if (asset.HasValue()) m_Editing->OpenAsset(asset,*m_Build);
             }
-            m_Editing->Draw(text,m_Build.get());
+            const auto dockId = ImHashStr(DockspaceName);
+            const auto* center = ImGui::DockBuilderGetCentralNode(dockId);
+            m_Editing->Draw(text, m_Build.get(), center ? center->ID : dockId);
         }
         if (m_Dependencies && m_Build)
             m_Dependencies->Draw(m_Settings.showDependencies, m_Build->Result(), text);

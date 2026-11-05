@@ -22,6 +22,9 @@ namespace Catalpa {
     class RHIQueryPool;
     struct RGIndexedDrawDesc;
 
+    // 宿主显式选择主窗口是否展示场景；离屏surface的渲染不受此选项影响。
+    enum class MainScenePresentation : uint8_t { MainWindow, OffscreenOnly };
+
     struct RendererStatistics {
         bool timestampSupported = false;
         bool gpuDurationAvailable = false;
@@ -42,6 +45,9 @@ namespace Catalpa {
         [[nodiscard]] Math::MathStatus SetSceneFrame(RenderFramePacket packet);
         [[nodiscard]] const RenderFramePacket& GetSceneFrame() const noexcept { return m_Scene.GetFrame(); }
         void ClearSceneFrame() noexcept;
+        // 默认保留主窗口场景；编辑宿主可只在中央离屏surface展示，交换链仍清底色并合成UI。
+        void SetMainScenePresentation(MainScenePresentation) noexcept;
+        [[nodiscard]] MainScenePresentation GetMainScenePresentation() const noexcept { return m_MainScenePresentation; }
         [[nodiscard]] RHIStatus InitUI(std::span<const std::byte> pixels, Extent2D extent);
 
         // 每个surface独占表现目标与帧槽，CPU/GPU资产缓存仍由同一个Renderer共享。
@@ -80,6 +86,7 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus AcquireMaterialSampler(uint32_t flags, PixelFormat, SamplerHandle& output);
         [[nodiscard]] Math::MathStatus ResolveEnvironmentSnapshot(RenderFramePacket&, const RenderFramePacket& previous);
         [[nodiscard]] bool IsolatePreviewFailure(uint64_t surfaceId, Surface&, RHIStatus);
+        void ClearMainSurface() noexcept;
         void OnSubmitted(RHICompletionPoint) noexcept;
         void OnCancelled() noexcept;
 
@@ -96,6 +103,7 @@ namespace Catalpa {
         ReadbackManager m_Readbacks;
         RenderScene m_Scene;
         RendererProfile m_Profile;
+        MainScenePresentation m_MainScenePresentation = MainScenePresentation::MainWindow;
         std::unique_ptr<Surface> m_Main;
         std::map<uint64_t, std::unique_ptr<Surface>> m_Previews;
         std::vector<QuerySlot> m_Queries;

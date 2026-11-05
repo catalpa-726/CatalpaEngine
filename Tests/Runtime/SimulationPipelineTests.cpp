@@ -8,6 +8,8 @@
 #include "Runtime/Systems/TransformSystem.h"
 #include "Runtime/Systems/RenderExtractSystem.h"
 #include "Renderer/RenderScene.h"
+#include "Renderer/RenderView.h"
+#include "Camera/CameraProjection.h"
 #include "Scene/Components/MeshRendererComponent.h"
 #include "Scene/Components/CameraComponent.h"
 #include "Scene/Components/LightComponent.h"
@@ -18,6 +20,141 @@
 
 namespace Catalpa::Tests {
     namespace {
+        // 独立编辑镜头不依赖场景相机；空请求只跳过相机，不能隐藏几何提取错误。
+        void CheckIndependentCameraExtraction(SceneManager& scenes, TestContext& test)
+        {
+            SceneHandle handle;
+            const auto created = scenes.CreateScene("Independent editor camera", handle);
+            auto* scene = created.IsSuccess() ? scenes.GetScene(handle) : nullptr;
+            test.Check(scene != nullptr, "Create an empty scene for an independent editor camera");
+            if (!scene) return;
+            const std::span<const RenderViewRequest> noViews;
+
+            RenderFramePacket snapshot;
+            test.Check(RenderExtractSystem::Extract(*scene, 1, noViews, snapshot).IsSuccess()
+                && snapshot.sceneIdentity == scene->GetWorld().GetIdentity()
+                && snapshot.transforms.empty() && snapshot.instances.empty() && snapshot.views.empty(),
+                "An empty camera request extracts a real empty scene without creating a scene camera");
+
+            RenderView independent;
+            independent.id = 9001;
+            independent.independentCamera = true;
+            independent.historyRevision = 1;
+            independent.targetGeneration = 3;
+            independent.viewport = { 640, 480 };
+            Math::Mat4 cameraWorld{ 1.0f };
+            cameraWorld[3] = Math::Vec4{ 0, 1, 4, 1 };
+            const auto built = BuildCameraMatrices(cameraWorld, independent.lens, independent.viewport, independent.matrices);
+            test.Check(built.IsSuccess() && independent.camera == RenderInstanceId{}
+                && ValidateRenderView(independent).IsSuccess(),
+                "The shared camera builder constructs an independent view with a strictly empty entity identity");
+            if (!built.IsSuccess()) return;
+            snapshot.views.push_back(independent);
+            RenderScene consumer;
+            RenderViewHistory history;
+            test.Check(consumer.Apply(snapshot).IsSuccess()
+                && history.Stage(snapshot.sequence, snapshot.sceneIdentity, snapshot.views).IsSuccess()
+                && history.GetPending().size() == 1 && !history.GetPending().front().history.valid,
+                "RenderScene and view history accept an independent camera even when the source world has no entities");
+            history.OnSubmitted();
+
+            // 全部夹具变更走Scene命令和Transform安全点，不强转只读World或破坏原资产。
+            const auto cameraId = PersistentEntityId::FromWords(7, 51);
+            const auto meshId = PersistentEntityId::FromWords(7, 52);
+            Math::TransformTRS meshPose;
+            meshPose.translation.z = -4;
+            MeshData meshData;
+            MeshResourceRef mesh;
+            const bool ready = CreateCubeMesh(1, meshData).IsSuccess()
+                && CreateMeshResource(meshData, mesh).IsSuccess()
+                && scene->QueueCreate(cameraId, "Scene camera", {}).IsSuccess()
+                && scene->QueueCreate(meshId, "Visible cube", meshPose).IsSuccess()
+                && scene->CommitPending().IsSuccess()
+                && scene->QueueSetCamera(scene->Resolve(cameraId), CameraComponent{}).IsSuccess()
+                && scene->QueueSetMeshRenderer(scene->Resolve(meshId), MeshRendererComponent{ mesh }).IsSuccess()
+                && scene->CommitPending().IsSuccess() && TransformSystem::Update(*scene).IsSuccess();
+            test.Check(ready, "Prepare valid scene camera and immutable geometry through normal scene commands");
+            if (!ready) return;
+
+            RenderFramePacket ordinary;
+            test.Check(RenderExtractSystem::Extract(*scene, 2, 640, 480, ordinary).IsSuccess()
+                && ordinary.views.size() == 1 && !ordinary.views.front().independentCamera
+                && ordinary.instances.size() == 1,
+                "The ordinary source-camera path still extracts one scene view and its mesh");
+            const auto previous = ordinary;
+            const auto sameSnapshot = [](const RenderFramePacket& actual, const RenderFramePacket& expected) {
+                if (actual.sequence != expected.sequence || actual.sceneIdentity != expected.sceneIdentity
+                    || actual.transforms.size() != expected.transforms.size()
+                    || actual.instances.size() != expected.instances.size() || actual.views.size() != expected.views.size()) return false;
+                for (size_t index = 0; index < actual.transforms.size(); ++index)
+                    if (actual.transforms[index].id != expected.transforms[index].id
+                        || actual.transforms[index].worldMatrix != expected.transforms[index].worldMatrix) return false;
+                for (size_t index = 0; index < actual.instances.size(); ++index)
+                    if (actual.instances[index].id != expected.instances[index].id
+                        || actual.instances[index].mesh != expected.instances[index].mesh
+                        || actual.instances[index].worldMatrix != expected.instances[index].worldMatrix) return false;
+                for (size_t index = 0; index < actual.views.size(); ++index)
+                    if (actual.views[index].id != expected.views[index].id
+                        || actual.views[index].camera != expected.views[index].camera
+                        || actual.views[index].independentCamera != expected.views[index].independentCamera
+                        || actual.views[index].matrices.viewProjection != expected.views[index].matrices.viewProjection) return false;
+                return true;
+            };
+            Math::TransformTRS scaledCamera;
+            scaledCamera.scale.x = 2;
+            test.Check(scene->QueueSetLocal(scene->Resolve(cameraId), scaledCamera).IsSuccess()
+                && scene->CommitPending().IsSuccess() && TransformSystem::Update(*scene).IsSuccess(),
+                "A legal scene transform can make the scene camera non-rigid without damaging the mesh");
+            const auto rejectedCamera = RenderExtractSystem::Extract(*scene, 3, 640, 480, ordinary);
+            test.Check(rejectedCamera.code == WorldError::InvalidPresentationView && sameSnapshot(ordinary, previous),
+                "Only invalid presentation-camera math is classified for recovery and the complete old frame is preserved");
+            test.Check(RenderExtractSystem::Extract(*scene, 3, noViews, snapshot).IsSuccess()
+                && snapshot.transforms.size() == 2 && snapshot.instances.size() == 1 && snapshot.views.empty(),
+                "An invalid source camera cannot prevent camera-free extraction of the real scene geometry");
+            snapshot.views.push_back(independent);
+            test.Check(consumer.Apply(snapshot).IsSuccess()
+                && history.Stage(snapshot.sequence, snapshot.sceneIdentity, snapshot.views).IsSuccess()
+                && history.GetPending().size() == 1 && history.GetPending().front().history.valid
+                && history.GetPending().front().history.previousSequence == 1,
+                "Independent-camera consumption and submitted history remain valid despite the non-rigid source camera");
+
+            // HasValue()==false仍不等于严格空身份：独立镜头不允许夹带任何实体字段。
+            const auto sourceCamera = scene->Resolve(cameraId);
+            const std::array identities{
+                RenderInstanceId{ sourceCamera.world, sourceCamera.index, sourceCamera.generation },
+                RenderInstanceId{ 0, 0, 1 }
+            };
+            for (const auto identity : identities) {
+                auto invalid = snapshot;
+                invalid.sequence = 4;
+                invalid.views.front().camera = identity;
+                test.Check(!ValidateRenderView(invalid.views.front()).IsSuccess()
+                    && !consumer.Apply(invalid).IsSuccess() && sameSnapshot(consumer.GetFrame(), snapshot),
+                    "Independent cameras reject both complete and partial entity identities without replacing the accepted frame");
+                test.Check(!history.Stage(invalid.sequence, invalid.sceneIdentity, invalid.views).IsSuccess()
+                    && history.GetPending().size() == 1
+                    && history.GetPending().front().view.camera == RenderInstanceId{}
+                    && history.GetPending().front().history.previousSequence == 1,
+                    "A rejected identity cannot replace the already staged independent view history");
+            }
+            history.OnSubmitted();
+            test.Check(history.Stage(4, snapshot.sceneIdentity, snapshot.views).IsSuccess()
+                && history.GetPending().front().history.previousSequence == 3,
+                "Only the accepted independent view advances submitted history after rejected candidates");
+
+            Math::TransformTRS singularMesh = meshPose;
+            singularMesh.scale.x = 0;
+            test.Check(scene->QueueSetLocal(scene->Resolve(meshId), singularMesh).IsSuccess()
+                && scene->CommitPending().IsSuccess() && TransformSystem::Update(*scene).IsSuccess(),
+                "Prepare a real singular mesh transform independently of the bad scene camera");
+            const auto oldSnapshot = snapshot;
+            const auto rejectedMesh = RenderExtractSystem::Extract(*scene, 4, noViews, snapshot);
+            const auto rejectedOrdinaryMesh = RenderExtractSystem::Extract(*scene, 4, 640, 480, ordinary);
+            test.Check(rejectedMesh.code == WorldError::InvalidArgument && sameSnapshot(snapshot, oldSnapshot)
+                && rejectedOrdinaryMesh.code == WorldError::InvalidArgument && sameSnapshot(ordinary, previous),
+                "Skipping source cameras never swallows mesh failures or reclassifies them as recoverable camera errors");
+        }
+
         // 世界轴长 1e25 仍可表示，长度平方已超出 float；提取与快照复核须保留同一单位方向。
         void CheckScaledLightExtraction(SceneManager& scenes, TestContext& test)
         {
@@ -96,6 +233,7 @@ namespace Catalpa::Tests {
         empty.sequence = 2;
         test.Check(render.Apply(std::move(empty)).IsSuccess() && render.GetFrame().transforms.empty(), "New empty frame clears unloaded source");
         CheckScaledLightExtraction(scenes, test);
+        CheckIndependentCameraExtraction(scenes, test);
     }
 
     // 以真实Scene命令/提取/消费链验证共享CPU几何，不创建窗口或GPU。

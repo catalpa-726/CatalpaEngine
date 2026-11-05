@@ -11,6 +11,7 @@
 #include "ECS/ComponentRegistry.h"
 #include "Camera/CameraProjection.h"
 #include "AssetEditors/AssetEditorRegistry.h"
+#include "Viewport/EditorCameraController.h"
 
 namespace Catalpa::Tests {
     using namespace Editor;
@@ -162,7 +163,7 @@ namespace Catalpa::Tests {
             bad.lens.nearPlane = 0;
             t.Check(!EditCamera(doc, id, bad, error) && state(7, 2, 0.25f),
                     "Invalid perspective near plane leaves live camera untouched");
-            // 单独的投影和逆仍可表达；组合实际相机位姿后，inverseVP 的平移项超出 float。
+            // 保留极端镜头拒绝用例，再分开验证“镜头本身有效，仅世界姿态超出精度预算”。
             t.Check(doc.History().Undo(doc, error) && state(8, 0, camera.lens.nearPlane),
                     "Prepare an intact redo branch before rejecting a world-space projection");
             Math::TransformTRS away;
@@ -170,13 +171,17 @@ namespace Catalpa::Tests {
             auto fragile = observed;
             fragile.lens.nearPlane = std::ldexp(1.0f, -120);
             Math::Mat4 projection, inverseProjection;
+            t.Check(!BuildCameraProjection(fragile.lens, {1, 1}, projection, inverseProjection).IsSuccess() &&
+                        !EditCamera(doc, id, fragile, error) && state(8, 0, camera.lens.nearPlane) && doc.History().CanRedo(),
+                    "An ill-conditioned lens cannot replace the camera or its redo branch");
+            fragile.lens.nearPlane = 0.05f;
             const bool scalarValid =
                 BuildCameraProjection(fragile.lens, {1, 1}, projection, inverseProjection).IsSuccess();
             const bool moved =
                 scene.QueueSetLocal(entity, away).IsSuccess() && scene.CommitPending().IsSuccess();
             t.Check(scalarValid && moved && !EditCamera(doc, id, fragile, error) && !error.empty() &&
                         state(8, 0, camera.lens.nearPlane) && doc.History().CanRedo(),
-                    "Combined projection overflow rejects the edit but preserves the live camera and redo "
+                    "Insufficient world resolution rejects the edit but preserves the live camera and redo "
                     "branch");
             t.Check(scene.QueueSetLocal(entity, {}).IsSuccess() && scene.CommitPending().IsSuccess() &&
                         doc.History().Redo(doc, error) && state(9, 2, 0.25f),
@@ -191,6 +196,56 @@ namespace Catalpa::Tests {
             ++camera.priority;
             t.Check(exhausted && !EditCamera(doc, id, camera, error),
                     "Refuse a new camera edit without revision space for undo");
+        }
+
+        void CheckEditorCamera(TestContext& t) {
+            Scene scene("Independent view");
+            std::string error;
+            EditorCameraController editor;
+            const bool fallback = editor.Reset(&scene, error);
+            t.Check(fallback && editor.Pose().translation == Math::Vec3(0, 2, 10),
+                    "Empty scene opens with an independent usable view");
+            const PersistentEntityId cameraId{StableId::FromWords(38, 4)};
+            Math::TransformTRS authored;
+            authored.translation = {3, 4, 5};
+            CameraComponent camera;
+            camera.lens.nearPlane = .3f;
+            const bool made = scene.QueueCreate(cameraId, "Source camera", authored).IsSuccess() &&
+                              scene.CommitPending().IsSuccess() &&
+                              scene.QueueSetCamera(scene.Resolve(cameraId), camera).IsSuccess() &&
+                              scene.CommitPending().IsSuccess();
+            t.Check(made && editor.Reset(&scene, error) &&
+                        editor.Pose().translation == authored.translation && editor.Lens() == camera.lens,
+                    "Reset inherits the source camera pose and lens before the first render");
+            if (!made)
+                return;
+            const auto history = editor.HistoryRevision();
+            t.Check(editor.Navigate({.right = 1, .forward = 1, .seconds = .2f}, error) &&
+                        std::abs(glm::length(editor.Pose().translation - authored.translation) - .6f) <
+                            1.e-4f,
+                    "Diagonal navigation has the same speed as a single axis");
+            TransformComponent original;
+            t.Check(scene.GetTransform(scene.Resolve(cameraId), original).IsSuccess() &&
+                        original.local.translation == authored.translation &&
+                        editor.HistoryRevision() == history,
+                    "Navigation changes only the editor view and keeps continuous camera history");
+            const auto beforeLook = editor.Pose();
+            t.Check(editor.Navigate({.lookX = 20, .lookY = 10, .seconds = 0}, error) &&
+                        editor.Pose().rotation != beforeLook.rotation &&
+                        editor.Pose().translation == beforeLook.translation,
+                    "Mouse look uses pixel delta independently of simulation time");
+            const auto beforeInvalid = editor.Pose();
+            t.Check(!editor.Navigate({.forward = 1, .seconds = -1}, error) &&
+                        editor.Pose().translation == beforeInvalid.translation,
+                    "Invalid camera input preserves the previous independent pose");
+            t.Check(editor.Reset(&scene, error) && editor.Pose().translation == authored.translation &&
+                        editor.HistoryRevision() > history,
+                    "Explicit reset realigns the view and invalidates prior camera history");
+            authored.translation.x = 1.0e8f;
+            t.Check(scene.QueueSetLocal(scene.Resolve(cameraId), authored).IsSuccess() &&
+                        scene.CommitPending().IsSuccess() && editor.Reset(&scene, error) &&
+                        editor.Pose().translation == Math::Vec3(0, 2, 10) && !error.empty(),
+                    "An unrepresentable scene camera leaves a usable default editor view and a diagnostic");
         }
 
         void CheckContinuousDrag(TestContext& t) {
@@ -292,6 +347,7 @@ namespace Catalpa::Tests {
     void RunEditorCommandTests(TestContext& t) {
         CheckScenes(t);
         CheckIdentityAndCamera(t);
+        CheckEditorCamera(t);
         CheckContinuousDrag(t);
         CheckAssetDraft(t);
     }

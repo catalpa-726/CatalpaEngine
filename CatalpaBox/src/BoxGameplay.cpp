@@ -146,6 +146,8 @@ namespace Catalpa {
         gameplay.accesses = { { "input.actions", SystemAccessMode::Read }, { "scene.commands", SystemAccessMode::Write } };
         gameplay.execute = [state = m_State](SystemContext& context) -> WorldStatus {
             const auto* input = context.services.input;
+            // 编辑导航不拥有游戏相机。没有玩法输入时也不回写缓存的旧 Transform。
+            if (!input || !input->gameplayActive) return {};
             const double dx = Action(input, "look.yaw"), dy = Action(input, "look.pitch");
             state->yaw = std::remainder(state->yaw - dx * 0.0025, 2.0 * std::numbers::pi);
             // 样例相机的明确俯仰范围，避免在极点翻转；鼠标位移不乘 dt 或 DPI。
@@ -166,7 +168,7 @@ namespace Catalpa {
         };
         status = m_Module.Install(scene, std::move(gameplay));
         if (!status.IsSuccess()) { CAT_ERROR("Cannot install sandbox gameplay: {0}", status.message); Detach(); return false; }
-        CAT_INFO("[S03.2] WASD/QE move, hold right mouse to look, F6 pause, F7 step while paused; UI capture suppresses gameplay.");
+        CAT_INFO("F6 pauses simulation; F7 advances one paused tick. In the editor, navigate in Scene Viewport.");
         CAT_INFO("Scene sample: 4 instances share 2 meshes; near=0.1m, far=30m, reversed-Z={0}.", reversedZ);
         return true;
         } catch (const std::bad_alloc&) {

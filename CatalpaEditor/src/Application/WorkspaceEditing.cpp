@@ -5,6 +5,7 @@
 #include "Commands/SceneCommands.h"
 #include "Panels/BuildPanel.h"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "ImGuizmo.h"
 
 namespace Catalpa::Editor {
@@ -68,8 +69,13 @@ namespace Catalpa::Editor {
         }
     }
 
+    WorkspaceEditing::WorkspaceEditing(Application& app) : m_App(app) {
+        m_App.SetEditorViewportActive(true);
+    }
+
     WorkspaceEditing::~WorkspaceEditing() {
         Reset();
+        m_App.SetEditorViewportActive(false);
     }
 
     void WorkspaceEditing::Reset() {
@@ -83,6 +89,7 @@ namespace Catalpa::Editor {
         m_LastScene = {};
         m_Error.clear();
         m_AskDiscard = false;
+        m_RightLook = false;
     }
 
     bool WorkspaceEditing::HasDirtyDocuments() const {
@@ -106,8 +113,6 @@ namespace Catalpa::Editor {
             if (ImGui::MenuItem(text("edit.redo", "Redo", nullptr).c_str(), nullptr, false,
                                 doc && doc->History().CanRedo()))
                 doc->History().Redo(*doc, m_Error);
-            ImGui::MenuItem(text("panel.viewport", "Scene Viewport", nullptr).c_str(), nullptr,
-                            &ShowViewport);
             ImGui::EndMenu();
         }
     }
@@ -185,68 +190,149 @@ namespace Catalpa::Editor {
             m_Error = "Select a loaded material instance or image";
     }
 
-    void WorkspaceEditing::DrawViewport(SceneDocument* doc, const PanelText& text) {
-        bool shown =
-            ImGui::Begin(text("panel.viewport", "Scene Viewport", "Catalpa.Viewport").c_str(), &ShowViewport);
+    EditorCameraInput WorkspaceEditing::ViewportInput(bool hovered, bool gizmoBusy) {
+        EditorCameraInput input;
+        const auto& io = ImGui::GetIO();
+        if (!hovered || gizmoBusy || ImGui::IsAnyItemActive() || io.WantTextInput || io.AppFocusLost ||
+            io.KeyCtrl || io.KeyAlt || io.KeySuper) {
+            m_RightLook = false;
+            return input;
+        }
+        const bool rightPressed = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
+        if (rightPressed)
+            ImGui::SetWindowFocus();
+        if (!ImGui::IsWindowFocused()) {
+            m_RightLook = false;
+            return input;
+        }
+        m_App.AllowEditorViewportSystemKeys();
+        const auto axis = [](ImGuiKey positive, ImGuiKey negative) {
+            return float(ImGui::IsKeyDown(positive)) - float(ImGui::IsKeyDown(negative));
+        };
+        input.seconds = io.DeltaTime;
+        input.right = axis(ImGuiKey_D, ImGuiKey_A);
+        input.forward = axis(ImGuiKey_W, ImGuiKey_S);
+        input.up = axis(ImGuiKey_E, ImGuiKey_Q);
+        if (rightPressed)
+            m_RightLook = true;
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Right))
+            m_RightLook = false;
+        if (m_RightLook && !rightPressed) {
+            input.lookX = io.MouseDelta.x;
+            input.lookY = io.MouseDelta.y;
+        }
+        return input;
+    }
+
+    void WorkspaceEditing::DrawViewport(SceneDocument* doc, const PanelText& text, uint32_t centerDockId) {
+        // 仅迁移这个稳定窗口：旧版保存的浮动位置或侧边 DockId 不影响其他面板。
+        if (centerDockId)
+            ImGui::SetNextWindowDockID(centerDockId, ImGuiCond_Always);
+        ImGuiWindowClass viewportClass;
+        viewportClass.DockNodeFlagsOverrideSet =
+            ImGuiDockNodeFlags_NoUndocking | ImGuiDockNodeFlags_NoDockingSplit |
+            ImGuiDockNodeFlags_NoDockingOverMe | ImGuiDockNodeFlags_NoWindowMenuButton;
+        ImGui::SetNextWindowClass(&viewportClass);
+        const bool shown = ImGui::Begin(text("panel.viewport", "Scene Viewport", "Catalpa.Viewport").c_str(),
+                                        nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove);
         if (!shown || !doc) {
             m_Picking.Cancel(m_App);
-            m_App.CloseEditorPreview(SceneSurface);
             m_Gizmo.Cancel(m_Error);
+            m_RightLook = false;
+            m_App.CloseEditorPreview(SceneSurface);
+            if (shown)
+                ImGui::TextDisabled("%s", text("viewport.no_scene", "No active scene.", nullptr).c_str());
             ImGui::End();
             return;
         }
         if (ImGui::IsWindowFocused())
             m_Documents.Activate(doc->Id());
         m_Gizmo.Toolbar(text);
-        DrawSelectedBounds(m_App, *doc, m_Selection, m_Error);
+        if (ImGui::Button(text("viewport.reset_camera", "Reset view", "ResetEditorCamera").c_str())) {
+            m_Gizmo.Cancel(m_Error);
+            m_RightLook = false;
+            m_Picking.Cancel(m_App);
+            m_ResetCamera = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", text("viewport.navigation",
+                                         "Click the image and keep the pointer over it. WASD moves, Q/E descends or rises, "
+                                         "hold right mouse to look.",
+                                         nullptr)
+                                        .c_str());
+        ImGui::SameLine();
         double gpuMs = 0;
-        const auto gpuLabel = text("viewport.gpu_time", "GPU frame (ms)", nullptr);
+        const auto label = text("viewport.gpu_time", "GPU frame (ms)", nullptr);
         if (m_App.GetGpuFrameMilliseconds(gpuMs))
-            ImGui::Text("%s: %.2f", gpuLabel.c_str(), gpuMs);
+            ImGui::Text("%s: %.2f", label.c_str(), gpuMs);
         else
-            ImGui::TextDisabled("%s: N/A", gpuLabel.c_str());
-        const ImVec2 available = ImGui::GetContentRegionAvail(), origin = ImGui::GetCursorScreenPos();
-        const ImVec2 density = ImGui::GetWindowViewport()->FramebufferScale;
+            ImGui::TextDisabled("%s: N/A", label.c_str());
+        DrawSelectedBounds(m_App, *doc, m_Selection, m_Error);
+
+        const auto available = ImGui::GetContentRegionAvail(), origin = ImGui::GetCursorScreenPos();
+        const auto density = ImGui::GetWindowViewport()->FramebufferScale;
         if (available.x < 1 || available.y < 1) {
             m_Picking.Cancel(m_App);
             m_Gizmo.Cancel(m_Error);
+            m_RightLook = false;
             m_App.CloseEditorPreview(SceneSurface);
             ImGui::End();
             return;
         }
         const Extent2D extent{uint32_t(std::clamp(available.x * density.x, 1.f, 4096.f)),
                               uint32_t(std::clamp(available.y * density.y, 1.f, 4096.f))};
-        std::string previewError;
-        if (m_App.SetEditorPreview(doc->Handle(), SceneSurface, extent, previewError)) {
-            RenderSurfaceSnapshot frame;
-            const bool ready = m_App.GetEditorPreview(SceneSurface, frame) && frame.textureToken &&
-                               frame.extent == extent &&
-                               frame.sceneIdentity == doc->Resolve()->GetWorld().GetIdentity();
-            m_Picking.Update(m_App, doc, ready ? &frame : nullptr, m_Selection, m_Error);
-            if (ready) {
-                ImGui::Image(ImTextureRef(static_cast<ImTextureID>(frame.textureToken)), available);
-                const bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
-                const bool gizmo = m_Gizmo.Draw(*doc, m_Selection, frame.view, origin.x, origin.y,
-                                                available.x, available.y, m_Error);
-                if (clicked && !gizmo) {
-                    const auto mouse = ImGui::GetIO().MousePos;
-                    const auto x = uint32_t(std::clamp((mouse.x - origin.x) / available.x * extent.width, 0.f,
-                                                       float(extent.width - 1)));
-                    const auto y = uint32_t(std::clamp((mouse.y - origin.y) / available.y * extent.height,
-                                                       0.f, float(extent.height - 1)));
-                    m_Picking.Request(m_App, *doc, frame, x, y, m_Error);
-                }
-            } else
-                m_Gizmo.Cancel(m_Error);
+        RenderSurfaceSnapshot frame;
+        const bool ready = !m_ResetCamera && m_App.GetEditorPreview(SceneSurface, frame) && frame.textureToken &&
+                           frame.extent == extent && frame.view.independentCamera &&
+                           frame.sceneIdentity == doc->Resolve()->GetWorld().GetIdentity();
+        m_Picking.Update(m_App, doc, ready ? &frame : nullptr, m_Selection, m_Error);
+        EditorCameraInput input;
+        if (ready) {
+            ImGui::Image(ImTextureRef(static_cast<ImTextureID>(frame.textureToken)), available);
+            const bool hovered = ImGui::IsItemHovered(),
+                       clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+            const bool gizmo = m_Gizmo.Draw(*doc, m_Selection, frame.view, origin.x, origin.y, available.x,
+                                            available.y, m_Error);
+            input = ViewportInput(hovered, gizmo);
+            if (clicked && !gizmo) {
+                const auto mouse = ImGui::GetIO().MousePos;
+                const auto x = uint32_t(std::clamp((mouse.x - origin.x) / available.x * extent.width, 0.f,
+                                                   float(extent.width - 1)));
+                const auto y = uint32_t(std::clamp((mouse.y - origin.y) / available.y * extent.height, 0.f,
+                                                   float(extent.height - 1)));
+                m_Picking.Request(m_App, *doc, frame, x, y, m_Error);
+            }
         } else {
-            m_Error = std::move(previewError);
-            m_Picking.Cancel(m_App);
+            m_RightLook = false;
             m_Gizmo.Cancel(m_Error);
+            ImGui::TextDisabled("%s",
+                                text("viewport.preparing", "Preparing scene image...", nullptr).c_str());
+        }
+
+        auto next = m_Camera;
+        std::string viewError;
+        if (m_ResetCamera) {
+            // 用真实输出尺寸筛选可作为导航起点的相机，坏的场景镜头不能锁住编辑视口。
+            if (!next.Reset(doc->Resolve(), viewError, {extent.width, extent.height})) {
+                m_Error = std::move(viewError);
+                ImGui::End();
+                return;
+            }
+            if (!viewError.empty()) m_Error = viewError;
+        }
+        if (next.Navigate(input, viewError) &&
+            m_App.SetEditorCameraPreview(doc->Handle(), SceneSurface, extent, next.Pose(), next.Lens(),
+                                         next.HistoryRevision(), viewError)) {
+            m_Camera = next;
+            m_ResetCamera = false;
+        } else {
+            m_RightLook = false;
+            m_Error = std::move(viewError);
         }
         ImGui::End();
     }
 
-    void WorkspaceEditing::Draw(const PanelText& text, BuildPanel* build) {
+    void WorkspaceEditing::Draw(const PanelText& text, BuildPanel* build, uint32_t centerDockId) {
         m_Documents.CloseStaleScenes();
         auto* scene = ActiveScene();
         const auto id = scene ? scene->Id() : StableId{};
@@ -255,18 +341,15 @@ namespace Catalpa::Editor {
             m_Picking.Cancel(m_App);
             m_Gizmo.Cancel(m_Error);
             m_LastScene = id;
-            if (scene)
+            m_RightLook = false;
+            if (scene) {
+                m_ResetCamera = true;
                 m_Documents.Activate(id);
+            }
         }
         ImGuizmo::SetImGuiContext(ImGui::GetCurrentContext());
         ImGuizmo::BeginFrame();
-        if (ShowViewport)
-            DrawViewport(scene, text);
-        else {
-            m_Picking.Cancel(m_App);
-            m_Gizmo.Cancel(m_Error);
-            m_App.CloseEditorPreview(SceneSurface);
-        }
+        DrawViewport(scene, text, centerDockId);
         if (auto* asset = dynamic_cast<AssetDocument*>(m_Documents.Find(m_OpenAsset))) {
             bool open = true;
             bool discard = false;

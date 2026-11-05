@@ -1,7 +1,7 @@
 #include "Commands/SceneCommands.h"
 #include "Scene/SceneSubtree.h"
 #include "Runtime/Systems/TransformSystem.h"
-#include "Renderer/RendererFrameContext.h"
+#include "Camera/CameraProjection.h"
 
 namespace Catalpa::Editor {
     namespace {
@@ -21,22 +21,10 @@ namespace Catalpa::Editor {
             if (auto status = TransformSystem::Update(scene); !status.IsSuccess()) return status;
             TransformComponent transform;
             if (auto status = scene.GetTransform(entity, transform); !status.IsSuccess()) return status;
-            RenderView source;
-            source.id = camera.viewId;
-            source.camera = { entity.world, entity.index, entity.generation };
-            source.historyRevision = camera.historyRevision;
-            source.lens = camera.lens;
-            source.matrices.inverseView = transform.worldMatrix;
-            if (const auto status = Math::InverseAffine(transform.worldMatrix, source.matrices.view); !status.IsSuccess())
-                return { WorldError::InvalidArgument, status.message };
-            source.matrices.position = Math::Vec3(transform.worldMatrix[3]);
-            source.matrices.right = Math::Vec3(transform.worldMatrix[0]);
-            source.matrices.up = Math::Vec3(transform.worldMatrix[1]);
-            source.matrices.forward = -Math::Vec3(transform.worldMatrix[2]);
-            RenderView candidate;
-            if (!BuildPresentationView(source, { 1, 1 }, candidate).IsSuccess())
-                return { WorldError::InvalidArgument, "Camera projection and world pose exceed the finite float residual bound" };
-            if (const auto status = ValidateRenderView(candidate); !status.IsSuccess())
+            if (camera.viewId == 0 || camera.historyRevision == 0)
+                return { WorldError::InvalidArgument, "Camera view identity and history revision must be nonzero" };
+            CameraMatrices candidate;
+            if (const auto status = BuildCameraMatrices(transform.worldMatrix, camera.lens, {1, 1}, candidate); !status.IsSuccess())
                 return { WorldError::InvalidArgument, status.message };
             return {};
         }

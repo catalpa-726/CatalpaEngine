@@ -58,12 +58,30 @@ namespace Catalpa {
     void Renderer::ClearSceneFrame() noexcept
     {
         m_Scene.Clear();
+        ClearMainSurface();
+    }
+
+    void Renderer::SetMainScenePresentation(MainScenePresentation presentation) noexcept
+    {
+        if (m_MainScenePresentation == presentation) return;
+        m_MainScenePresentation = presentation;
+        // 主快照继续供宿主读取；退休主窗口表现资源，不影响离屏显示帧、Picking或相机历史。
+        // 切回主窗口时从最新快照重建，不能把此前隐藏的主相机当作连续展示历史。
+        ClearMainSurface();
+    }
+
+    void Renderer::ClearMainSurface() noexcept
+    {
         m_Main->uniforms.ClearHistory();
         m_Main->instances.clear();
         m_Main->environment.fill({});
         m_Main->environmentVersion = {};
         m_Main->targets.reset();
         m_Main->published = {};
+        m_Main->skybox.reset();
+        m_Main->tonemap.reset();
+        m_Main->present.reset();
+        m_Main->debug.reset();
     }
 
     RHIStatus Renderer::InitUI(std::span<const std::byte> pixels, Extent2D extent)
@@ -126,7 +144,8 @@ namespace Catalpa {
         m_Readbacks.OnSubmitted(completion);
         m_Geometry.OnSubmitted();
         m_Textures.OnSubmitted();
-        m_Main->uniforms.OnSubmitted();
+        if (m_MainScenePresentation == MainScenePresentation::MainWindow)
+            m_Main->uniforms.OnSubmitted();
         for (auto& [id, surface] : m_Previews) {
             if (surface->imageOnly || !surface->prepared || !surface->targets) continue;
             surface->uniforms.OnSubmitted();
@@ -157,7 +176,7 @@ namespace Catalpa {
         if (const auto status = graph.AddClearPass("Main window clear", color, m_Profile.clearColor); !status.IsSuccess()) return status;
 
         const auto& packet = m_Scene.GetFrame();
-        if (!packet.views.empty()) {
+        if (m_MainScenePresentation == MainScenePresentation::MainWindow && !packet.views.empty()) {
             if (const auto status = AddSurfacePasses(graph, *m_Main, packet, false); !status.IsSuccess()) return status;
             RGTexture display;
             if (const auto status = graph.ImportTexture(m_Main->targets->display.view, display); !status.IsSuccess()) return status;
@@ -213,9 +232,16 @@ namespace Catalpa {
             if (!status.IsSuccess() || !ready) return status;
 
             // 只有可提交的帧槽才创建resize候选，GPU繁忙时不持续积累离屏附件。
-            if (const auto status = EnsureDefaultTextures(); !status.IsSuccess()) return status;
             const auto& packet = m_Scene.GetFrame();
-            if (!packet.views.empty())
+            const bool renderMain = m_MainScenePresentation == MainScenePresentation::MainWindow;
+            const bool hasSceneSurface = (renderMain && !packet.views.empty())
+                || std::any_of(m_Previews.begin(), m_Previews.end(), [](const auto& entry) {
+                    return !entry.second->imageOnly && !entry.second->scene.GetFrame().views.empty();
+                });
+            // UI与纹理预览无需场景默认图、材质或HDR附件，仍通过下方上传/交换链图提交。
+            if (hasSceneSurface)
+                if (const auto status = EnsureDefaultTextures(); !status.IsSuccess()) return status;
+            if (renderMain && !packet.views.empty())
                 if (const auto status = EnsureSurfaceResources(*m_Main, packet, m_Swapchain.GetInfo().extent,
                     packet.views.front().targetGeneration, false); !status.IsSuccess()) return status;
             for (auto& [id, surface] : m_Previews) {
@@ -261,9 +287,9 @@ namespace Catalpa {
                     m_Statistics.gpuDurationAvailable = true;
                 }
             }
-            if (!packet.views.empty())
+            if (renderMain && !packet.views.empty())
                 if (const auto prepare = PrepareSurface(*m_Main, packet, m_Swapchain.GetInfo().extent); !prepare.IsSuccess()) return prepare;
-            if (packet.views.empty() && packet.sequence != 0)
+            if (renderMain && packet.views.empty() && packet.sequence != 0)
                 if (const auto prepare = m_Main->uniforms.Prepare(m_FrameSlot, packet, m_Profile,
                     m_Swapchain.GetInfo().extent); !prepare.IsSuccess()) return prepare;
             for (auto& [id, surface] : m_Previews) {

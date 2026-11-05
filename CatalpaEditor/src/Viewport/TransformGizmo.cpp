@@ -20,7 +20,8 @@ namespace Catalpa::Editor {
                               float x, float y, float w, float h, std::string& error) {
         Scene* scene = doc.Resolve();
         const auto id = selection.Resolve(doc);
-        if (!scene || !id.HasValue() || view.camera.scene != scene->GetWorld().GetIdentity()) {
+        if (!scene || !id.HasValue() ||
+            (!view.independentCamera && view.camera.scene != scene->GetWorld().GetIdentity())) {
             Cancel(error);
             return false;
         }

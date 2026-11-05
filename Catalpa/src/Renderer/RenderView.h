@@ -26,6 +26,8 @@ namespace Catalpa {
         CameraViewport viewport;
         CameraMatrices matrices;
         uint64_t targetGeneration = 1;
+        // 独立视图由宿主提供刚性姿态，没有对应的 World 实体。
+        bool independentCamera = false;
     };
 
     // 检查值快照的身份、镜头、刚性姿态、最终float矩阵组合和逆，不查询World。

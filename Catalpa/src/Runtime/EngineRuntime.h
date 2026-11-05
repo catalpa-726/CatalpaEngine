@@ -69,6 +69,9 @@ namespace Catalpa {
 
         // 编辑宿主只借用场景句柄与表现快照，不能接管设备或缓存所有权。
         [[nodiscard]] bool SetEditorPreview(SceneHandle scene, uint64_t viewId, Extent2D extent, std::string& error);
+        [[nodiscard]] bool SetEditorCameraPreview(SceneHandle scene, uint64_t viewId, Extent2D extent,
+            const Math::TransformTRS& cameraPose, const CameraLens& lens, uint64_t historyRevision, std::string& error);
+        void SetEditorViewportActive(bool active);
         [[nodiscard]] bool GetEditorPreview(uint64_t viewId, RenderSurfaceSnapshot& surface) const;
         void CloseEditorPreview(uint64_t viewId);
         [[nodiscard]] bool SetEditorPreviewImage(uint64_t viewId, const AssetVersionRef<ImageAsset>& image,
@@ -98,6 +101,8 @@ namespace Catalpa {
         uint64_t m_FrameSequence = 0;
         uint64_t m_InputSceneIdentity = 0;
         bool m_SimulationStopped = false;
+        bool m_EditorViewportActive = false;
+        std::string m_LastSceneCameraError;
 
         // 由窗口表面变化事件标记重建请求。
         bool m_SwapchainDirty = true;
@@ -105,6 +110,7 @@ namespace Catalpa {
             SceneHandle scene;
             Extent2D extent;
             uint64_t generation = 1;
+            std::optional<RenderView> independentView;
         };
         std::map<uint64_t, PreviewRequest> m_PreviewRequests;
         uint64_t m_NextPreviewGeneration = 1;
@@ -112,7 +118,9 @@ namespace Catalpa {
         std::map<AssetId, std::string> m_EnvironmentRequestErrors;
         // 仅发非阻塞加载请求；固定版本由 Renderer 接包边界解析，不反向进入工具链。
         void RequestFrameAssets(const RenderFramePacket& packet);
-        // 在 Layer UI 绘制前提取最新场景，但只由 Renderer 在真实提交后发布显示帧。
+        [[nodiscard]] bool StorePreviewRequest(SceneHandle scene, uint64_t viewId, Extent2D extent,
+            std::optional<RenderView> independentView, std::string& error);
+        // UI 提交请求后提取当前帧；Renderer 在队列接受后发布显示帧。
         [[nodiscard]] bool UpdateEditorPreviews(uint64_t sequence, std::string& error);
 
     private:

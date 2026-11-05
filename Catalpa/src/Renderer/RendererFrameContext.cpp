@@ -174,31 +174,21 @@ namespace Catalpa {
         RenderView candidate = source;
         candidate.viewport.width = extent.width;
         candidate.viewport.height = extent.height;
-        if (!BuildCameraProjection(candidate.lens, candidate.viewport, candidate.matrices.projection,
-            candidate.matrices.inverseProjection).IsSuccess())
+        if (!BuildCameraMatrices(source.matrices.inverseView, candidate.lens, candidate.viewport, candidate.matrices).IsSuccess())
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-        using DMat4 = glm::mat<4, 4, double, glm::packed_highp>;
-        const auto multiply = [](const Math::Mat4& left, const Math::Mat4& right, Math::Mat4& result) {
-            const DMat4 product = DMat4(left) * DMat4(right);
-            Math::Mat4 value{0};
-            for (int column = 0; column < 4; ++column)
-                for (int row = 0; row < 4; ++row)
-                    if (!FloatValue(product[column][row], value[column][row])) return false;
-            result = value;
-            return true;
-        };
-        if (!multiply(candidate.matrices.projection, candidate.matrices.view, candidate.matrices.viewProjection)
-            || !multiply(candidate.matrices.inverseView, candidate.matrices.inverseProjection, candidate.matrices.inverseViewProjection))
-            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-        const DMat4 products[]{
-            DMat4(candidate.matrices.viewProjection) * DMat4(candidate.matrices.inverseViewProjection),
-            DMat4(candidate.matrices.inverseViewProjection) * DMat4(candidate.matrices.viewProjection)
-        };
-        for (const auto& product : products)
-            for (int column = 0; column < 4; ++column)
-                for (int row = 0; row < 4; ++row)
-                    if (!std::isfinite(product[column][row]) || std::abs(product[column][row] - (column == row ? 1.0 : 0.0)) > 2.0e-4)
-                        return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        // 本入口也接收尚无投影/身份的pose+镜头预检，不要求完整RenderView。
+        // 仍拒绝来源view与cameraWorld不一致，不能用重建悄悄修复被篡改的逆。
+        for (int column = 0; column < 4; ++column) {
+            for (int row = 0; row < 4; ++row) {
+                const double actual = source.matrices.view[column][row];
+                const double expected = candidate.matrices.view[column][row];
+                const double rounding = 8.0 * std::numeric_limits<float>::epsilon()
+                    * std::max(std::abs(actual), std::abs(expected)) + std::numeric_limits<float>::denorm_min();
+                if (!std::isfinite(actual) || std::abs(actual - expected) > rounding)
+                    return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            }
+        }
         output = candidate;
         return {};
     }

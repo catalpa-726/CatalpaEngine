@@ -14,7 +14,7 @@ namespace Catalpa {
             return std::isfinite(actual) && std::isfinite(expected) && std::abs(actual - expected) <= rounding;
         }
 
-        // 比较最终矩阵与double组合；不改写来源矩阵或重新归一化相机姿态。
+        // 比较最终矩阵与统一构建器的派生结果；不改写来源矩阵或相机姿态。
         bool SameDerived(const Math::Mat4& actual, const DMat4& expected) noexcept
         {
             for (int column = 0; column < 4; ++column)
@@ -23,22 +23,10 @@ namespace Catalpa {
             return true;
         }
 
-        // 采用CameraSystem相同的最终float双向残差上限，而不是只检查determinant。
-        bool InversePair(const Math::Mat4& matrix, const Math::Mat4& inverse) noexcept
-        {
-            const DMat4 products[]{ DMat4(matrix) * DMat4(inverse), DMat4(inverse) * DMat4(matrix) };
-            for (const auto& product : products)
-                for (int column = 0; column < 4; ++column)
-                    for (int row = 0; row < 4; ++row)
-                        if (!std::isfinite(product[column][row])
-                            || std::abs(product[column][row] - (column == row ? 1.0 : 0.0)) > 2.0e-4) return false;
-            return true;
-        }
-
         // 抖动属于每帧投影变化，历史须保存真实旧VP；其余契约变化会切断连续性。
         bool SameHistoryDomain(const RenderView& oldView, const RenderView& view) noexcept
         {
-            return oldView.id == view.id && oldView.camera == view.camera
+            return oldView.id == view.id && oldView.camera == view.camera && oldView.independentCamera == view.independentCamera
                 && oldView.historyRevision == view.historyRevision && oldView.targetGeneration == view.targetGeneration
                 && oldView.lens == view.lens && oldView.viewport.width == view.viewport.width
                 && oldView.viewport.height == view.viewport.height && oldView.viewport.flipY == view.viewport.flipY;
@@ -47,34 +35,29 @@ namespace Catalpa {
 
     Math::MathStatus ValidateRenderView(const RenderView& view) noexcept
     {
-        if (view.id == 0 || view.historyRevision == 0 || view.targetGeneration == 0 || !view.camera.HasValue())
+        if (view.id == 0 || view.historyRevision == 0 || view.targetGeneration == 0
+            || (view.independentCamera ? view.camera != RenderInstanceId{} : !view.camera.HasValue()))
             return { Math::MathError::OutOfRange, "Render view identity, camera, history or target generation is invalid" };
-        Math::Mat4 expectedProjection{ 1.0f }, expectedInverse{ 1.0f };
-        if (const auto status = BuildCameraProjection(view.lens, view.viewport, expectedProjection, expectedInverse); !status.IsSuccess()) return status;
         const auto& matrices = view.matrices;
-        if (!SameDerived(matrices.projection, DMat4(expectedProjection))
-            || !SameDerived(matrices.inverseProjection, DMat4(expectedInverse)))
+        // 从同一作者姿态重建，而非另设一套绝对残差阈值；同时复核镜头精度与完整派生快照。
+        CameraMatrices expected;
+        if (const auto status = BuildCameraMatrices(matrices.inverseView, view.lens, view.viewport, expected); !status.IsSuccess()) return status;
+        if (!SameDerived(matrices.projection, DMat4(expected.projection))
+            || !SameDerived(matrices.inverseProjection, DMat4(expected.inverseProjection)))
             return { Math::MathError::OutOfRange, "Render view projection disagrees with its lens or pixel extent" };
-
-        Math::TransformTRS pose;
-        if (const auto status = Math::DecomposeTRS(matrices.inverseView, pose); !status.IsSuccess()) return status;
         for (int axis = 0; axis < 3; ++axis) {
-            if (std::abs(static_cast<double>(pose.scale[axis]) - 1.0) > Math::RecompositionTolerance)
-                return { Math::MathError::OutOfRange, "Render view camera world transform must have unit positive scale" };
-            if (!SameDerived(matrices.position[axis], matrices.inverseView[3][axis])
-                || !SameDerived(matrices.right[axis], matrices.inverseView[0][axis])
-                || !SameDerived(matrices.up[axis], matrices.inverseView[1][axis])
-                || !SameDerived(matrices.forward[axis], -matrices.inverseView[2][axis]))
+            if (!SameDerived(matrices.position[axis], expected.position[axis])
+                || !SameDerived(matrices.right[axis], expected.right[axis])
+                || !SameDerived(matrices.up[axis], expected.up[axis])
+                || !SameDerived(matrices.forward[axis], expected.forward[axis]))
                 return { Math::MathError::OutOfRange, "Render view camera axes or position disagree with its rigid world pose" };
         }
         if (matrices.view[0][3] != 0.0f || matrices.view[1][3] != 0.0f
             || matrices.view[2][3] != 0.0f || matrices.view[3][3] != 1.0f)
             return { Math::MathError::NonAffine, "Render view world-to-camera matrix must remain affine" };
-        if (!InversePair(matrices.view, matrices.inverseView)
-            || !InversePair(matrices.projection, matrices.inverseProjection)
-            || !InversePair(matrices.viewProjection, matrices.inverseViewProjection)
-            || !SameDerived(matrices.viewProjection, DMat4(matrices.projection) * DMat4(matrices.view))
-            || !SameDerived(matrices.inverseViewProjection, DMat4(matrices.inverseView) * DMat4(matrices.inverseProjection)))
+        if (!SameDerived(matrices.view, DMat4(expected.view))
+            || !SameDerived(matrices.viewProjection, DMat4(expected.viewProjection))
+            || !SameDerived(matrices.inverseViewProjection, DMat4(expected.inverseViewProjection)))
             return { Math::MathError::OutOfRange, "Render view combined matrices or inverse residuals are inconsistent" };
         return {};
     }
@@ -91,7 +74,7 @@ namespace Catalpa {
             std::set<uint64_t> identities;
             for (const auto& view : views) {
                 if (const auto status = ValidateRenderView(view); !status.IsSuccess()) return status;
-                if (view.camera.scene != sceneIdentity || !identities.insert(view.id).second)
+                if ((!view.independentCamera && view.camera.scene != sceneIdentity) || !identities.insert(view.id).second)
                     return { Math::MathError::OutOfRange, "View history has a foreign camera or duplicate logical view" };
                 PreparedRenderView prepared{ view, {} };
                 if (sceneIdentity == m_CommittedScene) {

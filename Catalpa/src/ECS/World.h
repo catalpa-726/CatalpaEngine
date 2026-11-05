@@ -11,7 +11,7 @@
 
 namespace Catalpa {
 
-    enum class WorldError { None, InvalidArgument, InvalidEntity, ForeignWorld, Busy, AlreadyExists, MissingComponent, CapacityExceeded, AllocationFailed, CommandFailed };
+    enum class WorldError { None, InvalidArgument, InvalidEntity, ForeignWorld, Busy, AlreadyExists, MissingComponent, CapacityExceeded, AllocationFailed, CommandFailed, InvalidPresentationView };
 
     struct WorldStatus {
         WorldError code = WorldError::None;

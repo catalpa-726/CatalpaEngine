@@ -166,11 +166,13 @@ namespace Catalpa {
                 }
             }
             for (const auto& view : packet.views) {
-                if (view.id == 0 || view.historyRevision == 0 || !views.insert(view.id).second
-                    || !view.camera.HasValue() || view.camera.scene != packet.sceneIdentity || !instances.contains(view.camera))
-                    return { Math::MathError::OutOfRange, "Render view has invalid or duplicate identity or missing source transform" };
+                if (!views.insert(view.id).second)
+                    return { Math::MathError::OutOfRange, "Duplicate render view identity" };
                 if (const auto status = ValidateRenderView(view); !status.IsSuccess()) return status;
-                // 本批view来自Scene相机；自洽矩阵还须对应同一源身份，不能借另一实体的姿态。
+                if (view.independentCamera) continue;
+                if (!view.camera.HasValue() || view.camera.scene != packet.sceneIdentity || !instances.contains(view.camera))
+                    return { Math::MathError::OutOfRange, "Scene camera has a foreign or missing source transform" };
+                // 实体相机还须对应同一源身份，不能借另一实体的姿态。
                 const auto source = std::find_if(packet.transforms.begin(), packet.transforms.end(),
                     [&](const RenderTransform& transform) { return transform.id == view.camera; });
                 for (int column = 0; column < 4; ++column)

@@ -60,6 +60,18 @@ namespace Catalpa {
 
     bool Application::SetEditorPreview(SceneHandle scene, uint64_t viewId, Extent2D extent, std::string& error)
     { return m_Runtime->SetEditorPreview(scene, viewId, extent, error); }
+    bool Application::SetEditorCameraPreview(SceneHandle scene, uint64_t viewId, Extent2D extent,
+        const Math::TransformTRS& pose, const CameraLens& lens, uint64_t revision, std::string& error)
+    {
+        return m_Runtime->SetEditorCameraPreview(scene, viewId, extent, pose, lens, revision, error);
+    }
+
+    void Application::SetEditorViewportActive(bool active)
+    {
+        m_Runtime->SetEditorViewportActive(active);
+        m_AllowEditorSystemKeys = false;
+    }
+
     bool Application::GetEditorPreview(uint64_t viewId, RenderSurfaceSnapshot& surface) const
     { return m_Runtime->GetEditorPreview(viewId, surface); }
     void Application::CloseEditorPreview(uint64_t viewId) { m_Runtime->CloseEditorPreview(viewId); }
@@ -159,10 +171,12 @@ namespace Catalpa {
             previous = now;
 
             // 当前帧平台事件已收集，先 NewFrame 取得本帧捕获，再运行玩法。
+            m_AllowEditorSystemKeys = false;
             m_ImGuiLayer->Begin();
             for (Layer* layer : m_LayerStack) layer->OnUpdate(timestep);
             for (Layer* layer : m_LayerStack) layer->OnImGuiRender();
             auto capture = m_ImGuiLayer->GetInputCapture();
+            if (m_AllowEditorSystemKeys) capture.keyboardCaptured = false;
             capture.gameplayActive = !m_Window->IsMinimized();
             if (m_Running) {
                 const auto [width, height] = m_Window->GetFramebufferSize();

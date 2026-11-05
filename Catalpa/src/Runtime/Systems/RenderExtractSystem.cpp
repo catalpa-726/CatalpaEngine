@@ -80,7 +80,7 @@ namespace Catalpa {
                             candidate.instances.push_back(std::move(instance));
                         }
                     }
-                    if (!scene.GetWorld().Has<CameraComponent>(entity)) return {};
+                    if (requests.empty() || !scene.GetWorld().Has<CameraComponent>(entity)) return {};
                     CameraComponent camera;
                     if (const auto result = scene.GetWorld().Get(entity, camera); !result.IsSuccess()) return result;
                     if (!camera.enabled) return {};
@@ -116,7 +116,12 @@ namespace Catalpa {
                     view.targetGeneration = request.targetGeneration;
                     view.lens = choice.component.lens;
                     view.viewport = request.viewport;
-                    if (const auto result = CameraSystem::Build(scene, choice.entity, view.viewport, view.matrices); !result.IsSuccess()) return result;
+                    if (const auto result = CameraSystem::Build(scene, choice.entity, view.viewport, view.matrices); !result.IsSuccess()) {
+                        // 仅相机姿态/镜头值不可用于显示时允许重试。World 访问、分配等错误原样传播。
+                        if (result.code == WorldError::InvalidArgument)
+                            return { WorldError::InvalidPresentationView, result.message };
+                        return result;
+                    }
                     candidate.views.push_back(std::move(view));
                 }
                 output = std::move(candidate);

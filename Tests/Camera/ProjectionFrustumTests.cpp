@@ -4,6 +4,7 @@
 #include "Camera/Frustum.h"
 #include "Panels/BuildPanel.h"
 #include "Renderer/RenderScene.h"
+#include "Renderer/RendererFrameContext.h"
 #include "Renderer/Visibility/VisibilitySystem.h"
 #include "Geometry/PrimitiveMesh.h"
 #include "Runtime/Systems/CameraSystem.h"
@@ -248,6 +249,113 @@ namespace Catalpa::Tests {
             context.Check(consumer.Apply(std::move(empty)).IsSuccess() && consumer.GetFrame().views.empty()
                 && consumer.GetFrame().transforms.empty(), "Explicit empty packet releases previous scene proxies without owning the source World");
         }
+
+        // 数百米移动仍是普通相机用法；用真实Scene提取贯穿相机、快照复核和展示尺寸重建。
+        void CheckTranslatedCameraPrecision(TestContext& context)
+        {
+            Scene scene("Translated camera precision");
+            const auto cameraId = Id(91);
+            auto status = scene.QueueCreate(cameraId, "Moving camera", {});
+            if (status.IsSuccess()) status = scene.CommitPending();
+            CameraComponent camera;
+            camera.lens.nearPlane = 0.1f;
+            camera.lens.farPlane = 1000.0f;
+            if (status.IsSuccess()) status = scene.QueueSetCamera(scene.Resolve(cameraId), camera);
+            if (status.IsSuccess()) status = scene.CommitPending();
+            context.Check(status.IsSuccess(), "Create the ordinary moving-camera precision fixture");
+            if (!status.IsSuccess()) return;
+
+            uint64_t sequence = 1;
+            for (const Math::Vec3 position : {Math::Vec3{0, 2, 10}, Math::Vec3{25, 15, 40},
+                Math::Vec3{-150, 80, 300}, Math::Vec3{400, -250, 700}}) {
+                Math::TransformTRS pose;
+                pose.translation = position;
+                pose.rotation = Math::Quat(Math::Vec3{0.31f, -0.67f, 0.12f});
+                status = scene.QueueSetLocal(scene.Resolve(cameraId), pose);
+                if (status.IsSuccess()) status = scene.CommitPending();
+                if (status.IsSuccess()) status = TransformSystem::Update(scene);
+                RenderFramePacket packet;
+                if (status.IsSuccess()) status = RenderExtractSystem::Extract(scene, sequence++, 1280, 720, packet);
+                context.Check(status.IsSuccess() && packet.views.size() == 1,
+                    std::string("Ordinary translated camera publishes a complete snapshot: ") + status.message);
+                if (!status.IsSuccess() || packet.views.size() != 1) continue;
+                const auto& view = packet.views.front();
+                context.Check(ValidateRenderView(view).IsSuccess(), "Consumer accepts the same camera precision policy");
+                RenderView presented;
+                context.Check(BuildPresentationView(view, {600, 1000}, presented).IsSuccess()
+                    && ValidateRenderView(presented).IsSuccess(), "Portrait presentation preserves translated-camera validity");
+
+                // 独立参照：把相机内一点经cameraWorld送到世界，再由VP投影，NDC应与P直接投影一致。
+                using DMat4 = glm::mat<4, 4, double, glm::packed_highp>;
+                using DVec4 = glm::vec<4, double, glm::packed_highp>;
+                const DVec4 local{0.1, -0.1, -2.0, 1.0};
+                const DVec4 expected = DMat4(view.matrices.projection) * local;
+                const DVec4 actual = DMat4(view.matrices.viewProjection) * (DMat4(view.matrices.inverseView) * local);
+                bool matching = actual.w > 0.0;
+                for (int axis = 0; axis < 3; ++axis)
+                    matching &= std::isfinite(actual[axis])
+                        && std::abs(actual[axis] / actual.w - expected[axis] / expected.w) < 2.0e-4;
+                context.Check(matching, "Translated VP retains the independently projected camera-local point");
+
+                auto corrupted = view;
+                corrupted.matrices.inverseViewProjection[3][0] += 1.0f;
+                context.Check(!ValidateRenderView(corrupted).IsSuccess(),
+                    "Scale-aware rounding does not accept an authored inverse-VP mismatch");
+            }
+
+            CameraMatrices output;
+            output.viewProjection[0][0] = 7.0f;
+            output.inverseViewProjection[0][0] = 9.0f;
+            Math::Mat4 nonfinite{1.0f};
+            nonfinite[3][0] = std::numeric_limits<float>::quiet_NaN();
+            context.Check(!BuildCameraMatrices(nonfinite, camera.lens, {1280, 720}, output).IsSuccess()
+                && output.viewProjection[0][0] == 7.0f && output.inverseViewProjection[0][0] == 9.0f,
+                "Nonfinite independent camera leaves its previously published matrices unchanged");
+            Math::Mat4 distant{1.0f};
+            distant[3] = {1.0e8f, 1.0e8f, 1.0e8f, 1.0f};
+            context.Check(!BuildCameraMatrices(distant, camera.lens, {1280, 720}, output).IsSuccess()
+                && output.viewProjection[0][0] == 7.0f && output.inverseViewProjection[0][0] == 9.0f,
+                "Scale-aware residual cannot bypass the independent camera world-resolution budget");
+            auto illConditioned = camera.lens;
+            illConditioned.nearPlane = 1.0e-12f;
+            context.Check(!BuildCameraMatrices(Math::Mat4{1.0f}, illConditioned, {1280, 720}, output).IsSuccess()
+                && output.viewProjection[0][0] == 7.0f && output.inverseViewProjection[0][0] == 9.0f,
+                "Ill-conditioned projection is rejected before any camera output is replaced");
+        }
+
+        // 独立编辑相机没有伪造的World实体；历史仍绑定真实场景、视图及相机来源类型。
+        void CheckIndependentCameraHistory(TestContext& context)
+        {
+            RenderView independent;
+            independent.id = 71;
+            independent.historyRevision = 1;
+            independent.independentCamera = true;
+            independent.viewport = {640, 480};
+            context.Check(BuildCameraMatrices(Math::Mat4{1.0f}, independent.lens, independent.viewport,
+                independent.matrices).IsSuccess() && ValidateRenderView(independent).IsSuccess(),
+                "Independent camera uses a strictly empty scene-entity identity");
+            auto invalid = independent;
+            invalid.camera.index = 2;
+            context.Check(!ValidateRenderView(invalid).IsSuccess(), "Partially populated independent camera identity is rejected");
+            invalid = independent;
+            invalid.independentCamera = false;
+            context.Check(!ValidateRenderView(invalid).IsSuccess(), "Scene camera cannot omit its real entity identity");
+
+            RenderViewHistory history;
+            context.Check(history.Stage(1, 7, {&independent, 1}).IsSuccess(), "Independent view history belongs to its rendered scene");
+            history.OnSubmitted();
+            context.Check(history.Stage(2, 7, {&independent, 1}).IsSuccess() && history.GetPending()[0].history.valid,
+                "Repeated independent camera preserves its own submitted view history");
+            history.OnCancelled();
+            auto sceneCamera = independent;
+            sceneCamera.independentCamera = false;
+            sceneCamera.camera = {7, 0, 1};
+            context.Check(history.Stage(2, 7, {&sceneCamera, 1}).IsSuccess() && !history.GetPending()[0].history.valid,
+                "Switching from independent camera to scene camera breaks view continuity");
+            history.OnCancelled();
+            context.Check(history.Stage(2, 8, {&independent, 1}).IsSuccess() && !history.GetPending()[0].history.valid,
+                "Reusing an independent camera for another scene cannot inherit the former scene history");
+        }
     }
 
     // 既有投影/相机回归入口；Frustum与多view剔除由独立分组接续。
@@ -255,6 +363,8 @@ namespace Catalpa::Tests {
     {
         CheckProjection(context);
         CheckCameraAndExtraction(context);
+        CheckTranslatedCameraPrecision(context);
+        CheckIndependentCameraHistory(context);
     }
 
     // 复用编辑器的取景计算，再以真实帧提取检查头盔大小的模型在横屏、竖屏下的相机。
