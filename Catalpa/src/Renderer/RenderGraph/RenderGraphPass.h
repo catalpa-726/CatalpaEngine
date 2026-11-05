@@ -53,6 +53,9 @@ namespace Catalpa {
         RHIStoreOp depthStoreOp = RHIStoreOp::Store;
         float clearDepth = 1.0f;
         bool depthReadOnly = false;
+        // 非零时使用非索引 Draw；无顶点布局可由 SV_VertexID 生成全屏三角形。
+        uint32_t vertexCount = 0;
+        uint32_t firstVertex = 0;
     };
 
 }

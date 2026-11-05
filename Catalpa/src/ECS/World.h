@@ -36,6 +36,8 @@ namespace Catalpa {
 
         [[nodiscard]] uint64_t GetIdentity() const noexcept;
         [[nodiscard]] size_t GetEntityCount() const noexcept;
+        // 快照必须确认该实体的所有组件都有恢复策略。
+        [[nodiscard]] WorldStatus CountComponents(EntityId entity, size_t& count) const;
         // 所有者卸载前查询：读回调、组件变更或命令提交期间不可销毁 World。
         [[nodiscard]] bool IsAccessActive() const noexcept;
         [[nodiscard]] bool IsAlive(EntityId entity) const noexcept;

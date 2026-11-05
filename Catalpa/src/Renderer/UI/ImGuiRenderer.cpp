@@ -6,14 +6,18 @@
 #include "RHI/RHIDevice.h"
 #include "Assets/AssetManager.h"
 #include "Shaders/ShaderLibrary.h"
+#include "Log/Log.h"
 
 namespace Catalpa {
 
     namespace {
         // transform.xy = 2 / DisplaySize；zw = -1 - DisplayPos * xy。
         // Vulkan 正高度 viewport 的左上角对应 NDC (-1,-1)，无需额外翻转 Y。
-        struct alignas(16) ImGuiParameters { std::array<float, 4> transform; };
-        static_assert(sizeof(ImGuiParameters) == 16);
+        struct alignas(16) ImGuiParameters {
+            std::array<float, 4> transform{};
+            std::array<float, 4> textureOptions{ 0, 15, 0, 0 };
+        };
+        static_assert(sizeof(ImGuiParameters) == 32);
         static_assert(sizeof(ImGuiVertex) == 32);
         static_assert(offsetof(ImGuiVertex, position) == 0);
         static_assert(offsetof(ImGuiVertex, uv) == 8);
@@ -40,15 +44,21 @@ namespace Catalpa {
             m_Device.ReleaseBuffer(frame.indices);
         }
         m_Device.ReleaseSampler(m_Sampler);
+        m_Device.ReleaseSampler(m_NearestSampler);
     }
 
     RHIStatus ImGuiRenderer::InitFont(const AssetVersionRef<ImageAsset>& version)
     {
         if(m_Font) return {.code=RHIErrorCode::InvalidState,.operation="ImGuiRenderer::InitFont"};
         const RHISamplerDesc sampler{.minFilter=RHIFilter::Linear,.magFilter=RHIFilter::Linear,
-            .addressU=RHISamplerAddressMode::ClampToEdge,.addressV=RHISamplerAddressMode::ClampToEdge};
+            .addressU=RHISamplerAddressMode::ClampToEdge,.addressV=RHISamplerAddressMode::ClampToEdge,.maxLod=32};
         if(!m_Sampler.HasValue())
             if(const auto status=m_Device.CreateSampler(sampler,m_Sampler);!status.IsSuccess()) return status;
+        if (!m_NearestSampler.HasValue()) {
+            const RHISamplerDesc nearest{ .mipFilter = RHIFilter::Nearest, .addressU = RHISamplerAddressMode::ClampToEdge,
+                .addressV = RHISamplerAddressMode::ClampToEdge, .maxLod = 32 };
+            if (const auto status = m_Device.CreateSampler(nearest, m_NearestSampler); !status.IsSuccess()) return status;
+        }
         return m_Textures.Acquire(version,m_Font);
     }
 
@@ -62,20 +72,24 @@ namespace Catalpa {
             return {.code=RHIErrorCode::InvalidState,.operation="ImGuiRenderer/cooked shader"};
         if(m_Pipeline&&m_Format==format&&m_Pipeline->vertex.Get()==shader.Get()) return {};
         const auto* vertex=FindShaderEntry(shader.Get()->metadata,"vertexMain",ShaderStage::Vertex);
-        if(!vertex||vertex->pushConstantBytes!=16||vertex->pushConstantMembers.size()!=1)
+        if(!vertex||vertex->pushConstantBytes!=32||vertex->pushConstantMembers.size()!=2)
             return {.code=RHIErrorCode::InvalidDescription,.operation="ImGuiRenderer/push ABI"};
         const auto& transform=vertex->pushConstantMembers.front();
         if(transform.name!="transform"||transform.offset!=0||transform.size!=16||transform.paddedSize!=16
             ||transform.type.scalar!=ShaderScalarKind::Float||transform.type.width!=32||transform.type.rows!=1
             ||transform.type.columns!=4||transform.type.arrayCount!=1||transform.arrayStride||transform.matrixStride||!transform.members.empty())
             return {.code=RHIErrorCode::InvalidDescription,.operation="ImGuiRenderer/transform ABI"};
+        const auto& options = vertex->pushConstantMembers[1];
+        if (options.name != "textureOptions" || options.offset != 16 || options.size != 16
+            || options.type.scalar != ShaderScalarKind::Float || options.type.width != 32 || options.type.columns != 4)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "ImGuiRenderer/texture ABI" };
         const RHIGraphicsPipelineDesc desc{
             .vertex = {.asset = shader, .stage = RHIShaderStage::Vertex, .entryPoint = "vertexMain"},
             .fragment = {.asset = shader, .stage = RHIShaderStage::Fragment, .entryPoint = "fragmentMain"},
             .colorFormat = format,
             .blendMode = RHIBlendMode::StraightAlpha,
             .vertexLayout = {.stride = sizeof(ImGuiVertex), .attributes = Attributes},
-            .pushConstants = {.size = sizeof(ImGuiParameters), .visibility = RHIShaderVisibility::Vertex},
+            .pushConstants = {.size = sizeof(ImGuiParameters), .visibility = RHIShaderVisibility::VertexFragment},
             .bindingLayout = {.entries = Bindings}
         };
         if (const auto status = m_Pipelines.Acquire(desc, m_Pipeline); !status.IsSuccess()) return status;
@@ -103,6 +117,12 @@ namespace Catalpa {
 
     RHIStatus ImGuiRenderer::Prepare(uint32_t slot, const ImGuiFrameData& frame, PixelFormat format)
     {
+        // 关闭/重建时旧token可保活到最后一个CPU draw包消费完；GPU命令另有后端引用。
+        std::set<uint64_t> referenced;
+        for (const auto& draw : frame.draws) referenced.insert(draw.textureToken);
+        for (auto it = m_Registered.begin(); it != m_Registered.end();)
+            if (it->second.retired && !referenced.contains(it->first)) it = m_Registered.erase(it);
+            else ++it;
         if (frame.draws.empty()) return {};
         if (slot >= m_Frames.size() || !m_Font || frame.vertices.empty() || frame.indices.empty())
             return { .code = RHIErrorCode::InvalidState, .operation = "ImGuiRenderer::Prepare" };
@@ -112,6 +132,27 @@ namespace Catalpa {
             RHIBufferUsage::Vertex, std::as_bytes(std::span{frame.vertices})); !status.IsSuccess()) return status;
         return WriteDynamicBuffer(buffers.indices, buffers.indexCapacity,
             RHIBufferUsage::Index, std::as_bytes(std::span{frame.indices}));
+    }
+
+    RHIStatus ImGuiRenderer::RegisterTexture(TextureViewHandle view, std::shared_ptr<void> lease,
+        uint64_t& token, uint32_t mip, uint32_t channelMask, bool preview)
+    {
+        if (!view.HasValue() || !lease || channelMask == 0 || channelMask > 15
+            || m_NextTextureToken == UINT64_MAX || m_Registered.size() >= 1024)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "ImGuiRenderer::RegisterTexture" };
+        RHITextureStateSnapshot snapshot;
+        if (const auto status = m_Device.GetTextureState(view, snapshot); !status.IsSuccess()) return status;
+        const bool linear = m_Device.GetFormatSupport(snapshot.format).linearFiltering;
+        m_Registered.emplace(m_NextTextureToken, RegisteredTexture{ view, std::move(lease), mip, channelMask, preview, false, linear });
+        if (!linear && m_ReportedNearestFormats.insert(snapshot.format).second)
+            CAT_CORE_WARN("UI image format lacks linear filtering; this preview uses nearest sampling without altering the image.");
+        token = m_NextTextureToken++;
+        return {};
+    }
+
+    void ImGuiRenderer::ReleaseTexture(uint64_t token) noexcept
+    {
+        if (const auto found = m_Registered.find(token); found != m_Registered.end()) found->second.retired = true;
     }
 
     RHIStatus ImGuiRenderer::AddPasses(RenderGraph& graph, RGTexture color, Extent2D extent,
@@ -144,10 +185,6 @@ namespace Catalpa {
             .loadOp = RHILoadOp::Load, .storeOp = RHIStoreOp::Store,
             .viewport = {.width = static_cast<float>(extent.width), .height = static_cast<float>(extent.height)}
         };
-        const auto bytes = std::as_bytes(std::span{&parameters, 1});
-        draw.pushConstants.assign(bytes.begin(), bytes.end());
-        draw.sampledTextures.push_back({.texture = font, .sampler = m_Sampler});
-
         for (const auto& command : frame.draws) {
             if (command.indexCount == 0) continue;
             if (command.firstIndex > frame.indices.size() || command.indexCount > frame.indices.size() - command.firstIndex || command.baseVertex < 0)
@@ -174,6 +211,21 @@ namespace Catalpa {
             draw.firstIndex = command.firstIndex;
             draw.indexCount = command.indexCount;
             draw.baseVertex = command.baseVertex;
+            RGTexture sampled = font;
+            SamplerHandle sampler = m_Sampler;
+            parameters.textureOptions = { 0, 15, 0, 0 };
+            if (command.textureToken != 0) {
+                const auto found = m_Registered.find(command.textureToken);
+                if (found == m_Registered.end())
+                    return { .code = RHIErrorCode::InvalidState, .operation = "ImGuiRenderer/stale texture token" };
+                if (const auto status = graph.ImportTexture(found->second.view, sampled); !status.IsSuccess()) return status;
+                parameters.textureOptions = { static_cast<float>(found->second.mip),
+                    static_cast<float>(found->second.channelMask), found->second.preview ? 1.0f : 0.0f, 0 };
+                if (!found->second.linearFiltering) sampler = m_NearestSampler;
+            }
+            const auto bytes = std::as_bytes(std::span{ &parameters, 1 });
+            draw.pushConstants.assign(bytes.begin(), bytes.end());
+            draw.sampledTextures = { { .texture = sampled, .sampler = sampler } };
             if (const RHIStatus status = graph.AddDrawPass("ImGui", draw); !status.IsSuccess()) return status;
         }
         return {};

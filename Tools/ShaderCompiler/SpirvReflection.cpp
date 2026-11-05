@@ -89,7 +89,11 @@ namespace Catalpa::Tools {
                     case SPV_REFLECT_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:v.kind=ShaderResourceKind::CombinedImageSampler;break;
                     default:return Failure(error,"unsupported reflected resource kind");}
                     if(v.kind==ShaderResourceKind::UniformBuffer||v.kind==ShaderResourceKind::StorageBuffer){v.blockSize=b->block.padded_size;if(!Members(b->block,v.members,0,budget,error))return false;}
-                    else if(v.kind!=ShaderResourceKind::Sampler&&(b->image.dim!=SpvDim2D||b->image.arrayed||b->image.ms))return Failure(error,"schema1 supports only non-arrayed, non-MS 2D images");
+                    else if(v.kind!=ShaderResourceKind::Sampler) {
+                        if (b->image.arrayed || b->image.ms || (b->image.dim != SpvDim2D && b->image.dim != SpvDimCube))
+                            return Failure(error, "Schema2 supports non-arrayed, non-MS 2D or Cube images only");
+                        v.imageDimension = b->image.dim == SpvDimCube ? ShaderImageDimension::Cube : ShaderImageDimension::Texture2D;
+                    }
                     entry.bindings.push_back(std::move(v));
                 }
                 std::sort(entry.bindings.begin(),entry.bindings.end(),[](const auto&a,const auto&b){return std::pair(a.set,a.binding)<std::pair(b.set,b.binding);});

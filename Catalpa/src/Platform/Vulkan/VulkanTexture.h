@@ -30,6 +30,9 @@ namespace Catalpa {
         bool linearFiltering = false;
         TextureHandle texture{};
         bool borrowed = false;
+        uint32_t mipLevels = 1;
+        uint32_t arrayLayers = 1;
+        RHITextureViewType type = RHITextureViewType::Texture2D;
     };
 
     // 检查创建参数和设备支持，再通过 VMA 创建图像。

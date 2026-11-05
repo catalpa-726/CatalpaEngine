@@ -77,6 +77,9 @@ namespace Catalpa {
     void EngineRuntime::Shutdown()
     {
         StopSimulation();
+        m_PreviewRequests.clear();
+        m_LastPreviewError.clear();
+        m_EnvironmentRequestErrors.clear();
         // 停止资产发布并等待CPU任务；旧固定版本仍由场景/渲染快照保活。
         if (m_Assets) m_Assets->Shutdown();
         m_Jobs.Shutdown();
@@ -140,7 +143,8 @@ namespace Catalpa {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
         }
-        for(const auto name:{"Unlit.slang","Depth.slang","ImGui.slang"}) {
+        for(const auto name:{"Pbr.slang","Unlit.slang","Depth.slang","Shadow.slang","ImGui.slang",
+            "Skybox.slang","Tonemap.slang","Present.slang","Picking.slang","DebugDraw.slang"}) {
             AssetId id;AssetVersionRef<ShaderAsset> shader;bool fallback=false;
             if(!ShaderLibrary::BuiltinId(name,id,error)||!m_Assets->Acquire(id,shader,fallback,error)||fallback) {error="Required cooked builtin shader missing: "+std::string(name);return false;}
         }
@@ -172,6 +176,137 @@ namespace Catalpa {
     {
         static const RenderFramePacket empty;
         return m_Renderer ? m_Renderer->GetSceneFrame() : empty;
+    }
+
+    bool EngineRuntime::SetEditorPreview(SceneHandle scene, uint64_t viewId, Extent2D extent, std::string& error)
+    {
+        if (!m_Renderer || !m_Scenes.GetScene(scene) || viewId == 0 || extent.IsEmpty()) {
+            error = "Preview requires a live scene, nonzero view ID and nonempty extent";
+            return false;
+        }
+        const auto& caps = m_Device->GetCapabilities();
+        if (extent.width > caps.maxRenderTargetExtent.width || extent.height > caps.maxRenderTargetExtent.height) {
+            error = "Preview extent exceeds render-target limits";
+            return false;
+        }
+        const auto previous = m_PreviewRequests.find(viewId);
+        if (previous != m_PreviewRequests.end() && previous->second.scene == scene && previous->second.extent == extent) {
+            error.clear();
+            return true;
+        }
+        if (m_NextPreviewGeneration == std::numeric_limits<uint64_t>::max()) {
+            error = "Preview generation exhausted";
+            return false;
+        }
+        try {
+            auto candidate = m_PreviewRequests;
+            candidate.insert_or_assign(viewId, PreviewRequest{ scene, extent, m_NextPreviewGeneration });
+            m_PreviewRequests.swap(candidate);
+            ++m_NextPreviewGeneration;
+            error.clear();
+            return true;
+        } catch (const std::bad_alloc&) { error = "Cannot capture preview request"; return false; }
+    }
+
+    bool EngineRuntime::GetEditorPreview(uint64_t viewId, RenderSurfaceSnapshot& surface) const
+    {
+        return m_Renderer && m_Renderer->GetPreviewSurface(viewId, surface);
+    }
+
+    void EngineRuntime::CloseEditorPreview(uint64_t viewId)
+    {
+        m_PreviewRequests.erase(viewId);
+        if (m_Renderer) m_Renderer->ReleasePreviewSurface(viewId);
+    }
+
+    bool EngineRuntime::SetEditorPreviewImage(uint64_t viewId, const AssetVersionRef<ImageAsset>& image,
+        uint32_t mip, uint32_t layer, uint32_t channelMask, std::string& error)
+    {
+        if (!m_Renderer) { error = "Renderer is unavailable"; return false; }
+        if (!m_Renderer->SetPreviewImage(viewId, image, mip, layer, channelMask, error)) return false;
+        m_PreviewRequests.erase(viewId);
+        return true;
+    }
+
+    bool EngineRuntime::RequestEditorPick(const PickingRequest& request, uint64_t& ticket, std::string& error)
+    {
+        ticket = 0;
+        if (!m_Renderer) { error = "Renderer is unavailable"; return false; }
+        return m_Renderer->RequestPick(request, ticket, error);
+    }
+
+    bool EngineRuntime::PollEditorPick(uint64_t ticket, PickingResult& result)
+    {
+        return m_Renderer && m_Renderer->PollPick(ticket, result);
+    }
+
+    void EngineRuntime::CancelEditorPick(uint64_t ticket)
+    {
+        if (m_Renderer) m_Renderer->CancelPick(ticket);
+    }
+
+    bool EngineRuntime::GetGpuFrameMilliseconds(double& milliseconds) const
+    {
+        milliseconds = 0.0;
+        if (!m_Renderer || !m_Renderer->GetStatistics().gpuDurationAvailable) return false;
+        milliseconds = m_Renderer->GetStatistics().gpuMilliseconds;
+        return true;
+    }
+
+    bool EngineRuntime::AddDebugBounds(const Aabb& bounds, const Math::Vec4& color, std::string& error, uint64_t surfaceId)
+    {
+        if (!m_Renderer) { error = "Renderer is unavailable"; return false; }
+        const auto status = m_Renderer->GetDebugDraw().AddBounds(bounds, color);
+        if (!status.IsSuccess()) { error = status.operation ? status.operation : "Invalid debug bounds"; return false; }
+        m_Renderer->SetDebugSurface(surfaceId);
+        error.clear();
+        return true;
+    }
+
+    void EngineRuntime::RequestFrameAssets(const RenderFramePacket& packet)
+    {
+        if (!m_Assets || !packet.environment || !packet.environment->asset.HasValue()) return;
+        const auto id = packet.environment->asset.id;
+        if (m_Assets->GetStatus(id) != AssetStatus::Unloaded) return;
+        std::string error;
+        if (!m_Assets->Request(id, error)) {
+            const auto previous = m_EnvironmentRequestErrors.find(id);
+            if (previous == m_EnvironmentRequestErrors.end() || previous->second != error) {
+                CAT_CORE_WARN("Environment request {0} failed: {1}", id.ToString(), error);
+                m_EnvironmentRequestErrors.insert_or_assign(id, std::move(error));
+            }
+        } else m_EnvironmentRequestErrors.erase(id);
+    }
+
+    bool EngineRuntime::UpdateEditorPreviews(uint64_t sequence, std::string& error)
+    {
+        error.clear();
+        for (auto it = m_PreviewRequests.begin(); it != m_PreviewRequests.end();) {
+            Scene* scene = m_Scenes.GetScene(it->second.scene);
+            if (!scene) {
+                m_Renderer->ReleasePreviewSurface(it->first);
+                it = m_PreviewRequests.erase(it);
+                continue;
+            }
+            const RenderViewRequest request{ .id = it->first, .targetGeneration = it->second.generation,
+                .viewport = { .width = it->second.extent.width, .height = it->second.extent.height } };
+            RenderFramePacket packet;
+            auto status = scene->CommitPending();
+            if (status.IsSuccess()) status = TransformSystem::Update(*scene);
+            if (status.IsSuccess()) status = RenderExtractSystem::Extract(*scene, sequence, { &request, 1 }, packet);
+            if (!status.IsSuccess()) {
+                // 候选预览失败保持上次显示帧；不能为了一个编辑窗口终止整个引擎。
+                if (error.empty()) error = status.message;
+            } else {
+                packet.time = m_FrameTime;
+                RequestFrameAssets(packet);
+                std::string currentError;
+                if (!m_Renderer->SetPreviewFrame(it->first, std::move(packet), currentError) && error.empty())
+                    error = std::move(currentError);
+            }
+            ++it;
+        }
+        return error.empty();
     }
 
     void EngineRuntime::StopSimulation() noexcept
@@ -262,8 +397,14 @@ namespace Catalpa {
             if (!status.IsSuccess()) return status;
             // Extract替换整个包后才附加展示帧时间；所有权随快照交给Renderer。
             packet.time = m_FrameTime;
+            RequestFrameAssets(packet);
             if (const auto applied = m_Renderer->SetSceneFrame(std::move(packet)); !applied.IsSuccess()) return { WorldError::InvalidArgument, applied.message };
             ++m_FrameSequence;
+            std::string previewError;
+            if (!UpdateEditorPreviews(m_FrameSequence, previewError)) {
+                if (previewError != m_LastPreviewError) CAT_CORE_WARN("Editor preview retained its previous frame: {0}", previewError);
+                m_LastPreviewError = std::move(previewError);
+            } else m_LastPreviewError.clear();
             return {};
         } catch (const std::bad_alloc&) { return { WorldError::AllocationFailed, "Cannot prepare simulation frame" }; }
     }

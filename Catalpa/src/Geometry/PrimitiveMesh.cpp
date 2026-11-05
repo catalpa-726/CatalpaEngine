@@ -80,4 +80,40 @@ namespace Catalpa {
         constexpr std::array<uint32_t, 6> indices{ 0,1,2,2,3,0 };
         return FinishMesh(vertices, indices, Aabb{ {-x,0,-z}, {x,0,z}, false }, output);
     }
+
+    MeshStatus CreateCubeMeshWithTangents(float size, MeshData& output)
+    {
+        MeshData candidate;
+        if (const auto status = CreateCubeMesh(size, candidate); !status.IsSuccess()) return status;
+        try {
+            constexpr uint32_t stride = 48;
+            std::vector<std::byte> vertices(size_t(candidate.vertexCount) * stride);
+            for (uint32_t face = 0; face < 6; ++face) {
+                Vertex first, next;
+                const size_t sourceOffset = size_t(face) * 4 * sizeof(Vertex);
+                std::memcpy(&first, candidate.vertexData.data() + sourceOffset, sizeof(first));
+                std::memcpy(&next, candidate.vertexData.data() + sourceOffset + sizeof(Vertex), sizeof(next));
+                // 源面独立UV中v0→v1正好为+U；double平方避免极大/极小尺寸的float溢出或下溢。
+                const glm::dvec3 edge{double(next.position[0]) - first.position[0],
+                    double(next.position[1]) - first.position[1], double(next.position[2]) - first.position[2]};
+                const double length = glm::length(edge);
+                if (!std::isfinite(length) || length <= 0)
+                    return {MeshError::InvalidArgument, "Cube face cannot define a finite tangent"};
+                const std::array<float, 4> tangent{float(edge.x / length), float(edge.y / length), float(edge.z / length), 1};
+                for (uint32_t vertex = 0; vertex < 4; ++vertex) {
+                    const size_t index = size_t(face) * 4 + vertex;
+                    std::memcpy(vertices.data() + index * stride, candidate.vertexData.data() + index * sizeof(Vertex), sizeof(Vertex));
+                    std::memcpy(vertices.data() + index * stride + sizeof(Vertex), tangent.data(), sizeof(tangent));
+                }
+            }
+            candidate.vertexData = std::move(vertices);
+            candidate.vertexStride = stride;
+            candidate.attributes.push_back({3, VertexFormat::Float4, 32, VertexSemantic::Tangent});
+            if (const auto status = ValidateMesh(candidate); !status.IsSuccess()) return status;
+            output = std::move(candidate);
+            return {};
+        } catch (const std::bad_alloc&) {
+            return {MeshError::AllocationFailed, "Cannot allocate tangent cube mesh"};
+        }
+    }
 }

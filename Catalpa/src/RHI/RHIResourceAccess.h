@@ -3,13 +3,13 @@
 // 描述资源的执行阶段和访问方式；纹理另有布局与子资源范围。
 namespace Catalpa {
 
-    enum class RHIPipelineStage { None, ColorAttachmentOutput, AllCommands, Transfer, VertexInput, FragmentShader, VertexShader, VertexFragmentShader, DepthStencilTests };
+    enum class RHIPipelineStage { None, ColorAttachmentOutput, AllCommands, Transfer, VertexInput, FragmentShader, VertexShader, VertexFragmentShader, DepthStencilTests, Host };
     enum class RHIResourceAccess {
         None, ColorRead, ColorWrite, ColorReadWrite,
         TransferRead, TransferWrite, VertexRead, IndexRead, VertexIndexRead,
-        TransferReadWrite, MemoryReadWrite, SampledRead, UniformRead, DepthRead, DepthWrite, DepthReadWrite
+        TransferReadWrite, MemoryReadWrite, SampledRead, UniformRead, DepthRead, DepthWrite, DepthReadWrite, HostRead
     };
-    enum class RHITextureLayout { Undefined, ColorAttachment, Present, TransferDestination, ShaderReadOnly, DepthAttachment };
+    enum class RHITextureLayout { Undefined, ColorAttachment, Present, TransferDestination, ShaderReadOnly, DepthAttachment, TransferSource };
 
     struct RHITextureAccess {
         RHIPipelineStage stage = RHIPipelineStage::None;
@@ -19,7 +19,7 @@ namespace Catalpa {
 
     enum class RHITextureAspect { Color, Depth };
 
-    // 仅支持单颜色或D32深度aspect的mip0/layer0；不声称完整子资源能力。
+    // mip 和 layer 为图像中的绝对索引；同一图像的布局转换保守覆盖完整视图。
     struct RHITextureSubresourceRange {
         uint32_t baseMipLevel = 0;
         uint32_t levelCount = 1;

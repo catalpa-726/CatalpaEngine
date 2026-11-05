@@ -17,6 +17,7 @@ namespace Catalpa {
         uint32_t indexCount = 0;
         int32_t baseVertex = 0;
         float clipRect[4]{}; // 逻辑坐标 minX/minY/maxX/maxY；Renderer 统一转换为 framebuffer 像素。
+        uint64_t textureToken = 0; // 0为字体；其他值只能由Renderer纹理注册表发放。
     };
 
     struct ImGuiFrameData {

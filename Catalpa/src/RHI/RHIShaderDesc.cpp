@@ -16,6 +16,22 @@ namespace Catalpa {
         if (desc.vertex.stage != RHIShaderStage::Vertex || desc.fragment.stage != RHIShaderStage::Fragment) { error = "Graphics stage order is invalid"; return false; }
         const auto& vertex = *FindShaderEntry(desc.vertex.asset.Get()->metadata, desc.vertex.entryPoint, ShaderStage::Vertex);
         const auto& fragment = *FindShaderEntry(desc.fragment.asset.Get()->metadata, desc.fragment.entryPoint, ShaderStage::Fragment);
+        // ID 附件与普通颜色附件的标量类型不同，不能把不匹配留给原生验证层兜底。
+        if (desc.colorFormat == PixelFormat::Unknown) {
+            if (!fragment.outputs.empty()) { error = "Depth-only pipeline cannot declare a color output"; return false; }
+        } else {
+            const auto format = GetPixelFormatInfo(desc.colorFormat);
+            if (fragment.outputs.size() != 1 || fragment.outputs.front().location != 0 || format.channels == 0) {
+                error = "Color pipeline requires exactly one output at location zero";
+                return false;
+            }
+            const auto& shape = fragment.outputs.front().type;
+            if (shape.width != 32 || shape.rows != 1 || shape.arrayCount != 1 || shape.columns != format.channels
+                || shape.scalar != (format.isInteger ? ShaderScalarKind::UnsignedInteger : ShaderScalarKind::Float)) {
+                error = "Fragment output type differs from attachment component type/count";
+                return false;
+            }
+        }
         if (vertex.inputs.size() != desc.vertexLayout.attributes.size()) { error = "Vertex input count differs from reflected interface"; return false; }
         for (const auto& input : vertex.inputs) {
             const auto found = std::find_if(desc.vertexLayout.attributes.begin(), desc.vertexLayout.attributes.end(),
@@ -43,7 +59,9 @@ namespace Catalpa {
                 if (binding.set != 0 || binding.count != 1) { error = "Descriptor set/array exceeds current RHI contract"; return false; }
                 auto [it, inserted] = requirements.try_emplace(binding.binding, Requirement{type, stage, binding.blockSize, &binding});
                 if (!inserted) {
-                    if (it->second.type != type || it->second.bytes != binding.blockSize || it->second.metadata->members != binding.members) { error = "Cross-stage descriptor ABI conflict"; return false; }
+                    if (it->second.type != type || it->second.bytes != binding.blockSize
+                        || it->second.metadata->imageDimension != binding.imageDimension
+                        || it->second.metadata->members != binding.members) { error = "Cross-stage descriptor ABI conflict"; return false; }
                     it->second.stages |= stage;
                 }
             }
@@ -63,6 +81,12 @@ namespace Catalpa {
         };
         for (const auto& binding : desc.bindingLayout.entries) {
             const auto found = requirements.find(binding.binding);
+            if (found != requirements.end() && binding.type == RHIBindingType::SampledTexture) {
+                const auto dimension = found->second.metadata->imageDimension;
+                const bool matches = (dimension == ShaderImageDimension::Texture2D && binding.imageViewType == RHITextureViewType::Texture2D)
+                    || (dimension == ShaderImageDimension::Cube && binding.imageViewType == RHITextureViewType::Cube);
+                if (!matches) { error = "Texture view dimension differs from reflected shader interface"; return false; }
+            }
             if (found == requirements.end() || !seen.insert(binding.binding).second || binding.type != found->second.type
                 || bits(binding.visibility) != found->second.stages
                 || (binding.type == RHIBindingType::UniformBuffer && binding.minimumBufferBytes != found->second.bytes)) {

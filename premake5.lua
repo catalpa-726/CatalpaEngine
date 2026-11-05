@@ -9,6 +9,7 @@ IncludeDir = {}
 IncludeDir["GLFW"] = "Catalpa/third_party/glfw/include"
 IncludeDir["GLAD"] = "Catalpa/third_party/glad/include"
 IncludeDir["imgui"] = "Catalpa/third_party/imgui"
+IncludeDir["ImGuizmo"] = "Catalpa/third_party/ImGuizmo/src"
 IncludeDir["VulkanSDK"] = path.join(vulkanSDK, "Include")
 IncludeDir["VMA"] = "Catalpa/third_party/VulkanMemoryAllocator/include"
 IncludeDir["JSON"] = "Catalpa/third_party/json/include"
@@ -32,6 +33,9 @@ local requiredDependencies = {
     "Catalpa/third_party/glfw/include/GLFW/glfw3.h",
     "Catalpa/third_party/spdlog/include/spdlog/spdlog.h",
     "Catalpa/third_party/imgui/imgui.h",
+    "Catalpa/third_party/ImGuizmo/src/ImGuizmo.h",
+    "Catalpa/third_party/ImGuizmo/src/ImGuizmo.cpp",
+    "Catalpa/third_party/ImGuizmo/LICENSE",
     "Catalpa/third_party/glad/include/glad/vulkan.h",
     "Catalpa/third_party/glad/include/vk_platform.h",
     "Catalpa/third_party/glad/src/vulkan.c",
@@ -155,6 +159,9 @@ project "Catalpa"
         "imgui",
         "enkiTS",
     }
+
+    -- 第三方 Gizmo 实现与 ImGui 同属此 DLL；编辑器继续使用导入接口。
+    CatalpaImGuiBuild.AttachGizmoImplementation()
 
     include "Script/Build/Slang.lua"
 
@@ -299,6 +306,7 @@ project "CatalpaEditor"
         "CatalpaEditor/src",
         "Tools",
         "%{IncludeDir.imgui}",
+        "%{IncludeDir.ImGuizmo}",
         "%{IncludeDir.JSON}",
         "%{IncludeDir.GLM}"
     }

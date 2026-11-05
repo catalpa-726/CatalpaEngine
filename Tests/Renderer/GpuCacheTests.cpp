@@ -5,6 +5,7 @@
 #include "Renderer/Resources/MaterialGpuCache.h"
 #include "Renderer/Resources/PipelineLibrary.h"
 #include "Renderer/RendererFrameContext.h"
+#include "Renderer/Lighting/LightData.h"
 #include "Renderer/Uploads/UploadScheduler.h"
 #include "Geometry/PrimitiveMesh.h"
 #include "Materials/MaterialValidation.h"
@@ -105,21 +106,44 @@ namespace Catalpa::Tests {
         RHIGraphicsPipelineDesc desc;
         desc.vertex={shaderVersion,RHIShaderStage::Vertex,"vertexMain"};desc.fragment={shaderVersion,RHIShaderStage::Fragment,"fragmentMain"};
         desc.colorFormat=PixelFormat::RGBA8_SRGB;desc.vertexLayout={32,attributes};
-        desc.pushConstants={16,RHIShaderVisibility::Vertex};desc.bindingLayout={bindings};
+        desc.pushConstants={32,RHIShaderVisibility::VertexFragment};desc.bindingLayout={bindings};
         test.Check(ValidateRHIPipelineShaderInterface(desc,error),"Real cooked UI metadata agrees with the host pipeline ABI");
+        auto integerUi = desc;
+        integerUi.colorFormat = PixelFormat::R32_UInt;
+        test.Check(!ValidateRHIPipelineShaderInterface(integerUi, error),
+            "Float4 UI fragment output cannot be bound to an unsigned integer picking target");
         PipelineLibrary pipelines(device);std::shared_ptr<PipelineResource> pipelineA,pipelineB;
         test.Check(pipelines.Acquire(desc,pipelineA).IsSuccess()&&pipelines.Acquire(desc,pipelineB).IsSuccess()&&pipelineA==pipelineB,"Complete pipeline key reuses native owner");
         test.Check(device.createdPipelines==1,"Repeated descriptor does not create a second pipeline");
         desc.colorFormat=PixelFormat::BGRA8_SRGB;
         std::shared_ptr<PipelineResource> other;
         test.Check(pipelines.Acquire(desc,other).IsSuccess()&&other!=pipelineA,"Attachment format participates in the pipeline key");
-        desc.pushConstants.size=32;
+        desc.pushConstants.size=16;
         test.Check(!pipelines.Acquire(desc,other).IsSuccess(),"Incorrect reflected ABI never reaches backend pipeline creation");
         pipelines.Clear();pipelineA.reset();pipelineB.reset();other.reset();
         test.Check(device.createdPipelines==device.releasedPipelines,"All pipeline logical owners release through existing RHI");
 
-        AssetVersionRef<ShaderAsset> unlit,depth;
-        if(!readShader("Unlit.slang",unlit)||!readShader("Depth.slang",depth)) {test.Check(false,error);return;}
+        AssetVersionRef<ShaderAsset> unlit,depth,pbr;
+        if(!readShader("Unlit.slang",unlit)||!readShader("Depth.slang",depth)||!readShader("Pbr.slang",pbr)) {test.Check(false,error);return;}
+        const auto* pbrFragment = FindShaderEntry(pbr.Get()->metadata, "fragmentMain", ShaderStage::Fragment);
+        for (uint32_t binding : {13u, 14u, 15u}) {
+            const auto found = pbrFragment ? std::find_if(pbrFragment->bindings.begin(), pbrFragment->bindings.end(),
+                [&](const auto& value) { return value.binding == binding && value.set == 0; }) : std::vector<ShaderBinding>::const_iterator{};
+            test.Check(pbrFragment && found != pbrFragment->bindings.end() &&
+                found->imageDimension == (binding == 15 ? ShaderImageDimension::Texture2D : ShaderImageDimension::Cube),
+                "Real cooked PBR metadata retains Cube IBL versus 2D BRDF texture dimensions");
+        }
+        const auto* unlitFragment = FindShaderEntry(unlit.Get()->metadata, "fragmentMain", ShaderStage::Fragment);
+        bool fogMatches = false;
+        if (unlitFragment) {
+            for (const auto& binding : unlitFragment->bindings) {
+                if (binding.binding != 10 || binding.set != 0 || binding.blockSize != sizeof(PackedLightingData)) continue;
+                for (const auto& member : binding.members)
+                    if (member.name == "fogColorDensity" && member.offset == offsetof(PackedLightingData, fogColorDensity) && member.size == 16)
+                        fogMatches = true;
+            }
+        }
+        test.Check(fogMatches, "Real cooked Unlit distance fog consumes the same 2160-byte Lighting UBO tail as the renderer");
         const auto validateFrame=[&](const ShaderMetadata& metadata) {
             return ValidateFrameShaderInterface(metadata,"vertexMain","fragmentMain",error);
         };
@@ -172,25 +196,83 @@ namespace Catalpa::Tests {
         }
 
         // 真实forward及prepass组合还必须通过RHI跨stage/raw metadata检查。
-        const std::array<RHIBindingLayoutEntry,4> sceneBindings{{
+        const std::array<RHIBindingLayoutEntry,7> sceneBindings{{
+            {0,RHIBindingType::UniformBuffer,RHIShaderVisibility::Fragment,sizeof(FrameGpuParameters)},
+            {1,RHIBindingType::UniformBuffer,RHIShaderVisibility::VertexFragment,sizeof(ViewGpuParameters)},
+            {2,RHIBindingType::UniformBuffer,RHIShaderVisibility::VertexFragment,sizeof(DrawGpuParameters)},
+            {3,RHIBindingType::UniformBuffer,RHIShaderVisibility::Fragment,80},
+            {4,RHIBindingType::SampledTexture,RHIShaderVisibility::Fragment},
+            {18,RHIBindingType::Sampler,RHIShaderVisibility::Fragment},
+            {10,RHIBindingType::UniformBuffer,RHIShaderVisibility::Fragment,sizeof(PackedLightingData)}}};
+        RHIGraphicsPipelineDesc scenePipeline;
+        scenePipeline.vertex={unlit,RHIShaderStage::Vertex,"vertexMain"};scenePipeline.fragment={unlit,RHIShaderStage::Fragment,"fragmentMain"};
+        // GPU派生流与原mesh布局分开；按实际反射消费固定canonical属性，不再复用旧pos/normal筛选。
+        std::vector<VertexAttribute> sceneInputs;
+        const auto canonical = GeometryGpuResource::GetVertexLayout();
+        const auto* vertexMetadata = FindShaderEntry(unlit.Get()->metadata, "vertexMain", ShaderStage::Vertex);
+        if (!vertexMetadata) { test.Check(false, "Actual Unlit vertex entry is present"); return; }
+        for (const auto& input : vertexMetadata->inputs) {
+            const auto found = std::find_if(canonical.attributes.begin(), canonical.attributes.end(), [&](const auto& value) { return value.location == input.location; });
+            if (found == canonical.attributes.end()) { test.Check(false, "Real mesh shader input belongs to the canonical GPU stream"); return; }
+            sceneInputs.push_back(*found);
+        }
+        scenePipeline.vertexLayout={canonical.stride,sceneInputs};scenePipeline.bindingLayout={sceneBindings};
+        scenePipeline.colorFormat=PixelFormat::RGBA32_Float;scenePipeline.depthFormat=PixelFormat::D32_Float;
+        const bool forwardMatches=ValidateRHIPipelineShaderInterface(scenePipeline,error);
+        test.Check(forwardMatches,"Actual cooked forward descriptor/stage ABI: "+error);
+        const std::array<RHIBindingLayoutEntry,6> depthBindings{{
             {0,RHIBindingType::UniformBuffer,RHIShaderVisibility::Fragment,sizeof(FrameGpuParameters)},
             {1,RHIBindingType::UniformBuffer,RHIShaderVisibility::Vertex,sizeof(ViewGpuParameters)},
             {2,RHIBindingType::UniformBuffer,RHIShaderVisibility::VertexFragment,sizeof(DrawGpuParameters)},
-            {3,RHIBindingType::UniformBuffer,RHIShaderVisibility::Fragment,16}}};
-        RHIGraphicsPipelineDesc scenePipeline;
-        scenePipeline.vertex={unlit,RHIShaderStage::Vertex,"vertexMain"};scenePipeline.fragment={unlit,RHIShaderStage::Fragment,"fragmentMain"};
-        // 与Renderer一致：当前Unlit只消费位置/法线，网格中的UV不属于该pipeline输入。
-        std::vector<VertexAttribute> sceneInputs;
-        for(const auto& attribute:mesh->GetData().attributes) if(attribute.location<2) sceneInputs.push_back(attribute);
-        scenePipeline.vertexLayout={mesh->GetData().vertexStride,sceneInputs};scenePipeline.bindingLayout={sceneBindings};
-        scenePipeline.colorFormat=PixelFormat::RGBA8_SRGB;scenePipeline.depthFormat=PixelFormat::D32_Float;
-        const bool forwardMatches=ValidateRHIPipelineShaderInterface(scenePipeline,error);
-        test.Check(forwardMatches,"Actual cooked forward descriptor/stage ABI: "+error);
-        const std::array<RHIBindingLayoutEntry,2> depthBindings{{
-            {1,RHIBindingType::UniformBuffer,RHIShaderVisibility::Vertex,sizeof(ViewGpuParameters)},
-            {2,RHIBindingType::UniformBuffer,RHIShaderVisibility::Vertex,sizeof(DrawGpuParameters)}}};
+            {3,RHIBindingType::UniformBuffer,RHIShaderVisibility::Fragment,80},
+            {4,RHIBindingType::SampledTexture,RHIShaderVisibility::Fragment},
+            {18,RHIBindingType::Sampler,RHIShaderVisibility::Fragment}}};
         scenePipeline.fragment={depth,RHIShaderStage::Fragment,"fragmentMain"};scenePipeline.colorFormat=PixelFormat::Unknown;scenePipeline.bindingLayout={depthBindings};
         const bool depthMatches=ValidateRHIPipelineShaderInterface(scenePipeline,error);
         test.Check(depthMatches,"Actual Unlit vertex and Depth fragment preserve prepass descriptor/stage ABI: "+error);
+        auto pbrPrepass = scenePipeline;
+        pbrPrepass.vertex = {pbr, RHIShaderStage::Vertex, "vertexMain"};
+        std::vector<VertexAttribute> pbrInputs;
+        const auto* pbrVertex = FindShaderEntry(pbr.Get()->metadata, "vertexMain", ShaderStage::Vertex);
+        if (!pbrVertex) { test.Check(false, "Actual PBR vertex entry is present for an exact-VS prepass"); return; }
+        for (const auto& input : pbrVertex->inputs) {
+            const auto found = std::find_if(canonical.attributes.begin(), canonical.attributes.end(),
+                [&](const auto& value) { return value.location == input.location; });
+            if (found == canonical.attributes.end()) { test.Check(false, "PBR prepass input belongs to canonical geometry"); return; }
+            pbrInputs.push_back(*found);
+        }
+        pbrPrepass.vertexLayout = {canonical.stride, pbrInputs};
+        test.Check(ValidateRHIPipelineShaderInterface(pbrPrepass, error),
+            "Actual PBR vertex bytecode pairs with the common alpha-tested Depth fragment: " + error);
+        std::shared_ptr<PipelineResource> exactPrepass;
+        test.Check(pipelines.Acquire(pbrPrepass, exactPrepass).IsSuccess() && exactPrepass->vertex.Get() == pbr.Get()
+            && exactPrepass->fragment.Get() == depth.Get(),
+            "Prepass pipeline retains the exact forward VS owner and a separate Depth FS owner");
+        auto colorWithoutOutput = scenePipeline;
+        colorWithoutOutput.colorFormat = PixelFormat::RGBA32_Float;
+        test.Check(!ValidateRHIPipelineShaderInterface(colorWithoutOutput, error),
+            "A depth-only fragment cannot fabricate a color attachment output");
+        AssetVersionRef<ShaderAsset> picking;
+        if (!readShader("Picking.slang", picking)) { test.Check(false, error); return; }
+        std::vector<VertexAttribute> pickingInputs;
+        const auto* pickingVertex = FindShaderEntry(picking.Get()->metadata, "vertexMain", ShaderStage::Vertex);
+        if (!pickingVertex) { test.Check(false, "Actual picking shader contains a vertex entry"); return; }
+        for (const auto& input : pickingVertex->inputs) {
+            const auto found = std::find_if(canonical.attributes.begin(), canonical.attributes.end(), [&](const auto& value) { return value.location == input.location; });
+            if (found == canonical.attributes.end()) { test.Check(false, "Picking shader input belongs to canonical geometry"); return; }
+            pickingInputs.push_back(*found);
+        }
+        RHIGraphicsPipelineDesc pickingPipeline;
+        pickingPipeline.vertex = {picking, RHIShaderStage::Vertex, "vertexMain"};
+        pickingPipeline.fragment = {picking, RHIShaderStage::Fragment, "fragmentMain"};
+        pickingPipeline.colorFormat = PixelFormat::R32_UInt;
+        pickingPipeline.depthFormat = PixelFormat::D32_Float;
+        pickingPipeline.vertexLayout = {canonical.stride, pickingInputs};
+        pickingPipeline.bindingLayout = {depthBindings};
+        test.Check(ValidateRHIPipelineShaderInterface(pickingPipeline, error),
+            "Actual uint picking output matches the single-channel unsigned R32 attachment");
+        pickingPipeline.colorFormat = PixelFormat::RGBA8_UNorm;
+        test.Check(!ValidateRHIPipelineShaderInterface(pickingPipeline, error),
+            "Unsigned picking output cannot be silently reinterpreted as a normalized RGBA color");
     }
 }

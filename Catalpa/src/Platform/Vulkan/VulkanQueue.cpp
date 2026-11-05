@@ -100,13 +100,12 @@ namespace Catalpa {
             return status;
         }
 
-        if (commands) {
-            commands->CommitResourceStatePlan();
-            commands->MarkSubmitted();
-        }
-
         fence.MarkSubmitted();
         m_Submissions.AcceptSubmission(fence);
+        if (commands) {
+            commands->CommitResourceStatePlan(GetLastCompletionPoint());
+            commands->MarkSubmitted();
+        }
         return {};
     }
 

@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "RHIHandle.h"
+#include "RHICompletionPoint.h"
 #include "RHIBufferDesc.h"
 #include "RHIResourceAccess.h"
 #include "RHITypes.h"
@@ -20,13 +21,15 @@ namespace Catalpa {
         uint64_t revision = 1;
         RHIBufferAccess access{};
         std::vector<RHIBufferRange> initialized;
+        RHICompletionPoint lastUse{};
     };
 
-    // 当前描述单颜色或D32深度mip0/layer0；状态唯一保存于图像，不因View重建复制。
+    // 布局按整个图像跟踪；初始化区间按 layer * mipLevels + mip 跟踪。
     struct RHITextureState {
         uint64_t revision = 1;
         RHITextureAccess access{};
         bool initialized = false;
+        std::vector<RHIBufferRange> initializedSubresources;
     };
 
     struct RHIBufferStateSnapshot {
@@ -41,6 +44,8 @@ namespace Catalpa {
         RHITextureState state{};
         RHITextureUsage usage = RHITextureUsage::None;
         bool presentable = false;
+        uint32_t mipLevels = 1;
+        uint32_t arrayLayers = 1;
     };
 
     struct RHIBufferStateUpdate {

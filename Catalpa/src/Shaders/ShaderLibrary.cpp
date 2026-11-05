@@ -80,7 +80,7 @@ namespace Catalpa {
         for(const auto& e:m.entries) if(e.stage==stage&&e.name==name)return &e; return nullptr;
     }
     bool ValidateShaderMetadata(const ShaderMetadata& m,std::string& error) {
-        if(m.schemaVersion!=1||m.targetEnvironment!="vulkan1.3"||m.spirvVersion!=0x00010500||!Hash(m.bytecodeSha256)||m.entries.empty()||m.entries.size()>64)return Fail(error,"unsupported shader metadata/target/hash/entries");
+        if((m.schemaVersion!=1&&m.schemaVersion!=2)||m.targetEnvironment!="vulkan1.3"||m.spirvVersion!=0x00010500||!Hash(m.bytecodeSha256)||m.entries.empty()||m.entries.size()>64)return Fail(error,"unsupported shader metadata/target/hash/entries");
         size_t budget=MaxItems; std::set<std::string> entries;
         for(const auto& e:m.entries) {
             if(!Name(e.name)||e.stage<ShaderStage::Vertex||e.stage>ShaderStage::Compute||!entries.insert(e.name).second||e.bindings.size()>256)return Fail(error,"invalid/duplicate shader entry");
@@ -88,6 +88,13 @@ namespace Catalpa {
             for(const auto& b:e.bindings) {
                 if(!Name(b.name)||b.set>31||b.binding>65535||b.count==0||b.count>65536||b.kind<ShaderResourceKind::UniformBuffer||b.kind>ShaderResourceKind::CombinedImageSampler||!slots.emplace(b.set,b.binding).second)return Fail(error,"invalid/duplicate shader binding");
                 const bool block=b.kind==ShaderResourceKind::UniformBuffer||b.kind==ShaderResourceKind::StorageBuffer;
+                const bool image=b.kind==ShaderResourceKind::SampledImage||b.kind==ShaderResourceKind::StorageImage||b.kind==ShaderResourceKind::CombinedImageSampler;
+                if (image) {
+                    if (b.imageDimension != ShaderImageDimension::Texture2D &&
+                        !(m.schemaVersion >= 2 && b.imageDimension == ShaderImageDimension::Cube))
+                        return Fail(error, "Shader image has an unsupported or absent dimension");
+                } else if (b.imageDimension != ShaderImageDimension::None)
+                    return Fail(error, "Non-image binding cannot declare an image dimension");
                 if(block) { if(b.blockSize==0||b.blockSize>16*1024*1024||b.members.empty()||!Members(b.members,b.blockSize,0,budget,error))return Fail(error,"invalid shader buffer members: "+error); }
                 else if(b.blockSize!=0||!b.members.empty())return Fail(error,"non-buffer shader binding contains block layout");
             }
@@ -106,7 +113,15 @@ namespace Catalpa {
         std::set<std::pair<ShaderStage,std::string>> actualEntries;
         for(size_t p=5;p<a.spirv.size();) {
             size_t n=a.spirv[p]>>16; if(n==0||n>a.spirv.size()-p)return Fail(error,"truncated shader instruction");
-            if((a.spirv[p]&65535u)==15u){
+            const uint32_t opcode = a.spirv[p] & 65535u;
+            // 当前 Vulkan 目标没有启用 shaderDrawParameters。Cook、缓存和运行时加载共用此检查。
+            constexpr uint32_t opCapability = 17, drawParameters = 4427;
+            if (opcode == opCapability) {
+                if (n != 2) return Fail(error, "Malformed SPIR-V OpCapability");
+                if (a.spirv[p + 1] == drawParameters)
+                    return Fail(error, "DrawParameters requires shaderDrawParameters, which is disabled in this Vulkan profile; use SV_VulkanVertexID for a direct vertex index");
+            }
+            if(opcode==15u){
                 if(n<4||a.spirv[p+2]==0||a.spirv[p+2]>=a.spirv[3])return Fail(error,"invalid SPIR-V entry header");
                 ShaderStage stage;switch(a.spirv[p+1]){case 0:stage=ShaderStage::Vertex;break;case 4:stage=ShaderStage::Fragment;break;case 5:stage=ShaderStage::Compute;break;default:return Fail(error,"unsupported SPIR-V entry stage");}
                 std::string name;bool terminated=false;
@@ -122,10 +137,10 @@ namespace Catalpa {
     bool ShaderLibrary::EncodePayload(const ShaderAsset& a,std::vector<std::byte>& output,std::string& error) {
         try {
             if(!ValidateShaderAsset(a,error))return false; BinaryWriter w;
-            bool ok=w.U32(1)&&w.String(a.variant.sha256)&&w.String(a.variant.inputFingerprint)&&w.U32(a.metadata.schemaVersion)&&w.String(a.metadata.targetEnvironment)&&w.U32(a.metadata.spirvVersion)&&w.String(a.metadata.bytecodeSha256)&&w.U32(uint32_t(a.metadata.entries.size()));
+            bool ok=w.U32(2)&&w.String(a.variant.sha256)&&w.String(a.variant.inputFingerprint)&&w.U32(a.metadata.schemaVersion)&&w.String(a.metadata.targetEnvironment)&&w.U32(a.metadata.spirvVersion)&&w.String(a.metadata.bytecodeSha256)&&w.U32(uint32_t(a.metadata.entries.size()));
             for(const auto& e:a.metadata.entries) {
                 ok=ok&&w.String(e.name)&&w.U32(uint32_t(e.stage))&&w.U32(uint32_t(e.bindings.size()));
-                for(const auto& b:e.bindings)ok=ok&&w.U32(b.set)&&w.U32(b.binding)&&w.U32(b.count)&&w.U32(uint32_t(b.kind))&&w.String(b.name)&&w.U32(b.blockSize)&&WriteMembers(w,b.members);
+                for(const auto& b:e.bindings)ok=ok&&w.U32(b.set)&&w.U32(b.binding)&&w.U32(b.count)&&w.U32(uint32_t(b.kind))&&w.String(b.name)&&w.U32(b.blockSize)&&WriteMembers(w,b.members)&&w.U32(uint32_t(b.imageDimension));
                 ok=ok&&WriteIO(w,e.inputs)&&WriteIO(w,e.outputs)&&w.U32(e.pushConstantBytes)&&WriteMembers(w,e.pushConstantMembers);
             }
             ok=ok&&w.U32(uint32_t(a.spirv.size()));for(auto word:a.spirv)ok=ok&&w.U32(word);
@@ -135,11 +150,24 @@ namespace Catalpa {
     bool ShaderLibrary::DecodePayload(std::span<const std::byte> bytes,std::shared_ptr<const ShaderAsset>& output,std::string& error) {
         try {
             BinaryReader r(bytes);auto a=std::make_shared<ShaderAsset>();uint32_t v,n;size_t budget=MaxItems;
-            if(!r.U32(v)||v!=1||!r.String(a->variant.sha256,64)||!r.String(a->variant.inputFingerprint,64)||!r.U32(a->metadata.schemaVersion)||!r.String(a->metadata.targetEnvironment,32)||!r.U32(a->metadata.spirvVersion)||!r.String(a->metadata.bytecodeSha256,64)||!r.U32(n)||n==0||n>64)return Fail(error,"invalid shader payload header");
+            if(!r.U32(v)||(v!=1&&v!=2)||!r.String(a->variant.sha256,64)||!r.String(a->variant.inputFingerprint,64)||!r.U32(a->metadata.schemaVersion)||!r.String(a->metadata.targetEnvironment,32)||!r.U32(a->metadata.spirvVersion)||!r.String(a->metadata.bytecodeSha256,64)||!r.U32(n)||n==0||n>64)return Fail(error,"invalid shader payload header");
             a->metadata.entries.resize(n);
             for(auto& e:a->metadata.entries) {
                 uint32_t stage; if(!r.String(e.name,1024)||!r.U32(stage)||!r.U32(n)||n>256)return Fail(error,"invalid shader entry payload");e.stage=ShaderStage(stage);e.bindings.resize(n);
-                for(auto& b:e.bindings) { uint32_t kind; if(!r.U32(b.set)||!r.U32(b.binding)||!r.U32(b.count)||!r.U32(kind)||!r.String(b.name,1024)||!r.U32(b.blockSize)||!ReadMembers(r,b.members,0,budget))return Fail(error,"invalid shader binding payload");b.kind=ShaderResourceKind(kind); }
+                for(auto& b:e.bindings) {
+                    uint32_t kind;
+                    if(!r.U32(b.set)||!r.U32(b.binding)||!r.U32(b.count)||!r.U32(kind)||!r.String(b.name,1024)||!r.U32(b.blockSize)||!ReadMembers(r,b.members,0,budget))
+                        return Fail(error,"invalid shader binding payload");
+                    b.kind=ShaderResourceKind(kind);
+                    if (v >= 2) {
+                        uint32_t dimension;
+                        if (!r.U32(dimension)) return Fail(error, "Missing shader image dimension");
+                        b.imageDimension = ShaderImageDimension(dimension);
+                    } else if (b.kind == ShaderResourceKind::SampledImage || b.kind == ShaderResourceKind::StorageImage || b.kind == ShaderResourceKind::CombinedImageSampler) {
+                        // 旧schema/payload只允许2D，不能根据宿主需求猜成Cube。
+                        b.imageDimension = ShaderImageDimension::Texture2D;
+                    }
+                }
                 if(!ReadIO(r,e.inputs)||!ReadIO(r,e.outputs)||!r.U32(e.pushConstantBytes)||!ReadMembers(r,e.pushConstantMembers,0,budget))return Fail(error,"invalid shader interface payload");
             }
             if(!r.U32(n)||n<5||n>MaxWords||n>r.Remaining()/4)return Fail(error,"invalid shader word count");a->spirv.resize(n);for(auto& w:a->spirv)if(!r.U32(w))return Fail(error,"truncated shader words");

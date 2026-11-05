@@ -4,6 +4,9 @@
 #include "Scene/Scene.h"
 #include "Scene/Components/CameraComponent.h"
 #include "Scene/Components/MeshRendererComponent.h"
+#include "Scene/Components/LightComponent.h"
+#include "Scene/Components/EnvironmentComponent.h"
+#include "Lighting/LightValidation.h"
 #include "Renderer/RenderScene.h"
 
 
@@ -40,6 +43,30 @@ namespace Catalpa {
                     if (const auto result = scene.GetTransform(entity, transform); !result.IsSuccess()) return result;
                     if (!transform.worldValid) return { WorldError::InvalidArgument, "Transform must be updated before render extraction" };
                     candidate.transforms.push_back({ { entity.world, entity.index, entity.generation }, transform.worldMatrix });
+                    if (scene.GetWorld().Has<LightComponent>(entity)) {
+                        LightComponent light;
+                        if (const auto result = scene.GetWorld().Get(entity, light); !result.IsSuccess()) return result;
+                        if (light.enabled) {
+                            std::string error;
+                            if (!ValidateLightParameters(light.parameters, error))
+                                return { WorldError::InvalidArgument, "Light parameters failed validation" };
+                            Math::Vec3 direction;
+                            if (!TryGetWorldLightDirection(transform.worldMatrix, direction))
+                                return { WorldError::InvalidArgument, "Light world direction is degenerate" };
+                            candidate.lights.push_back({ { entity.world, entity.index, entity.generation }, light.parameters,
+                                Math::Vec3(transform.worldMatrix[3]), direction });
+                        }
+                    }
+                    if (scene.GetWorld().Has<EnvironmentComponent>(entity)) {
+                        EnvironmentComponent environment;
+                        if (const auto result = scene.GetWorld().Get(entity, environment); !result.IsSuccess()) return result;
+                        if (environment.enabled) {
+                            // 多个环境没有隐式优先级；拒绝歧义，不能由 ECS 遍历顺序决定背景。
+                            if (candidate.environment)
+                                return { WorldError::InvalidArgument, "Only one enabled environment is allowed per scene" };
+                            candidate.environment = RenderEnvironment{ environment.environment, environment.settings };
+                        }
+                    }
                     if (scene.GetWorld().Has<MeshRendererComponent>(entity)) {
                         MeshRendererComponent renderer;
                         if (const auto result = scene.GetWorld().Get(entity, renderer); !result.IsSuccess()) return result;

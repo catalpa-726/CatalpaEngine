@@ -21,6 +21,7 @@
 /Catalpa/third_party/entt/
 /Catalpa/third_party/enkiTS/
 /Catalpa/third_party/SPIRV-Reflect/
+/Catalpa/third_party/ImGuizmo/
 # GLAD 按 README 的选项在本地生成，构建适配由 Script/Build/GLAD.lua 管理
 /Catalpa/third_party/glad/
 /DerivedDataCache/

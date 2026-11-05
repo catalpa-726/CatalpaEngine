@@ -37,7 +37,11 @@ namespace Catalpa {
     {
         try {
             if (!ValidateShaderMetadata(metadata, error)) return false;
-            struct ExpectedMember { std::string_view name; uint32_t offset, vectors; };
+            struct ExpectedMember {
+                std::string_view name;
+                uint32_t offset, vectors;
+                ShaderScalarKind scalar = ShaderScalarKind::Float;
+            };
             const auto checkNumber = [&](std::string_view path, std::string_view field, uint32_t actual, uint32_t expected) {
                 if (actual == expected) return true;
                 error = std::string(path) + "/" + std::string(field) + ": expected " + std::to_string(expected) + ", reflected " + std::to_string(actual);
@@ -50,8 +54,8 @@ namespace Catalpa {
                     && checkNumber(path, "matrixStride", member.matrixStride, 0)
                     && checkNumber(path, "rowMajor", member.rowMajor ? 1u : 0u, 0);
             };
-            const auto checkFloatVectors = [&](const ShaderBlockMember& member, std::string_view path, uint32_t count) {
-                return checkNumber(path, "scalar", static_cast<uint32_t>(member.type.scalar), static_cast<uint32_t>(ShaderScalarKind::Float))
+            const auto checkVectors = [&](const ShaderBlockMember& member, std::string_view path, uint32_t count, ShaderScalarKind scalar) {
+                return checkNumber(path, "scalar", static_cast<uint32_t>(member.type.scalar), static_cast<uint32_t>(scalar))
                     && checkNumber(path, "scalarWidth", member.type.width, 32)
                     && checkNumber(path, "rows", member.type.rows, 1)
                     && checkNumber(path, "columns", member.type.columns, 4)
@@ -78,7 +82,7 @@ namespace Catalpa {
                     const uint32_t memberBytes = wanted.vectors * 16;
                     if (!checkCommon(*member, memberPath, wanted.offset, memberBytes)) return false;
                     if (member->type.scalar != ShaderScalarKind::Structure) {
-                        if (!checkFloatVectors(*member, memberPath, wanted.vectors)) return false;
+                        if (!checkVectors(*member, memberPath, wanted.vectors, wanted.scalar)) return false;
                         continue;
                     }
                     // Slang may retain a vector array as a struct containing exactly data[N].
@@ -93,20 +97,23 @@ namespace Catalpa {
                     const auto& data = member->members.front();
                     if (data.name != "data") { error = memberPath + ": array wrapper must contain exactly the named data member"; return false; }
                     const std::string dataPath = memberPath + "/data";
-                    if (!checkCommon(data, dataPath, 0, memberBytes) || !checkFloatVectors(data, dataPath, wanted.vectors)) return false;
+                    if (!checkCommon(data, dataPath, 0, memberBytes) || !checkVectors(data, dataPath, wanted.vectors, wanted.scalar)) return false;
                 }
                 return true;
             };
             constexpr std::array<ExpectedMember, 2> frame{{
                 {"time", static_cast<uint32_t>(offsetof(FrameGpuParameters, time)), 1},
                 {"options", static_cast<uint32_t>(offsetof(FrameGpuParameters, options)), 1}}};
-            constexpr std::array<ExpectedMember, 2> view{{
+            constexpr std::array<ExpectedMember, 4> view{{
                 {"viewProjectionColumns", static_cast<uint32_t>(offsetof(ViewGpuParameters, viewProjectionColumns)), 4},
-                {"cameraPosition", static_cast<uint32_t>(offsetof(ViewGpuParameters, cameraPosition)), 1}}};
-            constexpr std::array<ExpectedMember, 3> draw{{
+                {"cameraPosition", static_cast<uint32_t>(offsetof(ViewGpuParameters, cameraPosition)), 1},
+                {"inverseViewProjectionColumns", static_cast<uint32_t>(offsetof(ViewGpuParameters, inverseViewProjectionColumns)), 4},
+                {"viewColumns", static_cast<uint32_t>(offsetof(ViewGpuParameters, viewColumns)), 4}}};
+            constexpr std::array<ExpectedMember, 4> draw{{
                 {"worldColumns", static_cast<uint32_t>(offsetof(DrawGpuParameters, worldColumns)), 4},
                 {"normalColumns", static_cast<uint32_t>(offsetof(DrawGpuParameters, normalColumns)), 3},
-                {"color", static_cast<uint32_t>(offsetof(DrawGpuParameters, color)), 1}}};
+                {"color", static_cast<uint32_t>(offsetof(DrawGpuParameters, color)), 1},
+                {"ids", static_cast<uint32_t>(offsetof(DrawGpuParameters, ids)), 1, ShaderScalarKind::UnsignedInteger}}};
             if (!blockMatches(ShaderStage::Fragment, fragmentEntry, 0, static_cast<uint32_t>(sizeof(FrameGpuParameters)), frame)
                 || !blockMatches(ShaderStage::Vertex, vertexEntry, 1, static_cast<uint32_t>(sizeof(ViewGpuParameters)), view)
                 || !blockMatches(ShaderStage::Vertex, vertexEntry, 2, static_cast<uint32_t>(sizeof(DrawGpuParameters)), draw)
@@ -200,7 +207,8 @@ namespace Catalpa {
         uint64_t alignment, uint64_t maxRange, PackedFrameUniforms& output)
     {
         if (!ValidProfile(profile) || packet.views.empty()
-            || maxRange < sizeof(DrawGpuParameters) || alignment == 0 || (alignment & (alignment - 1)) != 0)
+            || maxRange < std::max(sizeof(DrawGpuParameters), sizeof(ViewGpuParameters))
+            || packet.instances.size() >= UINT32_MAX || alignment == 0 || (alignment & (alignment - 1)) != 0)
             return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
         try {
             PackedFrameUniforms candidate;
@@ -237,10 +245,13 @@ namespace Catalpa {
             const auto& time = packet.time;
             if (time.simulationSeconds < 0.0 || time.realDeltaSeconds < 0.0 || time.fixedDeltaSeconds <= 0.0
                 || time.interpolationAlpha < 0.0 || time.interpolationAlpha > 1.0
-                || !FloatValue(time.simulationSeconds, frame.time[0]) || !FloatValue(time.realDeltaSeconds, frame.time[1])
+                || !FloatValue(std::fmod(time.simulationSeconds, 4096.0), frame.time[0]) || !FloatValue(time.realDeltaSeconds, frame.time[1])
                 || !FloatValue(time.fixedDeltaSeconds, frame.time[2]) || !FloatValue(time.interpolationAlpha, frame.time[3]))
                 return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
             frame.options[0] = profile.normalDebug ? 1.0f : 0.0f;
+            frame.options[1] = 0.1f;
+            if (!FloatValue(std::floor(time.simulationSeconds / 4096.0), frame.options[2]))
+                return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
             std::memcpy(candidate.data.data(), &frame, sizeof(frame));
             std::set<uint64_t> viewIds;
             for (size_t index = 0; index < packet.views.size(); ++index) {
@@ -250,7 +261,9 @@ namespace Catalpa {
                 ViewGpuParameters view;
                 for (int column = 0; column < 4; ++column)
                     for (int row = 0; row < 4; ++row)
-                        if (!FloatValue(source.matrices.viewProjection[column][row], view.viewProjectionColumns[column][row]))
+                        if (!FloatValue(source.matrices.viewProjection[column][row], view.viewProjectionColumns[column][row])
+                            || !FloatValue(source.matrices.inverseViewProjection[column][row], view.inverseViewProjectionColumns[column][row])
+                            || !FloatValue(source.matrices.view[column][row], view.viewColumns[column][row]))
                             return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
                 for (int axis = 0; axis < 3; ++axis)
                     if (!FloatValue(source.matrices.position[axis], view.cameraPosition[axis]))
@@ -263,6 +276,9 @@ namespace Catalpa {
             for (size_t i = 0; i < packet.instances.size(); ++i) {
                 const auto& instance = packet.instances[i];
                 DrawGpuParameters draw;
+                draw.ids[0] = static_cast<uint32_t>(i + 1);
+                // double只用于派生符号，避免有限float世界矩阵的det乘法先溢出。
+                draw.ids[1] = glm::determinant(glm::dmat3{ Math::Mat3{ instance.worldMatrix } }) < 0 ? 1u : 0u;
                 for (int column = 0; column < 4; ++column)
                     for (int row = 0; row < 4; ++row)
                         if (!FloatValue(instance.worldMatrix[column][row], draw.worldColumns[column][row]))
@@ -297,8 +313,6 @@ namespace Catalpa {
         try {
             if (m_Slots.empty()) m_Slots.resize(m_Device.GetFrameCount());
             RenderFramePacket presentation = packet;
-            // 本批多view CPU契约已开放，实际GPU目标仍是唯一交换链；离屏批接管多个目标。
-            if (packet.views.size() > 1) return { .code = RHIErrorCode::Unsupported, .operation = operation };
             if (packet.views.empty()) {
                 if (!m_ViewHistory.Stage(packet.sequence, packet.sceneIdentity, {}).IsSuccess())
                     return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
@@ -307,10 +321,13 @@ namespace Catalpa {
                 m_Slots[slot].packing = {};
                 return {};
             }
-            if (const auto status = BuildPresentationView(packet.views[0], targetExtent, presentation.views[0]); !status.IsSuccess()) return status;
+            // 唯一主窗口按实际交换链尺寸重建；独立离屏上下文传入自身目标尺寸。
+            if (packet.views.size() == 1)
+                if (const auto status = BuildPresentationView(packet.views[0], targetExtent, presentation.views[0]); !status.IsSuccess()) return status;
             std::vector<VisibilityResult> visibility(presentation.views.size());
-            if (const auto status = VisibilitySystem::Build(presentation.views[0], presentation.instances, visibility[0]); !status.IsSuccess())
-                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            for (size_t index = 0; index < presentation.views.size(); ++index)
+                if (const auto status = VisibilitySystem::Build(presentation.views[index], presentation.instances, visibility[index]); !status.IsSuccess())
+                    return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
             PackedFrameUniforms candidate;
             const auto& capabilities = m_Device.GetCapabilities();
             if (const auto status = BuildFrameUniformData(presentation, profile, capabilities.minUniformBufferOffsetAlignment,

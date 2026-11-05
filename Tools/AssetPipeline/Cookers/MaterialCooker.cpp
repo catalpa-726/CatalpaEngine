@@ -2,6 +2,7 @@
 #include "AssetPipeline/Cookers/MaterialCooker.h"
 #include "AssetPipeline/AssetArchiveWriter.h"
 #include "AssetPipeline/Importers/MaterialImporter.h"
+#include "Shaders/ShaderLibrary.h"
 #include <nlohmann/json.hpp>
 
 namespace Catalpa::Tools {
@@ -13,11 +14,33 @@ namespace Catalpa::Tools {
             e = "Material cooker requires an imported material";
             return false;
         }
+        for (const auto& [semantic, id] : material->textures) {
+            (void)id;
+            if (semantic != "baseColor" && semantic != "normal" && semantic != "metallicRoughness" &&
+                semantic != "emissive" && semantic != "occlusion") {
+                ctx.Diagnose(AssetDiagnosticLevel::Warning, asset.sourceKey,
+                    "Texture channel '" + semantic + "' remains in source mapping and its cooked image; the ordinary PBR surface does not evaluate this channel");
+            }
+        }
         std::vector<AssetBuildProduct> products;
         for (bool preview : {false, true}) {
-            std::vector<AssetRecord> deps{shader};
+            const AssetRecord* selectedShader = &shader;
+            if (!preview && !material->unlit) {
+                AssetId pbr;
+                if (!ShaderLibrary::BuiltinId("Pbr.slang", pbr, e))
+                    return false;
+                const auto found = ready.find(pbr);
+                if (found == ready.end() || found->second.type.ToString() != "shader") {
+                    e = "Cooked Pbr shader is required by the imported PBR material";
+                    return false;
+                }
+                selectedShader = &found->second;
+            }
+            std::vector<AssetRecord> deps{*selectedShader};
             if (!preview) {
                 for (const auto& [semantic, id] : material->textures) {
+                    if (semantic != "baseColor" && semantic != "normal" && semantic != "metallicRoughness" &&
+                        semantic != "emissive" && semantic != "occlusion") continue;
                     const auto it = ready.find(id);
                     if (it == ready.end() || it->second.type.ToString() != "image") {
                         e = "Material texture '" + semantic + "' requires image " + id.ToString();
@@ -28,7 +51,7 @@ namespace Catalpa::Tools {
                 }
             }
             std::string text;
-            if (!MaterialImporter::Definition(*material, shader.id, preview, text, e))
+            if (!MaterialImporter::Definition(*material, selectedShader->id, preview, text, e))
                 return false;
             const auto definitionId =
                 ctx.Identity(asset.sourceKey + (preview ? "/preview-definition" : "/definition"));

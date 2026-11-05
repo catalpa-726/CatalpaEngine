@@ -373,6 +373,19 @@ namespace Catalpa::Tools {
                 }
                 material.sourceProperties[semantic + ".wrap"] =
                     std::to_string(int(modes[0])) + "," + std::to_string(int(modes[1]));
+                const auto wrap = [](aiTextureMapMode mode) -> uint32_t {
+                    if (mode == aiTextureMapMode_Wrap) return 10497;
+                    if (mode == aiTextureMapMode_Clamp) return 33071;
+                    if (mode == aiTextureMapMode_Mirror) return 33648;
+                    return 0; // Decal要求透明边界，不能静默当作Clamp。
+                };
+                int minFilter = 9987, magFilter = 9729;
+                in->Get("$tex.mappingfiltermin", unsigned(type), 0, minFilter);
+                in->Get("$tex.mappingfiltermag", unsigned(type), 0, magFilter);
+                uint32_t flags = 0;
+                if (!MaterialImporter::SamplerFlags(wrap(modes[0]), wrap(modes[1]), uint32_t(minFilter),
+                    uint32_t(magFilter), flags, error)) return false;
+                material.samplers[semantic] = flags;
                 return image(path, semantic, material);
             };
             if (in->GetTextureCount(aiTextureType_BASE_COLOR)) {
@@ -600,8 +613,8 @@ namespace Catalpa::Tools {
             ctx.Diagnose(AssetDiagnosticLevel::Warning, "non-mesh-objects",
                          "Static ModelAsset excludes source cameras/lights; original source is retained and "
                          "editor uses a separate preview camera");
-        ctx.Diagnose(AssetDiagnosticLevel::Warning, "material-preview",
-                     "Separate Unlit base-color preview; authored PBR/Phong values and textures retained in "
+        ctx.Diagnose(AssetDiagnosticLevel::Info, "material-preview",
+                     "Ordinary PBR materials consume the converted parameters; original Phong values and independent Unlit previews are retained in "
                      "cooked assets/report");
         result.assets.push_back(
             {result.primary, "model", AssetPathText(ctx.request.source.stem()), std::move(model)});

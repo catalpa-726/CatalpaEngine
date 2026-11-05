@@ -5,6 +5,12 @@
 #include "Layer/LayerStack.h"
 #include "Window.h"
 #include "Events/ApplicationEvent.h"
+#include "Scene/SceneHandle.h"
+#include "Renderer/RenderSurface.h"
+#include "Renderer/Readback/Picking.h"
+#include "Images/ImageAsset.h"
+#include "Assets/AssetHandle.h"
+#include "Geometry/Bounds.h"
 
 namespace Catalpa {
 
@@ -41,6 +47,18 @@ namespace Catalpa {
         // 仅借用最近完成的 CPU 时间/场景快照，供沙盒诊断；下一帧可能替换内容。
         [[nodiscard]] const FrameTime& GetFrameTime() const;
         [[nodiscard]] const RenderFramePacket& GetSceneFrame() const;
+
+        // 宿主表现桥：值请求和快照，不公开 Renderer、原生窗口或 GPU 资源所有者。
+        [[nodiscard]] bool SetEditorPreview(SceneHandle scene, uint64_t viewId, Extent2D extent, std::string& error);
+        [[nodiscard]] bool GetEditorPreview(uint64_t viewId, RenderSurfaceSnapshot& surface) const;
+        void CloseEditorPreview(uint64_t viewId);
+        [[nodiscard]] bool SetEditorPreviewImage(uint64_t viewId, const AssetVersionRef<ImageAsset>& image,
+            uint32_t mip, uint32_t layer, uint32_t channelMask, std::string& error);
+        [[nodiscard]] bool RequestEditorPick(const PickingRequest& request, uint64_t& ticket, std::string& error);
+        [[nodiscard]] bool PollEditorPick(uint64_t ticket, PickingResult& result);
+        void CancelEditorPick(uint64_t ticket);
+        [[nodiscard]] bool GetGpuFrameMilliseconds(double& milliseconds) const;
+        [[nodiscard]] bool AddDebugBounds(const Aabb& bounds, const Math::Vec4& color, std::string& error, uint64_t surfaceId = 0);
 
 		// 先暂存所有权，初始化成功或当前帧结束后再挂载。
 		void PushLayer(std::unique_ptr<Layer> layer);

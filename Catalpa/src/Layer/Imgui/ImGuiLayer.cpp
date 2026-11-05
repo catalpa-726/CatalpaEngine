@@ -149,10 +149,6 @@ namespace Catalpa {
                     return { RHIErrorCode::Unsupported, 0, "ImGuiLayer::End/DrawCallback" };
                 }
                 if (command.ElemCount == 0) continue;
-                if (command.TexRef.GetTexID() != FontTextureId) {
-                    CAT_CORE_ERROR("Unsupported ImGui texture; S01 only registers the font atlas.");
-                    return { RHIErrorCode::Unsupported, 0, "ImGuiLayer::End/Texture" };
-                }
                 if (command.IdxOffset > static_cast<uint32_t>(list->IdxBuffer.Size)
                     || command.ElemCount > static_cast<uint32_t>(list->IdxBuffer.Size) - command.IdxOffset
                     || command.VtxOffset > static_cast<uint32_t>(list->VtxBuffer.Size))
@@ -162,7 +158,9 @@ namespace Catalpa {
                     .firstIndex = indexBase + command.IdxOffset,
                     .indexCount = command.ElemCount,
                     .baseVertex = vertexBase + static_cast<int32_t>(command.VtxOffset),
-                    .clipRect = { command.ClipRect.x, command.ClipRect.y, command.ClipRect.z, command.ClipRect.w }
+                    .clipRect = { command.ClipRect.x, command.ClipRect.y, command.ClipRect.z, command.ClipRect.w },
+                    // 字体使用内部零 token；其它 token 由 Renderer 注册并验证，不解释为原生地址。
+                    .textureToken = command.TexRef.GetTexID() == FontTextureId ? 0 : static_cast<uint64_t>(command.TexRef.GetTexID())
                 });
             }
         }

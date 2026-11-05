@@ -43,7 +43,7 @@ namespace Catalpa::Tools {
         for (auto ext : {".fbx", ".obj"})
             if (!r.Register(ext, assimp, e))
                 throw std::logic_error(e);
-        for (auto ext : {".png", ".jpg", ".jpeg", ".tga", ".bmp"})
+        for (auto ext : {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr"})
             if (!r.Register(ext, texture, e))
                 throw std::logic_error(e);
         return r;

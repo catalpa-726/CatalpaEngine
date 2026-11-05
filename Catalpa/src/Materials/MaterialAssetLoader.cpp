@@ -16,6 +16,24 @@ namespace Catalpa {
         return bytes;
     }
     namespace {
+        bool ReflectanceTexture(const MaterialDefinition& definition, const MaterialParameter& parameter,
+            const ImageAsset& image, std::string& error) {
+            if (definition.shadingModel != MaterialShadingModel::Pbr ||
+                parameter.textureSemantic != MaterialTextureSemantic::BaseColor ||
+                image.image.format != PixelFormat::RGBA32_Float) return true;
+            for (const auto& sub : image.image.subresources)
+                for (uint32_t y = 0; y < sub.height; ++y)
+                    for (uint32_t x = 0; x < sub.width; ++x) {
+                        std::array<float, 4> texel;
+                        std::memcpy(texel.data(), image.image.pixels.data() + sub.offset + uint64_t(y) * sub.rowPitch + uint64_t(x) * 16, 16);
+                        if (texel[0] > 1 || texel[1] > 1 || texel[2] > 1) {
+                            error = "PBR base-color texture is reflectance in [0,1]; HDR energy belongs to emissive";
+                            return false;
+                        }
+                    }
+            return true;
+        }
+
         ArchiveLimits DecodeLimits(size_t bytes) {
             ArchiveLimits limits;
             // JSON trees contain nodes/keys in addition to text. Both byte and node caps follow
@@ -53,7 +71,8 @@ namespace Catalpa {
             for (const auto& parameter : value->parameters) if (const auto* texture = std::get_if<AssetHandle<ImageAsset>>(&parameter.defaultValue); texture && texture->HasValue()) {
                 const auto dependency = std::find_if(context.dependencies.begin(), context.dependencies.end(), [&](const auto& item) { return item.id == texture->id && item.cppType == std::type_index(typeid(ImageAsset)); });
                 if (dependency == context.dependencies.end()) { if (!parameter.allowTextureFallback) { message = "Material default texture dependency is missing"; return false; } }
-                else if (!dependency->value || !ValidateMaterialTexture(parameter, *std::static_pointer_cast<const ImageAsset>(dependency->value), message)) return false;
+                else if (!dependency->value || !ValidateMaterialTexture(parameter, *std::static_pointer_cast<const ImageAsset>(dependency->value), message)
+                    || !ReflectanceTexture(*value, parameter, *std::static_pointer_cast<const ImageAsset>(dependency->value), message)) return false;
             }
             const auto bytes = MaterialDefinitionBytes(*value);
             if (bytes > context.maxResidentBytes) { message = "Material definition exceeds resident budget"; return false; }
@@ -71,12 +90,23 @@ namespace Catalpa {
             if (!payload || !AssetVersionRef<MaterialDefinition>::TryCreate(id, version, std::move(payload), reference, message)) { message = "Material instance definition version is not loaded"; return false; }
             document.reset();
             std::shared_ptr<const MaterialInstance> value; if (!ParseMaterialInstance(text, reference, value, message, DecodeLimits(context.maxResidentBytes))) return false;
+            MaterialInstance resolved = *value;
             for (const auto& parameter : value->parameters) if (const auto* texture = std::get_if<AssetHandle<ImageAsset>>(&parameter.value); texture && texture->HasValue()) {
                 const auto schema = std::find_if(value->definition.Get()->parameters.begin(), value->definition.Get()->parameters.end(), [&](const auto& item) { return item.id == parameter.parameterId; });
                 const auto dependency = std::find_if(context.dependencies.begin(), context.dependencies.end(), [&](const auto& item) { return item.id == texture->id && item.cppType == std::type_index(typeid(ImageAsset)); });
                 if (dependency == context.dependencies.end()) { if (schema == value->definition.Get()->parameters.end() || !schema->allowTextureFallback) { message = "Material instance texture dependency is missing"; return false; } }
-                else if (schema == value->definition.Get()->parameters.end() || !dependency->value || !ValidateMaterialTexture(*schema, *std::static_pointer_cast<const ImageAsset>(dependency->value), message)) return false;
+                else if (schema == value->definition.Get()->parameters.end() || !dependency->value || !ValidateMaterialTexture(*schema, *std::static_pointer_cast<const ImageAsset>(dependency->value), message)
+                    || !ReflectanceTexture(*value->definition.Get(), *schema, *std::static_pointer_cast<const ImageAsset>(dependency->value), message)) return false;
+                if (dependency != context.dependencies.end()) {
+                    constexpr std::array<std::string_view, 5> textureIds{"baseColor_texture", "normal_texture",
+                        "metallicRoughness_texture", "emissive_texture", "occlusion_texture"};
+                    const auto slot = std::find(textureIds.begin(), textureIds.end(), parameter.parameterId);
+                    if (slot != textureIds.end() && !AssetVersionRef<ImageAsset>::TryCreate(dependency->id, dependency->version,
+                        std::static_pointer_cast<const ImageAsset>(dependency->value),
+                        resolved.textureVersions[size_t(slot - textureIds.begin())], message)) return false;
+                }
             }
+            value = std::make_shared<const MaterialInstance>(std::move(resolved));
             const auto bytes = MaterialInstanceBytes(*value);
             if (bytes > context.maxResidentBytes) { message = "Material instance exceeds resident budget"; return false; }
             output = MakeAssetLoadResult<MaterialInstance>(std::move(value), bytes); return true;

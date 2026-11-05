@@ -66,4 +66,11 @@ namespace Catalpa::Tests {
     void RunAssetPipelineTests(TestContext&);
     void RunModelPreviewCameraTests(TestContext&);
     int RunS05S06Tests(); // CPU/IO：真实解析器、Cook/DDC、加载/实例化和关闭协议。
+    void RunLightingTests(TestContext&);
+    void RunEnvironmentPreprocessTests(TestContext&);
+    void RunAdvancedGraphTests(TestContext&);
+    void RunSurfaceContractsTests(TestContext&);
+    void RunEditorCommandTests(TestContext&);
+    void RunSimulationLifecycleTests(TestContext&);
+    int RunS07S09Tests(); // 联合 CPU/IO 契约；实际 GPU 画面和读回由窗口验收。
 }

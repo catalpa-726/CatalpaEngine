@@ -7,6 +7,9 @@
 #include "Renderer/RenderView.h"
 #include "Geometry/MeshData.h"
 #include "Core/Time/FrameTime.h"
+#include "Lighting/LightParameters.h"
+#include "Lighting/EnvironmentAsset.h"
+#include "Lighting/EnvironmentSettings.h"
 
 namespace Catalpa {
 
@@ -29,6 +32,20 @@ namespace Catalpa {
         std::vector<AssetVersionRef<MaterialInstance>> materials;
     };
 
+    // 光源方向为实体局部 -Z 经世界线性变换后的单位向量；不借用组件或设备对象。
+    struct RenderLight {
+        RenderInstanceId id;
+        LightParameters parameters;
+        Math::Vec3 position{};
+        Math::Vec3 direction{ 0.0f, 0.0f, -1.0f };
+    };
+
+    struct RenderEnvironment {
+        AssetHandle<EnvironmentAsset> asset;
+        EnvironmentSettings settings;
+        AssetVersionRef<EnvironmentAsset> version;
+    };
+
     // 单线程提取后向渲染方转移所有权，任何字段都不借用可变 World 内存。
     struct RenderFramePacket {
         uint64_t sequence = 0;
@@ -38,6 +55,8 @@ namespace Catalpa {
         std::vector<RenderMeshInstance> instances;
         // Runtime在场景提取完成后复制本展示帧时间，GPU参数不再借用时钟或World。
         FrameTime time;
+        std::vector<RenderLight> lights;
+        std::optional<RenderEnvironment> environment;
     };
 
 }

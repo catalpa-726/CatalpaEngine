@@ -23,6 +23,7 @@ namespace Catalpa {
                 layout == RHITextureLayout::ColorAttachment ||
                 layout == RHITextureLayout::DepthAttachment ||
                 layout == RHITextureLayout::TransferDestination ||
+                layout == RHITextureLayout::TransferSource ||
                 layout == RHITextureLayout::ShaderReadOnly ||
                 layout == RHITextureLayout::Present;
         }
@@ -186,12 +187,15 @@ namespace Catalpa {
             destinationSnapshot.presentable || copy.bufferOffset % 4 != 0)
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
-        if (copy.range != RHITextureSubresourceRange{})
+        if (copy.range.aspect != RHITextureAspect::Color || copy.range.levelCount != 1 || copy.range.layerCount != 1
+            || copy.range.baseMipLevel >= destinationSnapshot.mipLevels || copy.range.baseArrayLayer >= destinationSnapshot.arrayLayers)
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
 
         uint64_t bytes = 0;
 
-        if (!TryGetTextureUploadByteSize(destinationSnapshot.extent, destinationSnapshot.format, bytes))
+        const Extent2D mipExtent{ std::max(1u, destinationSnapshot.extent.width >> copy.range.baseMipLevel),
+            std::max(1u, destinationSnapshot.extent.height >> copy.range.baseMipLevel) };
+        if (!TryGetTextureUploadByteSize(mipExtent, destinationSnapshot.format, bytes))
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
 
         if (!IsValidBufferRange(sourceDesc.size, copy.bufferOffset, bytes))
@@ -225,7 +229,9 @@ namespace Catalpa {
         const auto* indices = Resolve(desc.indices);
         const auto* color = Resolve(desc.color);
         const auto* depth = Resolve(desc.depth);
-        if (!name || !*name || !vertices || !indices || (!color && !depth)
+        const bool indexed = desc.vertexCount == 0;
+        if (!name || !*name || (indexed && (!vertices || !indices))
+            || (!indexed && ((desc.vertices.HasValue() && !vertices) || desc.indices.HasValue())) || (!color && !depth)
             || (!color && desc.color != RGTexture{}) || (!depth && desc.depth != RGTexture{})
             || !desc.pipeline.HasValue() || desc.pipeline.device != m_Device.GetDeviceId())
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
@@ -233,7 +239,8 @@ namespace Catalpa {
         const auto validLoad = [](RHILoadOp value) { return value == RHILoadOp::Load || value == RHILoadOp::Clear || value == RHILoadOp::DontCare; };
         const auto validStore = [](RHIStoreOp value) { return value == RHIStoreOp::Store || value == RHIStoreOp::DontCare; };
         if (color) {
-            if (GetPixelFormatInfo(color->snapshot.format).isDepth
+            if (color->snapshot.mipLevels != 1 || color->snapshot.arrayLayers != 1
+                || GetPixelFormatInfo(color->snapshot.format).isDepth
                 || !HasTextureUsage(color->snapshot.usage, RHITextureUsage::ColorAttachment)
                 || !validLoad(desc.loadOp) || !validStore(desc.storeOp))
                 return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
@@ -242,7 +249,8 @@ namespace Catalpa {
                     if (!std::isfinite(value)) return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
         }
         if (depth) {
-            if (!GetPixelFormatInfo(depth->snapshot.format).isDepth || depth->snapshot.presentable
+            if (depth->snapshot.mipLevels != 1 || depth->snapshot.arrayLayers != 1
+                || !GetPixelFormatInfo(depth->snapshot.format).isDepth || depth->snapshot.presentable
                 || !HasTextureUsage(depth->snapshot.usage, RHITextureUsage::DepthAttachment)
                 || !validLoad(desc.depthLoadOp) || !validStore(desc.depthStoreOp)
                 || !std::isfinite(desc.clearDepth) || desc.clearDepth < 0.0f || desc.clearDepth > 1.0f
@@ -276,7 +284,6 @@ namespace Catalpa {
             const auto& binding = desc.sampledTextures[i];
             const auto* sampled = Resolve(binding.texture);
             if (!sampled || binding.texture == desc.color || binding.texture == desc.depth
-                || GetPixelFormatInfo(sampled->snapshot.format).isDepth
                 || !HasTextureUsage(sampled->snapshot.usage, RHITextureUsage::Sampled)
                 || !binding.sampler.HasValue() || binding.sampler.device != m_Device.GetDeviceId()
                 || binding.textureBinding == binding.samplerBinding)
@@ -284,7 +291,8 @@ namespace Catalpa {
             for (size_t j = 0; j < i; ++j) {
                 const auto& previous = desc.sampledTextures[j];
                 if (binding.textureBinding == previous.textureBinding || binding.textureBinding == previous.samplerBinding
-                    || binding.samplerBinding == previous.textureBinding || binding.samplerBinding == previous.samplerBinding)
+                    || binding.samplerBinding == previous.textureBinding
+                    || (binding.samplerBinding == previous.samplerBinding && binding.sampler != previous.sampler))
                     return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
             }
         }
@@ -309,22 +317,26 @@ namespace Catalpa {
                     return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
         }
 
-        uint32_t indexSize = 0;
-        switch (desc.indexType) {
-        case RHIIndexType::UInt16: indexSize = 2; break;
-        case RHIIndexType::UInt32: indexSize = 4; break;
-        default: return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-        }
-        const auto& vertexDesc = vertices->snapshot.desc;
-        const auto& indexDesc = indices->snapshot.desc;
-        if (!HasBufferUsage(vertexDesc.usage, RHIBufferUsage::Vertex)
-            || !HasBufferUsage(indexDesc.usage, RHIBufferUsage::Index)
-            || desc.vertexOffset >= vertexDesc.size || desc.vertexOffset % 4 != 0
-            || desc.indexOffset >= indexDesc.size || desc.indexOffset % indexSize != 0)
-            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
-        const uint64_t firstByte = static_cast<uint64_t>(desc.firstIndex) * indexSize;
-        const uint64_t byteCount = static_cast<uint64_t>(desc.indexCount) * indexSize;
-        if (!IsValidBufferRange(indexDesc.size - desc.indexOffset, firstByte, byteCount))
+        if (indexed) {
+            uint32_t indexSize = 0;
+            switch (desc.indexType) {
+            case RHIIndexType::UInt16: indexSize = 2; break;
+            case RHIIndexType::UInt32: indexSize = 4; break;
+            default: return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            }
+            const auto& vertexDesc = vertices->snapshot.desc;
+            const auto& indexDesc = indices->snapshot.desc;
+            if (!HasBufferUsage(vertexDesc.usage, RHIBufferUsage::Vertex)
+                || !HasBufferUsage(indexDesc.usage, RHIBufferUsage::Index)
+                || desc.vertexOffset >= vertexDesc.size || desc.vertexOffset % 4 != 0
+                || desc.indexOffset >= indexDesc.size || desc.indexOffset % indexSize != 0)
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            const uint64_t firstByte = static_cast<uint64_t>(desc.firstIndex) * indexSize;
+            const uint64_t byteCount = static_cast<uint64_t>(desc.indexCount) * indexSize;
+            if (!IsValidBufferRange(indexDesc.size - desc.indexOffset, firstByte, byteCount))
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        } else if (vertices && (!HasBufferUsage(vertices->snapshot.desc.usage, RHIBufferUsage::Vertex)
+            || desc.vertexOffset >= vertices->snapshot.desc.size || desc.vertexOffset % 4 != 0))
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
         if (m_Passes.size() >= GenerationalHandle<RGPassTag>::InvalidIndex || m_Passes.size() == m_Passes.max_size())
             return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
@@ -337,7 +349,8 @@ namespace Catalpa {
         constexpr const char* operation = "RenderGraphBuilder::AddClearPass";
         if (const RHIStatus status = CheckBuilding(operation); !status.IsSuccess()) return status;
         const auto* target = Resolve(color);
-        if (!name || !*name || !target || GetPixelFormatInfo(target->snapshot.format).isDepth
+        if (!name || !*name || !target || target->snapshot.mipLevels != 1 || target->snapshot.arrayLayers != 1
+            || GetPixelFormatInfo(target->snapshot.format).isDepth
             || !HasTextureUsage(target->snapshot.usage, RHITextureUsage::ColorAttachment))
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
         for (const float value : clearColor)
@@ -345,6 +358,21 @@ namespace Catalpa {
         if (m_Passes.size() >= GenerationalHandle<RGPassTag>::InvalidIndex || m_Passes.size() == m_Passes.max_size())
             return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
         m_Passes.push_back({ .name = name, .kind = PassKind::Clear, .clearTexture = color, .clearColor = clearColor });
+        return {};
+    }
+
+    RHIStatus RenderGraphBuilder::AddDepthClearPass(const char* name, RGTexture depth, float clearDepth)
+    {
+        constexpr const char* operation = "RenderGraphBuilder::AddDepthClearPass";
+        if (const auto status = CheckBuilding(operation); !status.IsSuccess()) return status;
+        const auto* target = Resolve(depth);
+        if (!name || !*name || !target || !GetPixelFormatInfo(target->snapshot.format).isDepth
+            || !HasTextureUsage(target->snapshot.usage, RHITextureUsage::DepthAttachment)
+            || !std::isfinite(clearDepth) || clearDepth < 0.0f || clearDepth > 1.0f
+            || target->snapshot.mipLevels != 1 || target->snapshot.arrayLayers != 1)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        m_Passes.push_back({ .name = name, .kind = PassKind::Clear,
+            .draw = { .clearDepth = clearDepth }, .clearTexture = depth });
         return {};
     }
 
@@ -359,6 +387,69 @@ namespace Catalpa {
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
         m_Present = resource;
+        return {};
+    }
+
+    // 无呈现目标的离屏图也必须显式导出，防止预览 pass 被当作死写剔除。
+    RHIStatus RenderGraphBuilder::ExportTexture(RGTexture resource)
+    {
+        constexpr const char* operation = "RenderGraphBuilder::ExportTexture";
+        if (const auto status = CheckBuilding(operation); !status.IsSuccess()) return status;
+        const auto* texture = Resolve(resource);
+        if (!texture || texture->snapshot.presentable || !HasTextureUsage(texture->snapshot.usage, RHITextureUsage::Sampled)
+            || std::find(m_ReadbackExports.begin(), m_ReadbackExports.end(), resource) != m_ReadbackExports.end())
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        if (std::find(m_Exports.begin(), m_Exports.end(), resource) == m_Exports.end()) m_Exports.push_back(resource);
+        return {};
+    }
+
+    RHIStatus RenderGraphBuilder::ExportReadbackTexture(RGTexture resource)
+    {
+        constexpr const char* operation = "RenderGraphBuilder::ExportReadbackTexture";
+        if (const auto status = CheckBuilding(operation); !status.IsSuccess()) return status;
+        const auto* texture = Resolve(resource);
+        if (!texture || texture->snapshot.presentable || !HasTextureUsage(texture->snapshot.usage, RHITextureUsage::TransferSource)
+            || std::find(m_Exports.begin(), m_Exports.end(), resource) != m_Exports.end())
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        if (std::find(m_ReadbackExports.begin(), m_ReadbackExports.end(), resource) == m_ReadbackExports.end())
+            m_ReadbackExports.push_back(resource);
+        return {};
+    }
+
+    RHIStatus RenderGraphBuilder::SetTimestampQueries(std::shared_ptr<RHIQueryPool> pool)
+    {
+        constexpr const char* operation = "RenderGraphBuilder::SetTimestampQueries";
+        if (const auto status = CheckBuilding(operation); !status.IsSuccess()) return status;
+        if (!pool || pool->GetDeviceId() != m_Device.GetDeviceId() || pool->GetCount() < 2)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        m_Queries = std::move(pool);
+        return {};
+    }
+
+    RHIStatus RenderGraphBuilder::AddTextureReadbackPass(const char* name, RGTexture source,
+        RGBuffer destination, const RHITextureBufferCopy& copy)
+    {
+        constexpr const char* operation = "RenderGraphBuilder::AddTextureReadbackPass";
+        if (const auto status = CheckBuilding(operation); !status.IsSuccess()) return status;
+        const auto* texture = Resolve(source);
+        const auto* buffer = Resolve(destination);
+        if (!name || !*name || !texture || !buffer || buffer->snapshot.desc.memory != RHIMemoryDomain::Readback
+            || !HasTextureUsage(texture->snapshot.usage, RHITextureUsage::TransferSource)
+            || !HasBufferUsage(buffer->snapshot.desc.usage, RHIBufferUsage::TransferDestination)
+            || copy.range.aspect != RHITextureAspect::Color || copy.range.levelCount != 1 || copy.range.layerCount != 1
+            || copy.range.baseMipLevel >= texture->snapshot.mipLevels || copy.range.baseArrayLayer >= texture->snapshot.arrayLayers
+            || copy.textureOffset.x < 0 || copy.textureOffset.y < 0 || copy.bufferOffset % 4 != 0)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        const Extent2D extent{ std::max(1u, texture->snapshot.extent.width >> copy.range.baseMipLevel),
+            std::max(1u, texture->snapshot.extent.height >> copy.range.baseMipLevel) };
+        uint64_t bytes = 0;
+        if (!TryGetTextureUploadByteSize(copy.extent, texture->snapshot.format, bytes)
+            || uint32_t(copy.textureOffset.x) > extent.width || copy.extent.width > extent.width - uint32_t(copy.textureOffset.x)
+            || uint32_t(copy.textureOffset.y) > extent.height || copy.extent.height > extent.height - uint32_t(copy.textureOffset.y)
+            || !IsValidBufferRange(buffer->snapshot.desc.size, copy.bufferOffset, bytes))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        m_Passes.push_back({ .name = name, .kind = PassKind::TextureReadback, .destination = destination,
+            .textureBytes = bytes, .sourceTexture = source, .readbackCopy = copy });
         return {};
     }
 
@@ -400,8 +491,10 @@ namespace Catalpa {
             resources.push_back({ .kind = RGResourceKind::Buffer, .size = buffer.snapshot.desc.size,
                 .initialized = buffer.snapshot.state.initialized });
         for (const auto& texture : m_Textures) {
-            RGResourceDeclaration resource{ .kind = RGResourceKind::Texture, .size = 1 };
-            if (texture.snapshot.state.initialized) resource.initialized.push_back({ .offset = 0, .size = 1 });
+            RGResourceDeclaration resource{ .kind = RGResourceKind::Texture,
+                .size = uint64_t(texture.snapshot.mipLevels) * texture.snapshot.arrayLayers };
+            if (texture.snapshot.state.initialized) resource.initialized.push_back({ .offset = 0, .size = resource.size });
+            else resource.initialized = texture.snapshot.state.initializedSubresources;
             resources.push_back(std::move(resource));
         }
         const auto textureIndex = [&](RGTexture texture) {
@@ -410,13 +503,15 @@ namespace Catalpa {
         for (const auto& pass : m_Passes) {
             RGPassDeclaration declaration;
             // UploadManager 在整批提交后统一认领已上传资源，两类复制均为不可剔除副作用。
-            declaration.sideEffect = pass.kind == PassKind::Copy || pass.kind == PassKind::TextureUpload;
+            declaration.sideEffect = pass.kind == PassKind::Copy || pass.kind == PassKind::TextureUpload
+                || pass.kind == PassKind::TextureReadback;
             const auto readBuffer = [&](RGBuffer buffer, uint64_t offset, uint64_t size) {
                 if (size != 0) declaration.accesses.push_back({ .resource = buffer.slot.index, .offset = offset, .size = size });
             };
             const auto attachment = [&](RGTexture texture, RHILoadOp load, RHIStoreOp store, bool readOnly) {
                 if (!texture.HasValue()) return;
-                declaration.accesses.push_back({ .resource = textureIndex(texture), .size = 1,
+                declaration.accesses.push_back({ .resource = textureIndex(texture),
+                    .size = uint64_t(m_Textures[texture.slot.index].snapshot.mipLevels) * m_Textures[texture.slot.index].snapshot.arrayLayers,
                     .mode = readOnly ? RGAccessMode::Read : load == RHILoadOp::Load ? RGAccessMode::ReadWrite : RGAccessMode::Write,
                     .initialization = readOnly ? RGWriteInitialization::Preserve
                         : store == RHIStoreOp::DontCare || load == RHILoadOp::DontCare ? RGWriteInitialization::Discard
@@ -431,7 +526,15 @@ namespace Catalpa {
                 break;
             case PassKind::TextureUpload:
                 readBuffer(pass.source, pass.textureCopy.bufferOffset, pass.textureBytes);
-                declaration.accesses.push_back({ .resource = textureIndex(pass.destinationTexture), .size = 1,
+                declaration.accesses.push_back({ .resource = textureIndex(pass.destinationTexture),
+                    .offset = uint64_t(pass.textureCopy.range.baseArrayLayer) * m_Textures[pass.destinationTexture.slot.index].snapshot.mipLevels + pass.textureCopy.range.baseMipLevel, .size = 1,
+                    .mode = RGAccessMode::Write, .initialization = RGWriteInitialization::Initialize });
+                break;
+            case PassKind::TextureReadback:
+                declaration.accesses.push_back({ .resource = textureIndex(pass.sourceTexture),
+                    .offset = uint64_t(pass.readbackCopy.range.baseArrayLayer) * m_Textures[pass.sourceTexture.slot.index].snapshot.mipLevels + pass.readbackCopy.range.baseMipLevel, .size = 1 });
+                declaration.accesses.push_back({ .resource = pass.destination.slot.index,
+                    .offset = pass.readbackCopy.bufferOffset, .size = pass.textureBytes,
                     .mode = RGAccessMode::Write, .initialization = RGWriteInitialization::Initialize });
                 break;
             case PassKind::Clear:
@@ -439,7 +542,9 @@ namespace Catalpa {
                 break;
             case PassKind::Draw: {
                 const auto& draw = pass.draw;
-                if (draw.indexCount != 0 && draw.instanceCount != 0) {
+                if (draw.vertexCount != 0 && draw.instanceCount != 0 && draw.vertices.HasValue())
+                    readBuffer(draw.vertices, draw.vertexOffset, m_Buffers[draw.vertices.slot.index].snapshot.desc.size - draw.vertexOffset);
+                if (draw.vertexCount == 0 && draw.indexCount != 0 && draw.instanceCount != 0) {
                     readBuffer(draw.vertices, draw.vertexOffset, m_Buffers[draw.vertices.slot.index].snapshot.desc.size - draw.vertexOffset);
                     const uint64_t indexSize = draw.indexType == RHIIndexType::UInt16 ? 2u : 4u;
                     readBuffer(draw.indices, draw.indexOffset + static_cast<uint64_t>(draw.firstIndex) * indexSize,
@@ -447,7 +552,8 @@ namespace Catalpa {
                 }
                 for (const auto& uniform : draw.uniformBuffers) readBuffer(uniform.buffer, uniform.offset, uniform.size);
                 for (const auto& sampled : draw.sampledTextures)
-                    declaration.accesses.push_back({ .resource = textureIndex(sampled.texture), .size = 1 });
+                    declaration.accesses.push_back({ .resource = textureIndex(sampled.texture),
+                        .size = uint64_t(m_Textures[sampled.texture.slot.index].snapshot.mipLevels) * m_Textures[sampled.texture.slot.index].snapshot.arrayLayers });
                 attachment(draw.color, draw.loadOp, draw.storeOp, false);
                 attachment(draw.depth, draw.depthLoadOp, draw.depthStoreOp, draw.depthReadOnly);
                 break;

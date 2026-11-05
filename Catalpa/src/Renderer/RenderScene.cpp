@@ -3,6 +3,8 @@
 #include "Camera/CameraProjection.h"
 #include "Geometry/MeshValidation.h"
 #include "Materials/MaterialValidation.h"
+#include "Lighting/LightValidation.h"
+#include "Renderer/Lighting/LightData.h"
 
 
 namespace Catalpa {
@@ -47,7 +49,8 @@ namespace Catalpa {
     {
         if (packet.sequence == 0 || packet.sequence <= m_Frame.sequence)
             return { Math::MathError::OutOfRange, "Render frame sequence is stale or invalid" };
-        if (packet.sceneIdentity == 0 && (!packet.transforms.empty() || !packet.views.empty() || !packet.instances.empty()))
+        if (packet.sceneIdentity == 0 && (!packet.transforms.empty() || !packet.views.empty()
+            || !packet.instances.empty() || !packet.lights.empty() || packet.environment))
             return { Math::MathError::OutOfRange, "Render frame records require a source scene identity" };
         const auto& time = packet.time;
         if (!std::isfinite(time.realDeltaSeconds) || time.realDeltaSeconds < 0.0
@@ -68,6 +71,8 @@ namespace Catalpa {
                     return { Math::MathError::NonAffine, "Render transform must preserve the affine world convention" };
             }
             std::set<RenderInstanceId> geometryInstances;
+            uint64_t additiveTriangles = 0;
+            constexpr uint64_t maximumAdditiveTriangles = 1'000'000;
             for (const auto& instance : packet.instances) {
                 if (instance.id.scene != packet.sceneIdentity || !instances.contains(instance.id)
                     || !geometryInstances.insert(instance.id).second)
@@ -87,6 +92,20 @@ namespace Catalpa {
                     for (const auto& material : instance.materials)
                         if (!material.HasValue() || !ValidateMaterialInstance(*material.Get(), error))
                             return { Math::MathError::OutOfRange, "Material snapshot requires a validated fixed version" };
+                    for (const auto& material : instance.materials)
+                        if (material.Get()->definition.Get()->shadingModel == MaterialShadingModel::Pbr
+                            && (instance.color.x > 1 || instance.color.y > 1 || instance.color.z > 1))
+                            return { Math::MathError::OutOfRange, "PBR instance tint is reflectance in [0,1]; HDR energy belongs in emissive" };
+                    if (instance.color.x > 1.0e8f || instance.color.y > 1.0e8f || instance.color.z > 1.0e8f)
+                        return { Math::MathError::OutOfRange, "Surface instance tint exceeds the explicit 1e8 finite shading budget" };
+                    // 单submesh可包含重叠三角形；按所有潜在Additive三角形计预算，不能只数draw。
+                    for (const auto& submesh : instance.mesh->GetData().submeshes)
+                        if (instance.materials[submesh.materialSlot].Get()->renderState.blend == MaterialBlendMode::Additive) {
+                            const uint64_t count = submesh.indexCount / 3;
+                            if (count > maximumAdditiveTriangles - additiveTriangles)
+                                return { Math::MathError::OutOfRange, "Frame exceeds the explicit one-million Additive triangle budget" };
+                            additiveTriangles += count;
+                        }
                 } else if (!instance.materials.empty())
                     return { Math::MathError::OutOfRange, "Material snapshot requires mesh asset identity" };
                 RenderMeshInstance expected;
@@ -107,6 +126,45 @@ namespace Catalpa {
                             return { Math::MathError::OutOfRange, "Mesh world bounds are not conservative" };
             }
             std::set<uint64_t> views;
+            if (packet.lights.size() > MaximumRenderLights)
+                return { Math::MathError::OutOfRange, "Render light count exceeds the explicit 32-light budget" };
+            std::set<RenderInstanceId> lightIds;
+            for (const auto& light : packet.lights) {
+                std::string error;
+                if (!instances.contains(light.id) || !lightIds.insert(light.id).second
+                    || !ValidateLightParameters(light.parameters, error))
+                    return { Math::MathError::OutOfRange, "Render light identity or parameters are invalid" };
+                double length2 = 0;
+                for (int axis = 0; axis < 3; ++axis) {
+                    if (!std::isfinite(light.position[axis]) || !std::isfinite(light.direction[axis]))
+                        return { Math::MathError::NonFinite, "Render light position or direction is not finite" };
+                    length2 += double(light.direction[axis]) * light.direction[axis];
+                }
+                if (std::abs(length2 - 1.0) > 2.0e-4)
+                    return { Math::MathError::OutOfRange, "Render light direction must have unit length" };
+                const auto source = std::find_if(packet.transforms.begin(), packet.transforms.end(),
+                    [&](const auto& transform) { return transform.id == light.id; });
+                Math::Vec3 direction;
+                if (!TryGetWorldLightDirection(source->worldMatrix, direction))
+                    return { Math::MathError::OutOfRange, "Render light source direction is degenerate" };
+                for (int axis = 0; axis < 3; ++axis)
+                    if (light.position[axis] != source->worldMatrix[3][axis]
+                        || std::abs(light.direction[axis] - direction[axis]) > 2.0e-5f)
+                        return { Math::MathError::OutOfRange, "Render light and source transform snapshot disagree" };
+            }
+            if (packet.environment) {
+                std::string error;
+                if (!ValidateEnvironmentSettings(packet.environment->settings, error))
+                    return { Math::MathError::OutOfRange, "Render environment settings are invalid" };
+                const auto& version = packet.environment->version;
+                if (version.HasValue()) {
+                    if (version.GetId() != packet.environment->asset.id)
+                        return { Math::MathError::OutOfRange, "Render environment fixed version identity disagrees with its handle" };
+                    if ((!m_Frame.environment || m_Frame.environment->version.Get() != version.Get())
+                        && !ValidateEnvironmentAsset(*version.Get(), error))
+                        return { Math::MathError::OutOfRange, "Render environment fixed version is invalid" };
+                }
+            }
             for (const auto& view : packet.views) {
                 if (view.id == 0 || view.historyRevision == 0 || !views.insert(view.id).second
                     || !view.camera.HasValue() || view.camera.scene != packet.sceneIdentity || !instances.contains(view.camera))

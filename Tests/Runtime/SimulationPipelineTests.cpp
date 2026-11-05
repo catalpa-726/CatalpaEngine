@@ -10,12 +10,42 @@
 #include "Renderer/RenderScene.h"
 #include "Scene/Components/MeshRendererComponent.h"
 #include "Scene/Components/CameraComponent.h"
+#include "Scene/Components/LightComponent.h"
 #include "Geometry/PrimitiveMesh.h"
 #include <cmath>
 #include <limits>
 #include <memory>
 
 namespace Catalpa::Tests {
+    namespace {
+        // 世界轴长 1e25 仍可表示，长度平方已超出 float；提取与快照复核须保留同一单位方向。
+        void CheckScaledLightExtraction(SceneManager& scenes, TestContext& test)
+        {
+            SceneHandle handle;
+            const auto created = scenes.CreateScene("Scaled light", handle);
+            auto* scene = created.IsSuccess() ? scenes.GetScene(handle) : nullptr;
+            test.Check(scene != nullptr, "Create a scene for the scaled light");
+            if (!scene) return;
+
+            const auto id = PersistentEntityId::FromWords(7, 41);
+            Math::TransformTRS pose;
+            pose.scale.z = 1.0e25f;
+            const bool ready = scene->QueueCreate(id, "Sun", pose).IsSuccess()
+                && scene->CommitPending().IsSuccess()
+                && scene->QueueSetLight(scene->Resolve(id), LightComponent{}).IsSuccess()
+                && scene->CommitPending().IsSuccess() && TransformSystem::Update(*scene).IsSuccess();
+            test.Check(ready, "Prepare a directional light with finite world scale");
+            if (!ready) return;
+
+            RenderFramePacket packet;
+            RenderScene consumer;
+            test.Check(RenderExtractSystem::Extract(*scene, 1, 0, 0, packet).IsSuccess()
+                && packet.lights.size() == 1 && packet.lights.front().direction == Math::Vec3(0, 0, -1)
+                && consumer.Apply(std::move(packet)).IsSuccess(),
+                "Large finite world scale preserves the -Z light direction through extraction and consumption");
+        }
+    }
+
     // 验证真实模块注册/场景安全点/提取所有权的连接，使用 CPU 服务而非模拟 GPU。
     void RunSimulationPipelineTests(TestContext& test)
     {
@@ -65,6 +95,7 @@ namespace Catalpa::Tests {
         RenderFramePacket empty;
         empty.sequence = 2;
         test.Check(render.Apply(std::move(empty)).IsSuccess() && render.GetFrame().transforms.empty(), "New empty frame clears unloaded source");
+        CheckScaledLightExtraction(scenes, test);
     }
 
     // 以真实Scene命令/提取/消费链验证共享CPU几何，不创建窗口或GPU。

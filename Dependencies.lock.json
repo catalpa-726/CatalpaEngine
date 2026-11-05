@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scope": "Verified GLM, EnTT, enkiTS and SPIRV-Reflect source archives plus an observed external Vulkan SDK toolchain; the full existing dependency inventory remains incomplete (B01).",
+  "scope": "Verified GLM, EnTT, enkiTS and SPIRV-Reflect source archives, the compiled files and license of user-provided ImGuizmo, plus an observed external Vulkan SDK toolchain; the full existing dependency inventory remains incomplete (B01).",
   "acquiredOn": "2026-11-04",
   "sourceTreeHashAlgorithm": "sha256 of sorted UTF-8 records: relative POSIX path + NUL + lowercase file sha256 + LF; includes every extracted archive file.",
   "dependencies": [
@@ -160,6 +160,54 @@
         "additionalLinkedDependencies": [],
         "runtimeLibrary": "dynamic; inherits workspace configuration",
         "validation": "Dependency batch was user-verified on 2026-11-05 (VS2022/v143 Debug/x64). New S04 production consumers are implemented and statically reviewed; full chapter generation/build/CPU/GPU verification remains pending user execution."
+      }
+    },
+    {
+      "name": "ImGuizmo",
+      "version": "upstream snapshot; header v1.92.5 WIP",
+      "repository": "https://github.com/CedricGuillemet/ImGuizmo",
+      "path": "Catalpa/third_party/ImGuizmo",
+      "acquisition": {
+        "method": "user-provided-directory",
+        "providedOn": "2026-11-05",
+        "assistantDownloadedOrReplacedFiles": false,
+        "archiveAndFullTreeVerified": false
+      },
+      "versionEvidence": {
+        "referenceCommit": "105e4fde45e4e74aae8973d98750820ef7aca7e2",
+        "comparison": "Only src/ImGuizmo.cpp, src/ImGuizmo.h and LICENSE match this commit after CRLF-to-LF normalization in memory. Local files remain unchanged; this is not a full source-tree verification.",
+        "files": [
+          {
+            "path": "src/ImGuizmo.cpp",
+            "sha256": "de145c13b2677741d86e49c1993d5b66f557cb3cf01b7d4880b98d9202507848"
+          },
+          {
+            "path": "src/ImGuizmo.h",
+            "sha256": "c513278797229ee61ad6c5c769a56948a7adf5034d3cac975243a079e0280e99"
+          },
+          {
+            "path": "LICENSE",
+            "sha256": "aad1f9df039fb26d448bb398cf6f09f5e480617e05f41f2afc3b996959759eda"
+          }
+        ]
+      },
+      "license": {
+        "selected": "MIT",
+        "file": "LICENSE"
+      },
+      "integration": {
+        "mode": "single-upstream-translation-unit-in-existing-shared-library",
+        "project": "Catalpa",
+        "buildHelper": "Script/Build/ImGui.lua",
+        "includeRoot": "Catalpa/third_party/ImGuizmo/src",
+        "compiledSources": [ "src/ImGuizmo.cpp" ],
+        "consumers": [ "CatalpaEditor TransformGizmo; preview, commit-on-release and cancel through TransformDrag/CommandHistory" ],
+        "submoduleMetadataDeclared": true,
+        "gitlinkRegistration": "not performed or inspected by assistant",
+        "upstreamSourceModifiedByAssistant": false,
+        "additionalLinkedDependencies": [ "existing imgui implementation in Catalpa.dll" ],
+        "runtimeLibrary": "dynamic; inherits workspace configuration",
+        "validation": "Build integration and the implemented Gizmo matrix/command lifecycle were statically reviewed. VS2022/v143 Debug/x64 generation, compilation and runtime regression await user verification; static review does not establish native runtime success."
       }
     }
   ],

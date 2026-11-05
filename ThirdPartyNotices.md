@@ -55,3 +55,11 @@ S03.1-B 历史获取记录：当时优先尝试完整 Git 克隆，未完成后�
 `.gitignore` 忽略两个完整源码目录，`.gitmodules` 声明官方仓库与路径；声明不等于 gitlink 注册。锁文件仍记录 `submodule=false` 和真实 archive 获取方式，本批没有 Git 操作、提交或推送证据。新克隆仅靠这两个声明不能自动恢复 archive；按锁文件固定 URL、目标目录与校验值还原，或由用户以后明确建立真实子模块。
 
 本章消费接线：enkiTS用于Catalpa内部JobSystem的真实worker任务；SPIRV-Reflect仅由Tools/ShaderCompiler链接。Slang.lua递归追踪输入，在Box完成链接后调用共享工具命令执行受锁定工具、校验及反射；正常Runtime只消费cooked资产。以上新消费链待用户整章Debug验收，不扩大依赖准备批通过证据。上游文件、版本、许可及忽略规则未改变。
+
+## ImGuizmo 用户供包（2026-11-05）
+
+- 官方仓库：[CedricGuillemet/ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo)。完整本地目录为 `Catalpa/third_party/ImGuizmo/`，用户已提供；助手未下载、替换或修改上游文件。
+- 本地头标记 `v1.92.5 WIP`。仅核对参与编译的 `src/ImGuizmo.cpp`、`src/ImGuizmo.h` 与 `LICENSE`：在内存中统一换行后，三者与官方提交 [105e4fde45e4e74aae8973d98750820ef7aca7e2](https://github.com/CedricGuillemet/ImGuizmo/commit/105e4fde45e4e74aae8973d98750820ef7aca7e2) 相同。原始文件的 SHA-256 见锁文件；保留本地 CRLF，不将此记录扩张为全包校验或发布标签确认。
+- MIT 许可与原始版权保留在 [LICENSE](Catalpa/third_party/ImGuizmo/LICENSE)；源码头保留 Cedric Guillemet 及贡献者声明。分发时携带完整许可。
+- 复用 `Script/Build/ImGui.lua`，只将 `src/ImGuizmo.cpp` 编入现有 Catalpa.dll；该文件单独关闭 PCH 并设置 Windows 导出宏。CatalpaEditor 使用同一 DLL 的导入接口和现有 ImGui 上下文。上游示例、额外控件与 CMake 不参与构建，不引入第二份 ImGui。
+- `.gitignore` 忽略用户供包源码，`.gitmodules` 仅声明路径和官方仓库；助手未执行 Git，也未确认 gitlink、暂存、提交或推送状态。后续联合功能批已实现 TransformGizmo 的矩阵适配、连续预览、释放提交与取消恢复，复用 TransformDrag/CommandHistory；仅完成静态审阅，生成、编译与原生交互仍待用户验证。

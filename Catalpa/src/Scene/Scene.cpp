@@ -72,6 +72,21 @@ namespace Catalpa {
         catch (const std::bad_alloc&) { return { WorldError::AllocationFailed, "Cannot capture subtree destruction" }; }
     }
 
+    WorldStatus Scene::QueueSetName(EntityId entity, std::string_view name) try {
+        if (name.size() > 65536 || name.find('\0') != std::string_view::npos)
+            return {WorldError::InvalidArgument, "Entity name must fit the string author field"};
+        IdentityComponent value;
+        if (const auto status = GetIdentity(entity, value); !status.IsSuccess()) return status;
+        value.name = name;
+        if (m_ComponentSchemas) {
+            ArchiveValue fields{ArchiveValue::Object{
+                {"schemaVersion", ArchiveValue{uint64_t(1)}}, {"persistent_id", ArchiveValue{value.persistent.ToString()}},
+                {"name", ArchiveValue{value.name}}}};
+            if (const auto status = ValidateComponent("catalpa.identity", fields); !status.IsSuccess()) return status;
+        }
+        return m_Commands.Enqueue([entity, value = std::move(value)](World& world) { return world.Set(entity, value); });
+    } catch (const std::bad_alloc&) { return {WorldError::AllocationFailed, "Cannot capture entity name"}; }
+
     WorldStatus Scene::QueueSetLocal(EntityId entity, const Math::TransformTRS& local) {
         try {
             if(m_ComponentSchemas)if(const auto status=ValidateComponent("catalpa.transform",TransformAuthorFields(local));!status.IsSuccess())return status;
@@ -97,10 +112,23 @@ namespace Catalpa {
     WorldStatus Scene::QueueSetCamera(EntityId entity, const CameraComponent& camera) {
         if (const auto status = ValidateCameraLens(camera.lens); !status.IsSuccess()) return { WorldError::InvalidArgument, status.message };
         if (camera.viewId == 0 || camera.historyRevision == 0) return { WorldError::InvalidArgument, "Camera view identity and history revision must be nonzero" };
-        try { return m_Commands.Enqueue([this, entity, camera](World& world) {
-            if (const auto status = ValidateEntity(entity); !status.IsSuccess()) return status;
-            return world.Has<CameraComponent>(entity) ? world.Set(entity, camera) : world.Add(entity, camera);
-        }); } catch (const std::bad_alloc&) { return { WorldError::AllocationFailed, "Cannot capture camera change" }; }
+        try {
+            if (m_ComponentSchemas) {
+                const auto& lens = camera.lens;
+                ArchiveValue fields{ArchiveValue::Object{
+                    {"schemaVersion",ArchiveValue{uint64_t(1)}}, {"projection",ArchiveValue{uint64_t(lens.projection)}},
+                    {"vertical_fov",ArchiveValue{double(lens.verticalFovRadians)}}, {"near_plane",ArchiveValue{double(lens.nearPlane)}},
+                    {"far_plane",ArchiveValue{double(lens.farPlane)}}, {"orthographic_height",ArchiveValue{double(lens.orthographicHeight)}},
+                    {"infinite_far",ArchiveValue{lens.infiniteFar}}, {"reversed_z",ArchiveValue{lens.reversedZ}},
+                    {"enabled",ArchiveValue{camera.enabled}}, {"priority",ArchiveValue{int64_t(camera.priority)}},
+                    {"view_id",ArchiveValue{camera.viewId}}, {"history_revision",ArchiveValue{camera.historyRevision}}}};
+                if (const auto status = ValidateComponent("catalpa.camera",fields); !status.IsSuccess()) return status;
+            }
+            return m_Commands.Enqueue([this, entity, camera](World& world) {
+                if (const auto status = ValidateEntity(entity); !status.IsSuccess()) return status;
+                return world.Has<CameraComponent>(entity) ? world.Set(entity, camera) : world.Add(entity, camera);
+            });
+        } catch (const std::bad_alloc&) { return { WorldError::AllocationFailed, "Cannot capture camera change" }; }
     }
 
     WorldStatus Scene::QueueRemoveCamera(EntityId entity) {

@@ -128,6 +128,24 @@ namespace Catalpa::Tests {
                  context.GetFailureCount());
         return context.GetFailureCount() == 0 ? 0 : 1;
     }
+    int RunS07S09Tests()
+    {
+        CAT_INFO("[S07-S09 CPU/IO] Lighting/IBL, frame ABI, offscreen/readback contracts and editor transactions. No window/GPU initialization.");
+        TestContext context("S07-S09 CPU/IO");
+        try {
+            context.Check(RunS05S06Tests() == 0, "Existing CPU/IO regression remains valid");
+            RunLightingTests(context);
+            RunEnvironmentPreprocessTests(context);
+            RunAdvancedGraphTests(context);
+            RunSurfaceContractsTests(context);
+            RunEditorCommandTests(context);
+            RunSimulationLifecycleTests(context);
+        } catch (const std::exception& error) { context.Check(false, error.what()); }
+        catch (...) { context.Check(false, "Unexpected non-standard exception"); }
+        CAT_INFO("[S07-S09 CPU/IO] {0} checks, {1} failures.", context.GetCheckCount(), context.GetFailureCount());
+        return context.GetFailureCount() == 0 ? 0 : 1;
+    }
+
     int RunS04Tests()
     {
         CAT_INFO("[S04 CPU/IO] Unified identity, schemas, cooked shader ABI, owned GPU-cache contracts, jobs and async versions. No window/GPU initialization.");

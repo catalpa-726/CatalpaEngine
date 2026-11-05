@@ -7,6 +7,7 @@
 #include "RHICommandTypes.h"
 #include "RHIResourceState.h"
 #include "RHIBindingDesc.h"
+#include "RHIQueryDesc.h"
 
 // 提供不包含 Vulkan 类型的命令录制接口
 namespace Catalpa {
@@ -20,6 +21,12 @@ namespace Catalpa {
         // 命令列表录制边界。
         [[nodiscard]] virtual RHIStatus Begin() = 0;
         [[nodiscard]] virtual RHIStatus End() = 0;
+
+        // 时间戳由帧槽独占；Reset 必须在 rendering scope 之外，结果读取不阻塞队列。
+        [[nodiscard]] virtual RHIStatus ResetQueries(const std::shared_ptr<RHIQueryPool>&, uint32_t, uint32_t)
+        { return { .code = RHIErrorCode::Unsupported, .operation = "RHICommandList::ResetQueries" }; }
+        [[nodiscard]] virtual RHIStatus WriteTimestamp(const std::shared_ptr<RHIQueryPool>&, uint32_t, bool)
+        { return { .code = RHIErrorCode::Unsupported, .operation = "RHICommandList::WriteTimestamp" }; }
 
         // Begin 后、首个资源命令前设置一次；实现持有更新副本及资源引用。
         // 访问声明须与实际录制一致，设置失败后不得继续提交。
@@ -61,6 +68,10 @@ namespace Catalpa {
 
         // 在 rendering scope 外复制整幅颜色纹理；访问屏障由调用方提供。
         [[nodiscard]] virtual RHIStatus CopyBufferToTexture(BufferHandle source, TextureViewHandle destination, const RHIBufferTextureCopy& copy) = 0;
+
+        // 在渲染段外复制，不能借此替代显式 TransferSource/HostRead 访问依赖。
+        [[nodiscard]] virtual RHIStatus CopyTextureToBuffer(TextureViewHandle, BufferHandle, const RHITextureBufferCopy&)
+        { return { .code = RHIErrorCode::Unsupported, .operation = "RHICommandList::CopyTextureToBuffer" }; }
 
         // 当前支持 binding 0 的单个交错顶点流。
         [[nodiscard]] virtual RHIStatus BindVertexBuffer(uint32_t binding, BufferHandle buffer, uint64_t offset = 0) = 0;

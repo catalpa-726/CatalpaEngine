@@ -134,7 +134,7 @@ namespace Catalpa::Tests {
         const std::array forgedHazard{ RGDependency{ .before = 0, .after = 0, .kind = RGDependencyKind::RAW } };
         test.Check(!compile(forgedHazard).IsSuccess(), "Callers cannot forge compiler-generated hazard edges");
         resources[0].kind = RGResourceKind::Texture;
-        test.Check(!compile().IsSuccess(), "Texture declarations reject unsupported multiple-subresource ranges");
+        test.Check(compile().IsSuccess(), "Texture declarations support explicitly initialized mip/layer subresource index ranges");
         resources = { { .size = 64, .initialized = { { .offset = 63, .size = 2 } } } };
         test.Check(!compile().IsSuccess(), "Malformed imported initialized ranges are rejected");
     }

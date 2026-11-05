@@ -160,6 +160,39 @@ namespace Catalpa {
         default: break;
         }
         if (!valid) { error = "Material parameter type/range/reference mismatch: " + parameter.id; return false; }
+        // 公用普通材质字段另有领域约束，不能依赖作者可省略的min/max或等待GPU阶段报错。
+        if (parameter.id == "base_color") {
+            const auto* color = std::get_if<std::array<float, 4>>(&value);
+            valid = color && (*color)[3] >= 0 && (*color)[3] <= 1 &&
+                std::all_of(color->begin(), color->end(), [](float number) { return number >= 0 && number <= 1e8f; });
+        } else if (parameter.id == "emissive") {
+            const auto* color = std::get_if<std::array<float, 3>>(&value);
+            valid = color && std::all_of(color->begin(), color->end(), [](float number) { return number >= 0 && number <= 1e8f; });
+        } else if (parameter.id == "normal_scale") {
+            const auto* scale = std::get_if<float>(&value);
+            valid = scale && std::abs(*scale) <= 1e8f;
+        } else if (parameter.id == "uv_scale_offset") {
+            const auto* transform = std::get_if<std::array<float, 4>>(&value);
+            valid = transform && std::all_of(transform->begin(), transform->end(), [](float number) { return std::abs(number) <= 1e8f; });
+        } else if (parameter.id == "metallic" || parameter.id == "roughness" || parameter.id == "occlusion_strength") {
+            const auto* number = std::get_if<float>(&value);
+            valid = number && *number >= 0 && *number <= 1;
+        } else if (parameter.id == "alpha_cutoff") {
+            const auto* number = std::get_if<float>(&value);
+            valid = number && *number >= 0;
+        } else if (parameter.id == "uv_cycles") {
+            const auto* cycles = std::get_if<std::array<float, 2>>(&value);
+            valid = cycles && std::all_of(cycles->begin(), cycles->end(), [](float number) {
+                return std::abs(number) <= 65536 && std::trunc(number) == number;
+            });
+        } else if (parameter.id == "pulse_cycles") {
+            const auto* cycles = std::get_if<uint32_t>(&value);
+            valid = cycles && *cycles <= 65536;
+        } else if (parameter.id.ends_with("_sampler")) {
+            const auto* flags = std::get_if<uint32_t>(&value);
+            valid = flags && *flags <= 255 && (*flags & 3) <= 2 && ((*flags >> 2) & 3) <= 2;
+        }
+        if (!valid) { error = "Material surface semantic constraint failed: " + parameter.id; return false; }
         error.clear(); return true;
     }
     bool ValidateMaterialDefinition(const MaterialDefinition& definition, std::string& error)
@@ -193,6 +226,13 @@ namespace Catalpa {
                     error = "Numeric parameters cannot declare texture policy"; return false;
                 }
                 if (!ValidateMaterialValue(parameter, parameter.defaultValue, error)) return false;
+                if (definition.shadingModel == MaterialShadingModel::Pbr && parameter.id == "base_color") {
+                    const auto* color = std::get_if<std::array<float, 4>>(&parameter.defaultValue);
+                    if (!color || std::any_of(color->begin(), color->begin() + 3, [](float number) { return number > 1; })) {
+                        error = "PBR base color is reflectance in [0,1]; HDR energy belongs to emissive";
+                        return false;
+                    }
+                }
             }
             error.clear(); return true;
         } catch (const std::exception& exception) { error = exception.what(); return false; }
@@ -228,7 +268,25 @@ namespace Catalpa {
                 const auto schema = std::find_if(definition.parameters.begin(), definition.parameters.end(), [&](const auto& p) { return p.id == value.parameterId; });
                 if (schema == definition.parameters.end()) { error = "Unknown material instance parameter"; return false; }
                 if (!ValidateMaterialValue(*schema, value.value, error)) return false;
+                if (definition.shadingModel == MaterialShadingModel::Pbr && value.parameterId == "base_color") {
+                    const auto* color = std::get_if<std::array<float, 4>>(&value.value);
+                    if (!color || std::any_of(color->begin(), color->begin() + 3, [](float number) { return number > 1; })) {
+                        error = "PBR base color is reflectance in [0,1]; HDR energy belongs to emissive";
+                        return false;
+                    }
+                }
                 if (!schema->allowOverride && value.value != schema->defaultValue) { error = "Material changes a fixed parameter"; return false; }
+            }
+            constexpr std::array<std::string_view, 5> textureIds{"baseColor_texture", "normal_texture",
+                "metallicRoughness_texture", "emissive_texture", "occlusion_texture"};
+            for (size_t index = 0; index < textureIds.size(); ++index) {
+                if (!instance.textureVersions[index].HasValue()) continue;
+                const auto* value = FindMaterialParameter(instance, textureIds[index]);
+                const auto* texture = value ? std::get_if<AssetHandle<ImageAsset>>(value) : nullptr;
+                if (!texture || texture->id != instance.textureVersions[index].GetId()) {
+                    error = "Fixed material texture version belongs to a different logical parameter";
+                    return false;
+                }
             }
             MaterialRenderState state;
             return ResolveMaterialRenderState(definition, instance.renderState, {}, state, error);
@@ -245,6 +303,28 @@ namespace Catalpa {
         const auto expected = parameter.textureSemantic == MaterialTextureSemantic::Normal ? ImageSemantic::Normal
             : (parameter.textureSemantic == MaterialTextureSemantic::BaseColor || parameter.textureSemantic == MaterialTextureSemantic::Emissive) ? ImageSemantic::Color : ImageSemantic::Data;
         if (image.image.semantic != expected) { error = "Material texture semantic conflicts with the image asset"; return false; }
+        if (GetPixelFormatInfo(image.image.format).isFloat) {
+            if (image.image.format != PixelFormat::RGBA32_Float) {
+                error = "Ordinary floating surface textures require explicit RGBA32F value validation";
+                return false;
+            }
+            const float maximum = expected == ImageSemantic::Color ? 1e8f : 1.0f;
+            for (const auto& sub : image.image.subresources) {
+                for (uint32_t y = 0; y < sub.height; ++y) {
+                    for (uint32_t x = 0; x < sub.width; ++x) {
+                        std::array<float, 4> texel;
+                        std::memcpy(texel.data(), image.image.pixels.data() + sub.offset + uint64_t(y) * sub.rowPitch + uint64_t(x) * 16, 16);
+                        for (size_t channel = 0; channel < 4; ++channel) {
+                            if (!std::isfinite(texel[channel]) || texel[channel] < 0 ||
+                                texel[channel] > (channel == 3 ? 1.0f : maximum)) {
+                                error = "Floating surface texel exceeds its explicit color/data/alpha budget";
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         error.clear(); return true;
     }
 
@@ -393,12 +473,60 @@ namespace Catalpa {
             }
             for(const auto& [key,binding]:bindings){(void)key;if(binding->name==definition.parameterBlock){
                 if(block){error="Ambiguous material parameter block";return false;}block=binding;}}
+            // 普通表面用固定五float4传输块；领域参数通过受检adapter打包，不能按作者字段猜偏移。
+            // 旧的直接成员ABI仍走下面的通用严格检查，已有自定义材质不被静默重新解释。
+            if (block && block->blockSize == 80 && definition.family.starts_with("catalpa.")) {
+                constexpr std::array<std::string_view, 5> names{"base_color", "emissive_metallic",
+                    "roughness_normal_occlusion_cutoff", "uv_scale_offset", "time_effect"};
+                if (block->kind != ShaderResourceKind::UniformBuffer || block->count != 1 || block->members.size() != names.size()) {
+                    error = "Surface material block has an incompatible resource shape";
+                    return false;
+                }
+                for (size_t i = 0; i < names.size(); ++i) {
+                    const auto& member = block->members[i];
+                    if (member.name != names[i] || member.offset != i * 16 || member.size != 16 ||
+                        member.type.scalar != ShaderScalarKind::Float || member.type.width != 32 ||
+                        member.type.columns != 4 || member.type.rows != 1 || member.type.arrayCount != 1 ||
+                        member.arrayStride || member.matrixStride || !member.members.empty()) {
+                        error = "Surface material float4 layout does not match the final shader ABI";
+                        return false;
+                    }
+                }
+                const std::map<std::string_view, MaterialParameterType> supported{
+                    {"base_color", MaterialParameterType::Float4}, {"emissive", MaterialParameterType::Float3},
+                    {"metallic", MaterialParameterType::Float}, {"roughness", MaterialParameterType::Float},
+                    {"normal_scale", MaterialParameterType::Float}, {"occlusion_strength", MaterialParameterType::Float},
+                    {"alpha_cutoff", MaterialParameterType::Float}, {"uv_flip_v", MaterialParameterType::Bool},
+                    {"uv_scale_offset", MaterialParameterType::Float4}, {"uv_cycles", MaterialParameterType::Float2},
+                    {"pulse_cycles", MaterialParameterType::UInt},
+                    {"baseColor_sampler", MaterialParameterType::UInt}, {"normal_sampler", MaterialParameterType::UInt},
+                    {"metallicRoughness_sampler", MaterialParameterType::UInt}, {"emissive_sampler", MaterialParameterType::UInt},
+                    {"occlusion_sampler", MaterialParameterType::UInt}};
+                for (const auto& parameter : definition.parameters) {
+                    if (parameter.type == MaterialParameterType::Texture2D) {
+                        const auto found = std::find_if(bindings.begin(), bindings.end(), [&](const auto& pair) {
+                            return pair.second->name == parameter.id && pair.second->count == 1 &&
+                                pair.second->kind == ShaderResourceKind::SampledImage &&
+                                pair.second->imageDimension == ShaderImageDimension::Texture2D;
+                        });
+                        if (found == bindings.end()) { error = "Surface texture binding is missing: " + parameter.id; return false; }
+                    } else {
+                        const auto found = supported.find(parameter.id);
+                        if (found == supported.end() || found->second != parameter.type) {
+                            error = "Surface adapter does not support parameter: " + parameter.id;
+                            return false;
+                        }
+                    }
+                }
+                error.clear();
+                return true;
+            }
             size_t numbers=0;
             for(const auto& parameter:definition.parameters){
                 if(parameter.type==MaterialParameterType::Texture2D){
                     const ShaderBinding* texture=nullptr;
                     for(const auto& [key,binding]:bindings){(void)key;if(binding->name==parameter.id){if(texture){error="Ambiguous material texture binding";return false;}texture=binding;}}
-                    if(!texture||texture->count!=1||(texture->kind!=ShaderResourceKind::SampledImage&&texture->kind!=ShaderResourceKind::CombinedImageSampler)){error="Material texture binding is missing or incompatible: "+parameter.id;return false;}
+                    if(!texture||texture->count!=1||texture->imageDimension!=ShaderImageDimension::Texture2D||(texture->kind!=ShaderResourceKind::SampledImage&&texture->kind!=ShaderResourceKind::CombinedImageSampler)){error="Material texture binding is missing or incompatible: "+parameter.id;return false;}
                     continue;
                 }
                 ++numbers;

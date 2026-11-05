@@ -65,6 +65,13 @@ namespace Catalpa::Tests {
         test.Check(FindShaderEntry(asset.metadata,"main",ShaderStage::Compute)!=nullptr,"SPIR-V entry name/stage are preserved");
         test.Check(FindShaderEntry(asset.metadata,"main",ShaderStage::Vertex)==nullptr,"same name with different stage is not accepted");
         test.Check(ValidateShaderAsset(asset,error),"shader asset verifies header, metadata and actual SHA256");
+        // 即使字节码本身和哈希有效，Cook/运行时也必须在提交给驱动前拒绝未启用的能力。
+        auto needsDrawParameters = asset;
+        needsDrawParameters.spirv.insert(needsDrawParameters.spirv.begin() + 5, { (2u << 16) | 17u, 4427u });
+        const bool hashed = ComputeAssetContentHash(std::as_bytes(std::span(needsDrawParameters.spirv)),
+            needsDrawParameters.metadata.bytecodeSha256, error);
+        test.Check(hashed && !ValidateShaderAsset(needsDrawParameters, error)
+            && error.find("DrawParameters") != std::string::npos, "Reject unsupported DrawParameters before native shader creation");
         auto damaged=asset;damaged.spirv.back()^=1;
         test.Check(!ValidateShaderAsset(damaged,error),"changed final SPIR-V invalidates recorded hash");
         damaged=asset;damaged.variant.inputFingerprint="timestamp";test.Check(!ValidateShaderAsset(damaged,error),"incremental identity requires a real SHA256-shaped key");
@@ -86,6 +93,20 @@ namespace Catalpa::Tests {
             &&mixedInterface.entries[0].outputs[0].location==0&&mixedInterface.entries[0].outputs[0].type.columns==4,
             "Builtin Position member does not hide an ordinary location sibling in the same interface block");
         auto metadata=LayoutFixture();test.Check(ValidateShaderMetadata(metadata,error),"array stride and vector columns preserve the actual ABI");
+        auto cubeMetadata = metadata;
+        ShaderBinding cubeBinding;
+        cubeBinding.binding = 13; cubeBinding.kind = ShaderResourceKind::SampledImage;
+        cubeBinding.name = "irradianceTexture"; cubeBinding.imageDimension = ShaderImageDimension::Cube;
+        cubeMetadata.entries.front().bindings.push_back(cubeBinding);
+        test.Check(ValidateShaderMetadata(cubeMetadata, error), "Schema2 explicitly represents a Cube sampled image");
+        cubeMetadata.schemaVersion = 1;
+        test.Check(!ValidateShaderMetadata(cubeMetadata, error), "Legacy schema cannot silently reinterpret 2D images as Cube");
+        cubeMetadata.schemaVersion = 2;
+        cubeMetadata.entries.front().bindings.back().imageDimension = ShaderImageDimension::None;
+        test.Check(!ValidateShaderMetadata(cubeMetadata, error), "Image resources require a concrete recorded dimension");
+        cubeMetadata = metadata;
+        cubeMetadata.entries.front().bindings.front().imageDimension = ShaderImageDimension::Cube;
+        test.Check(!ValidateShaderMetadata(cubeMetadata, error), "A uniform buffer cannot carry an image dimension");
         auto invalid=metadata;invalid.entries[0].bindings[0].members[0].arrayStride=0;test.Check(!ValidateShaderMetadata(invalid,error),"array members require nonzero stride");
         invalid=metadata;invalid.entries[0].bindings[0].members[0].paddedSize=65;test.Check(!ValidateShaderMetadata(invalid,error),"buffer member cannot exceed reflected block size");
         invalid=metadata;invalid.entries[0].bindings[0].members.push_back(invalid.entries[0].bindings[0].members[0]);test.Check(!ValidateShaderMetadata(invalid,error),"duplicate or overlapping block members rejected");
@@ -101,6 +122,17 @@ namespace Catalpa::Tests {
         test.Check(!Tools::ShaderToolDetail::AddPositionInvariant(truncated,prepared,error)&&prepared==previous,"invariant preparation failure preserves output");
         std::vector<std::byte> payload;test.Check(ShaderLibrary::EncodePayload(asset,payload,error),"shader payload writes bounded little-endian schema");
         std::shared_ptr<const ShaderAsset> decoded;test.Check(ShaderLibrary::DecodePayload(payload,decoded,error)&&decoded&&decoded->spirv==asset.spirv&&decoded->metadata==asset.metadata&&decoded->variant==asset.variant,"shader payload round-trip preserves immutable code/interface/input key");
+        test.Check(!payload.empty() && payload.front() == std::byte{2}, "New shader payloads identify the explicit image-dimension protocol");
+        auto legacyAsset = asset;
+        legacyAsset.metadata.schemaVersion = 1;
+        std::vector<std::byte> legacyPayload;
+        const bool legacyEncoded = ShaderLibrary::EncodePayload(legacyAsset, legacyPayload, error);
+        // 无descriptor的compute夹具在两个payload协议中只有首个版本号不同。
+        if (legacyEncoded && !legacyPayload.empty()) legacyPayload.front() = std::byte{1};
+        std::shared_ptr<const ShaderAsset> legacyDecoded;
+        test.Check(legacyEncoded && ShaderLibrary::DecodePayload(legacyPayload, legacyDecoded, error) &&
+            legacyDecoded && legacyDecoded->metadata.schemaVersion == 1,
+            "Legacy shader payload1 remains readable without inventing Cube dimensions");
         const auto held=decoded;auto trailing=payload;trailing.push_back(std::byte{0});test.Check(!ShaderLibrary::DecodePayload(trailing,decoded,error)&&decoded==held,"trailing payload bytes fail while previous asset stays owned");
         auto cut=payload;if(!cut.empty())cut.pop_back();test.Check(!ShaderLibrary::DecodePayload(cut,decoded,error)&&decoded==held,"truncated payload fails without replacing previous asset");
         AssetId id;test.Check(ShaderLibrary::BuiltinId("Unlit.slang",id,error)&&id.ToString()=="5c35308e-1d0c-9d78-a968-b6dc14e5c915","builtin shader identity follows the frozen source-name namespace");

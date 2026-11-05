@@ -4,6 +4,7 @@
 #include "RHI/RHIResourceState.h"
 #include "RHI/RHIError.h"
 #include "Core/Base.h"
+#include "RHI/RHIQueryDesc.h"
 
 // 持有编译结果：稳定拓扑顺序、屏障和待提交状态；外部只能读取诊断，不能改写命令步骤。
 namespace Catalpa {
@@ -28,6 +29,7 @@ namespace Catalpa {
             m_BufferUpdates = std::move(other.m_BufferUpdates);
             m_TextureUpdates = std::move(other.m_TextureUpdates);
             m_Schedule = std::move(other.m_Schedule);
+            m_Queries = std::move(other.m_Queries);
             m_Valid = std::exchange(other.m_Valid, false);
             return *this;
         }
@@ -42,7 +44,7 @@ namespace Catalpa {
         friend class RenderGraphCompiler;
         friend class RenderGraphExecutor;
 
-        enum class StepKind { Copy, TextureUpload, Draw, Transition, Clear };
+        enum class StepKind { Copy, TextureUpload, TextureReadback, Draw, Transition, Clear };
 
         struct Step {
             std::string name;
@@ -54,6 +56,8 @@ namespace Catalpa {
             RHIBufferCopy copy{};
             TextureViewHandle destinationView{};
             RHIBufferTextureCopy textureCopy{};
+            TextureViewHandle sourceView{};
+            RHITextureBufferCopy readbackCopy{};
             RGIndexedDrawDesc draw{};
             std::vector<RHIBinding> bindings;
             BufferHandle vertices{};
@@ -67,6 +71,7 @@ namespace Catalpa {
         std::vector<RHIBufferStateUpdate> m_BufferUpdates;
         std::vector<RHITextureStateUpdate> m_TextureUpdates;
         RGCompiledSchedule m_Schedule;
+        std::shared_ptr<RHIQueryPool> m_Queries;
         bool m_Valid = false;
     };
 

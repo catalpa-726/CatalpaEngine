@@ -59,6 +59,37 @@ namespace Catalpa::Tests {
         test.Check(plane.localBounds.minimum == Math::Vec3(-2,0,-3) && plane.localBounds.maximum == Math::Vec3(2,0,3), "Plane dimensions and XZ convention are explicit");
         CheckWinding(test, cube);
         CheckWinding(test, plane);
+        MeshData tangentCube;
+        const bool tangentBuilt = CreateCubeMeshWithTangents(2.0f, tangentCube).IsSuccess();
+        test.Check(tangentBuilt && tangentCube.vertexStride == 48 && tangentCube.attributes.size() == 4 &&
+            tangentCube.vertexCount == cube.vertexCount && tangentCube.indexData == cube.indexData,
+            "Material preview cube adds an explicit tangent stream without changing primitive topology");
+        if (tangentBuilt) {
+            for (uint32_t face = 0; face < 6; ++face) {
+                const uint32_t first = face * 4;
+                const auto u = glm::normalize(Position(tangentCube, first + 1) - Position(tangentCube, first));
+                const auto v = glm::normalize(Position(tangentCube, first + 3) - Position(tangentCube, first));
+                for (uint32_t local = 0; local < 4; ++local) {
+                    const size_t index = first + local, offset = index * tangentCube.vertexStride;
+                    const Math::Vec3 normal{ReadFloat(tangentCube, offset + 12), ReadFloat(tangentCube, offset + 16), ReadFloat(tangentCube, offset + 20)};
+                    const Math::Vec3 tangent{ReadFloat(tangentCube, offset + 32), ReadFloat(tangentCube, offset + 36), ReadFloat(tangentCube, offset + 40)};
+                    const float sign = ReadFloat(tangentCube, offset + 44);
+                    test.Check(Near(glm::length(tangent), 1) && Near(glm::dot(normal, tangent), 0) &&
+                        glm::length(tangent - u) < 2e-5f && sign == 1 && glm::length(glm::cross(normal, tangent) * sign - v) < 2e-5f,
+                        "Generated tangent is unit +U, orthogonal to the normal, with the face UV handedness");
+                    test.Check(std::memcmp(tangentCube.vertexData.data() + offset, cube.vertexData.data() + index * cube.vertexStride, 32) == 0,
+                        "Tangent cube preserves the original per-vertex position, normal and UV bytes");
+                }
+            }
+            const auto savedTangentBytes = tangentCube.vertexData;
+            test.Check(!CreateCubeMeshWithTangents(0, tangentCube).IsSuccess() && tangentCube.vertexData == savedTangentBytes,
+                "Invalid tangent primitive dimensions preserve the previous output");
+            MeshData largeTangentCube;
+            test.Check(CreateCubeMeshWithTangents(std::numeric_limits<float>::max(), largeTangentCube).IsSuccess(),
+                "Double-precision face edges avoid tangent normalization overflow at large finite cube sizes");
+        }
+        test.Check(cube.vertexStride == 32 && cube.attributes.size() == 3,
+            "Legacy cube generator retains its original 32-byte layout after adding the preview variant");
         for (const auto& mesh : { &cube, &plane }) {
             for (uint32_t vertex = 0; vertex < mesh->vertexCount; ++vertex) {
                 const size_t offset = static_cast<size_t>(vertex) * mesh->vertexStride + 24;

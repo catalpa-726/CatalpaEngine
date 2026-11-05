@@ -2,6 +2,7 @@
 #include "VulkanPipelineCache.h"
 #include "Log/Log.h"
 #include "VulkanDevice.h"
+#include "VulkanQueryPool.h"
 #include "VulkanPhysicalDevice.h"
 #include "VulkanLoader.h"
 #include "VulkanBackend.h"
@@ -120,7 +121,8 @@ namespace Catalpa {
             .maxStorageBufferRange = limits.maxStorageBufferRange,
             .minUniformBufferOffsetAlignment = limits.minUniformBufferOffsetAlignment,
             .minStorageBufferOffsetAlignment = limits.minStorageBufferOffsetAlignment,
-            .presentFence = maintenanceEnabled
+            .presentFence = maintenanceEnabled,
+            .maxSamplerLodBias = limits.maxSamplerLodBias
         };
 
         m_Backend = std::move(backend);
@@ -306,6 +308,46 @@ namespace Catalpa {
     {
         if (!m_DeviceFailure.IsSuccess()) return m_DeviceFailure;
         return ObserveStatus(m_ResourceRegistry->WriteBuffer(buffer, offset, data));
+    }
+
+    // 读回只消费已经完成且包含最近使用的提交，不把任意旧 Fence 当作本次复制的证明。
+    RHIStatus VulkanDevice::ReadBuffer(BufferHandle buffer, uint64_t offset, std::span<std::byte> data, RHICompletionPoint completion)
+    {
+        constexpr const char* operation = "VulkanDevice::ReadBuffer";
+        RHIBufferStateSnapshot snapshot;
+        if (const auto status = GetBufferState(buffer, snapshot); !status.IsSuccess()) return status;
+        const auto& last = snapshot.state.lastUse;
+        if (snapshot.desc.memory != RHIMemoryDomain::Readback || data.empty()
+            || !IsValidBufferRange(snapshot.desc.size, offset, data.size())
+            || !RangeContains(snapshot.state.initialized, offset, data.size())
+            || snapshot.state.access.access != RHIResourceAccess::HostRead
+            || !last.HasValue() || completion.device != last.device || completion.queue != last.queue
+            || completion.sequence < last.sequence)
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
+
+        bool complete = false;
+        if (const auto status = GetGraphicsQueue().IsComplete(completion, complete); !status.IsSuccess()) return status;
+        if (!complete) return { .code = RHIErrorCode::InvalidState, .operation = operation };
+        const auto* record = m_ResourceRegistry->ResolveBuffer(buffer);
+        if (!record || !record->mapped) return { .code = RHIErrorCode::InvalidState, .operation = operation };
+        const auto result = vmaInvalidateAllocation(GetMemoryAllocator().GetHandle(), record->allocation, offset, data.size());
+        if (result != VK_SUCCESS) return ObserveStatus(MakeVulkanStatus(result, "vmaInvalidateAllocation"));
+        std::memcpy(data.data(), record->mapped + static_cast<size_t>(offset), data.size());
+        return {};
+    }
+
+    RHIStatus VulkanDevice::CreateQueryPool(const RHIQueryDesc& desc, std::shared_ptr<RHIQueryPool>& pool)
+    {
+        pool.reset();
+        if (!m_DeviceFailure.IsSuccess()) return m_DeviceFailure;
+        try {
+            auto candidate = std::make_shared<VulkanQueryPool>(*this);
+            if (const auto status = candidate->Init(desc); !status.IsSuccess()) return ObserveStatus(status);
+            pool = std::move(candidate);
+            return {};
+        } catch (const std::bad_alloc&) {
+            return { .code = RHIErrorCode::OutOfMemory, .operation = "VulkanDevice::CreateQueryPool" };
+        }
     }
 
     void VulkanDevice::ReleaseBuffer(BufferHandle buffer) { m_ResourceRegistry->ReleaseBuffer(buffer); }

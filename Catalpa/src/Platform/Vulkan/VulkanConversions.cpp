@@ -11,6 +11,11 @@ namespace Catalpa {
         case PixelFormat::BGRA8_UNorm: return VK_FORMAT_B8G8R8A8_UNORM;
         case PixelFormat::BGRA8_SRGB: return VK_FORMAT_B8G8R8A8_SRGB;
         case PixelFormat::D32_Float: return VK_FORMAT_D32_SFLOAT;
+        case PixelFormat::R8_UNorm: return VK_FORMAT_R8_UNORM;
+        case PixelFormat::R16_Float: return VK_FORMAT_R16_SFLOAT;
+        case PixelFormat::RGBA16_Float: return VK_FORMAT_R16G16B16A16_SFLOAT;
+        case PixelFormat::RGBA32_Float: return VK_FORMAT_R32G32B32A32_SFLOAT;
+        case PixelFormat::R32_UInt: return VK_FORMAT_R32_UINT;
         default: return VK_FORMAT_UNDEFINED;
         }
     }

@@ -48,6 +48,8 @@ namespace Catalpa::Tests {
         for (int column = 0; column < 4; ++column)
             for (int row = 0; row < 4; ++row) view.matrices.viewProjection[column][row] = static_cast<float>(column * 10 + row + 1);
         view.matrices.position = { 2, 3, 5 };
+        view.matrices.inverseViewProjection[2][3] = 7;
+        view.matrices.view[1][2] = -8;
         packet.views.push_back(view);
         RenderMeshInstance first;
         first.worldMatrix[0][0] = 2; first.worldMatrix[1][0] = 1; first.worldMatrix[1][1] = 3;
@@ -62,22 +64,24 @@ namespace Catalpa::Tests {
         second.color = { 1,0,0,1 };
         packet.instances.push_back(second);
         PackedFrameUniforms packed;
-        test.Check(BuildFrameUniformData(packet, profile, 256, 128, packed).IsSuccess(),
+        test.Check(BuildFrameUniformData(packet, profile, 256, 256, packed).IsSuccess(),
             "A buffer larger than maxUniformBufferRange is valid when each descriptor range fits");
         if (packed.data.empty() || packed.drawOffsets.size() != 2) return;
         test.Check(packed.viewOffsets == std::vector<uint64_t>{256} && packed.drawOffsets[0] == 512 && packed.drawOffsets[1] == 768
-            && packed.data.size() == 896, "Frame/View/Draw use independently aligned offsets and exact last range end");
+            && packed.data.size() == 912, "Frame/View/Draw use independently aligned offsets and exact last range end");
         const auto read = [&](uint64_t offset) {
             float value; std::memcpy(&value, packed.data.data() + offset, sizeof(value)); return value;
         };
         test.Check(read(0) == 12.5f && read(4) == 0.25f && read(8) == 0.125f && read(12) == 0.75f,
             "Frame time bytes preserve explicit seconds and interpolation meaning");
-        test.Check(read(16) == 1.0f && read(20) == 0.0f && read(24) == 0.0f && read(28) == 0.0f,
+        test.Check(read(16) == 1.0f && read(20) == 0.1f && read(24) == 0.0f && read(28) == 0.0f,
             "Normal diagnostics use their own options vector without overwriting time or alpha");
         test.Check(read(256) == 1.0f && read(260) == 2.0f && read(272) == 11.0f && read(316) == 34.0f,
             "View matrix is uploaded as four columns rather than a transposed row sequence");
         test.Check(read(320) == 2 && read(324) == 3 && read(328) == 5 && read(332) == 1,
             "Camera position has explicit homogeneous padding");
+        test.Check(read(380) == 7 && read(424) == -8,
+            "Extended View inverse VP and camera view preserve independent column-major coefficients");
         test.Check(read(512) == 2 && read(528) == 1 && read(532) == 3 && read(560) == 3 && read(564) == -2 && read(568) == 5,
             "Draw world columns preserve asymmetric shear and translation coefficients");
         test.Check(read(576) == 0.5f && read(580) == -1.0f/6.0f && read(588) == 0
@@ -88,33 +92,55 @@ namespace Catalpa::Tests {
             "Separate Draw ranges preserve HDR color/alpha and independent instance translation");
         bool zeroPadding = true;
         for (size_t byte = 32; byte < 256; ++byte) zeroPadding = zeroPadding && packed.data[byte] == std::byte{0};
-        for (size_t byte = 336; byte < 512; ++byte) zeroPadding = zeroPadding && packed.data[byte] == std::byte{0};
-        for (size_t byte = 640; byte < 768; ++byte) zeroPadding = zeroPadding && packed.data[byte] == std::byte{0};
+        for (size_t byte = 464; byte < 512; ++byte) zeroPadding = zeroPadding && packed.data[byte] == std::byte{0};
+        for (size_t byte = 656; byte < 768; ++byte) zeroPadding = zeroPadding && packed.data[byte] == std::byte{0};
         test.Check(zeroPadding, "Alignment gaps are initialized rather than exposing stale frame memory");
+        uint32_t firstToken = 0, secondToken = 0;
+        std::memcpy(&firstToken, packed.data.data() + 640, sizeof(firstToken));
+        std::memcpy(&secondToken, packed.data.data() + 896, sizeof(secondToken));
+        test.Check(firstToken == 1 && secondToken == 2, "Picking tokens are one-based integer bytes rather than truncated entity IDs");
+        auto mirrored = packet;
+        mirrored.instances[1].worldMatrix[0][0] = -1;
+        PackedFrameUniforms mirrorPacking;
+        test.Check(BuildFrameUniformData(mirrored, profile, 256, 256, mirrorPacking).IsSuccess(),
+            "Mirrored world transform retains the same stable Draw layout");
+        uint32_t mirrorBit = 0;
+        if (mirrorPacking.data.size() >= 904) std::memcpy(&mirrorBit, mirrorPacking.data.data() + 900, sizeof(mirrorBit));
+        test.Check(mirrorBit == 1, "CPU double determinant produces the exact handedness bit shared by TBN and front-face selection");
+        auto longTime = packet;
+        longTime.time.simulationSeconds = 4096.0 * 1048576.0 + 0.25;
+        PackedFrameUniforms wrapped;
+        test.Check(BuildFrameUniformData(longTime, profile, 256, 256, wrapped).IsSuccess(),
+            "Long-running simulation time packs without losing the wrapped subsecond material phase");
+        FrameGpuParameters wrappedTime;
+        if (wrapped.data.size() >= sizeof(wrappedTime)) std::memcpy(&wrappedTime, wrapped.data.data(), sizeof(wrappedTime));
+        test.Check(wrappedTime.time[0] == 0.25f && wrappedTime.options[2] == 1048576,
+            "Time ABI records an exact bounded phase plus separate 4096-second epoch");
         const auto accepted = packed;
         const auto rejectsPacking = [&](const RenderFramePacket& input, uint64_t alignment, uint64_t range, std::string_view requirement) {
             test.Check(!BuildFrameUniformData(input, profile, alignment, range, packed).IsSuccess(), requirement);
             test.Check(packed.data == accepted.data && packed.viewOffsets == accepted.viewOffsets
                 && packed.drawOffsets == accepted.drawOffsets, "Failed packing preserves the complete previous byte packet");
         };
-        rejectsPacking(packet, 0, 128, "Zero UBO alignment is rejected");
-        rejectsPacking(packet, 3, 128, "Non-power-of-two UBO alignment is rejected");
+        rejectsPacking(packet, 0, 256, "Zero UBO alignment is rejected");
+        rejectsPacking(packet, 3, 256, "Non-power-of-two UBO alignment is rejected");
         rejectsPacking(packet, 256, 127, "An insufficient per-binding uniform range is rejected");
-        rejectsPacking(packet, uint64_t{1} << 63, 128, "Alignment/offset arithmetic cannot wrap into a small accepted allocation");
+        rejectsPacking(packet, 256, 207, "Extended View range must fit even when the smaller Draw range fits");
+        rejectsPacking(packet, uint64_t{1} << 63, 256, "Alignment/offset arithmetic cannot wrap into a small accepted allocation");
         auto bad = packet; bad.views.clear();
-        rejectsPacking(bad, 256, 128, "Packing requires the selected view rather than substituting an identity camera");
+        rejectsPacking(bad, 256, 256, "Packing requires the selected view rather than substituting an identity camera");
         bad = packet; bad.views.push_back(view);
-        rejectsPacking(bad, 256, 128, "Multiple views cannot share a duplicate output identity");
+        rejectsPacking(bad, 256, 256, "Multiple views cannot share a duplicate output identity");
         bad = packet; bad.views[0].viewport.width = 0;
-        rejectsPacking(bad, 256, 128, "A zero pixel target is not packed as a drawable view");
+        rejectsPacking(bad, 256, 256, "A zero pixel target is not packed as a drawable view");
         bad = packet; bad.time.simulationSeconds = std::numeric_limits<double>::max();
-        rejectsPacking(bad, 256, 128, "Unrepresentable simulation seconds do not become float infinity");
+        rejectsPacking(bad, 256, 256, "Unrepresentable simulation seconds do not become float infinity");
         bad = packet; bad.time.interpolationAlpha = 1.1;
-        rejectsPacking(bad, 256, 128, "Out-of-range interpolation is rejected without clamping");
+        rejectsPacking(bad, 256, 256, "Out-of-range interpolation is rejected without clamping");
         bad = packet; bad.instances[0].normalMatrix[1][1] = std::numeric_limits<float>::quiet_NaN();
-        rejectsPacking(bad, 256, 128, "Non-finite normal data cannot enter an upload packet");
+        rejectsPacking(bad, 256, 256, "Non-finite normal data cannot enter an upload packet");
         bad = packet; bad.instances[1].color.w = -1;
-        rejectsPacking(bad, 256, 128, "Invalid display alpha preserves the previously packed frame");
+        rejectsPacking(bad, 256, 256, "Invalid display alpha preserves the previously packed frame");
         RenderView authored;
         authored.viewport.width = 640; authored.viewport.height = 480;
         authored.lens.verticalFovRadians = Math::Pi * 0.5f;
@@ -300,10 +326,10 @@ namespace Catalpa::Tests {
         packet.instances.resize(2);
         packet.instances[1].worldMatrix[3].x = 9;
         PackedFrameUniforms packed;
-        test.Check(BuildFrameUniformData(packet, {}, 256, 128, packed).IsSuccess(), "Two views pack without dropping either camera");
+        test.Check(BuildFrameUniformData(packet, {}, 256, 256, packed).IsSuccess(), "Two views pack without dropping either camera");
         if (packed.viewOffsets.size() != 2 || packed.drawOffsets.size() != 2) return;
         test.Check(packed.viewOffsets == std::vector<uint64_t>{256,512}
-            && packed.drawOffsets == std::vector<uint64_t>{768,1024} && packed.data.size() == 1152,
+            && packed.drawOffsets == std::vector<uint64_t>{768,1024} && packed.data.size() == 1168,
             "Two independent View records precede one shared pair of Draw records");
         const auto read = [&](uint64_t offset) {
             float value = 0; std::memcpy(&value, packed.data.data() + offset, sizeof(value)); return value;
@@ -312,20 +338,20 @@ namespace Catalpa::Tests {
             && read(576) == 7 && read(320) == 0 && read(1072) == 9,
             "Each view preserves its aspect and position while instances retain shared independent transforms");
         bool zeroPadding = true;
-        for (size_t i = 336; i < 512; ++i) zeroPadding = zeroPadding && packed.data[i] == std::byte{0};
-        for (size_t i = 592; i < 768; ++i) zeroPadding = zeroPadding && packed.data[i] == std::byte{0};
+        for (size_t i = 464; i < 512; ++i) zeroPadding = zeroPadding && packed.data[i] == std::byte{0};
+        for (size_t i = 720; i < 768; ++i) zeroPadding = zeroPadding && packed.data[i] == std::byte{0};
         test.Check(zeroPadding, "All gaps between multiple View records and Draw data are cleared");
         const auto accepted = packed;
         auto invalid = packet;
         invalid.views[1].matrices.viewProjection[2][1] = std::numeric_limits<float>::quiet_NaN();
-        test.Check(!BuildFrameUniformData(invalid, {}, 256, 128, packed).IsSuccess()
+        test.Check(!BuildFrameUniformData(invalid, {}, 256, 256, packed).IsSuccess()
             && packed.data == accepted.data && packed.viewOffsets == accepted.viewOffsets && packed.drawOffsets == accepted.drawOffsets,
             "Invalid second view preserves all previously packed cameras and instance bytes");
-        test.Check(!BuildFrameUniformData(packet, {}, uint64_t{1} << 63, 128, packed).IsSuccess()
+        test.Check(!BuildFrameUniformData(packet, {}, uint64_t{1} << 63, 256, packed).IsSuccess()
             && packed.data == accepted.data, "Multiple view offset arithmetic rejects uint64 overflow");
         packet.instances.clear();
-        test.Check(BuildFrameUniformData(packet, {}, 256, 128, packed).IsSuccess()
-            && packed.viewOffsets.size() == 2 && packed.drawOffsets.empty() && packed.data.size() == 592,
+        test.Check(BuildFrameUniformData(packet, {}, 256, 256, packed).IsSuccess()
+            && packed.viewOffsets.size() == 2 && packed.drawOffsets.empty() && packed.data.size() == 720,
             "Empty geometry still preserves both cameras without inventing Draw records");
     }
 }

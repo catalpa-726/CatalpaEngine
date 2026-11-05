@@ -10,9 +10,15 @@ namespace Catalpa::Tests {
     // 执行真实Runtime注册与归档值树验证，不将反射schema当作C++对象内存布局。
     void RunComponentRegistryTests(TestContext& test) {
         ComponentRegistry registry;std::string error;
-        test.Check(RegisterRuntimeComponentSchemas(registry,error)&&registry.GetSchemas().size()==4,"Runtime registers four real component schemas");
+        const bool registered = RegisterRuntimeComponentSchemas(registry, error);
+        constexpr std::array required{ "catalpa.identity", "catalpa.transform", "catalpa.relationship",
+            "catalpa.mesh_renderer", "catalpa.light", "catalpa.environment", "catalpa.camera" };
+        test.Check(registered && registry.GetSchemas().size() == required.size()
+            && std::all_of(required.begin(), required.end(), [&](const auto* id) { return registry.Find(id) != nullptr; }),
+            "Runtime registers each supported author component schema");
+        const auto count = registry.GetSchemas().size();
         const auto* retained=registry.Find("catalpa.transform");
-        test.Check(!RegisterRuntimeComponentSchemas(registry,error)&&registry.GetSchemas().size()==4
+        test.Check(!RegisterRuntimeComponentSchemas(registry,error)&&registry.GetSchemas().size()==count
             &&registry.Find("catalpa.transform")==retained,"Duplicate batch registration preserves existing schema owners");
         const auto validate=[&](std::string_view id,std::string_view json) {
             std::unique_ptr<ArchiveValue> value;ArchiveError parse;

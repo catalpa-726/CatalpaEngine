@@ -10,12 +10,20 @@
 namespace Catalpa {
     bool RegisterBuiltinAssets(AssetManager& manager, std::string& error) {
         try {
-            // 必需shader必须先Ready；一次取得其确切版本，后续所有内置定义共享这个固定owner。
-            AssetId shader; AssetVersionRef<ShaderAsset> shaderVersion; bool shaderFallback = false;
+            // 必需shader必须先Ready；各着色模型固定自己的版本，不能让PBR定义引用Unlit字节码。
+            AssetId shader, pbrShader;
+            AssetVersionRef<ShaderAsset> shaderVersion, pbrShaderVersion;
+            bool shaderFallback = false;
             if (!ShaderLibrary::BuiltinId("Unlit.slang", shader, error)
                 || !manager.Acquire(shader, shaderVersion, shaderFallback, error) || shaderFallback
                 || !ValidateShaderAsset(*shaderVersion.Get(), error)) {
                 if (error.empty()) error = "Builtin materials require the ready Unlit shader version";
+                return false;
+            }
+            if (!ShaderLibrary::BuiltinId("Pbr.slang", pbrShader, error) ||
+                !manager.Acquire(pbrShader, pbrShaderVersion, shaderFallback, error) || shaderFallback ||
+                !ValidateShaderAsset(*pbrShaderVersion.Get(), error)) {
+                if (error.empty()) error = "Builtin PBR materials require the ready Pbr shader version";
                 return false;
             }
             struct Pixel { AssetId id; std::array<uint8_t, 4> rgba; ImageSemantic semantic; };
@@ -39,8 +47,10 @@ namespace Catalpa {
                 Material{BuiltinMaterialKind::Error, BuiltinAssetIds::ErrorDefinition, BuiltinAssetIds::ErrorInstance}};
             for (const auto& item : materials) {
                 std::shared_ptr<const MaterialDefinition> definition;
-                if (!CreateBuiltinMaterialDefinition(item.kind, shader, definition, error)) return false;
-                MaterialDefinition resolved = *definition; resolved.shaderVersion = shaderVersion;
+                const bool pbr = item.kind == BuiltinMaterialKind::Pbr;
+                if (!CreateBuiltinMaterialDefinition(item.kind, pbr ? pbrShader : shader, definition, error)) return false;
+                MaterialDefinition resolved = *definition;
+                resolved.shaderVersion = pbr ? pbrShaderVersion : shaderVersion;
                 if (!ValidateMaterialDefinition(resolved, error)) return false;
                 definition = std::make_shared<const MaterialDefinition>(std::move(resolved));
                 const size_t definitionBytes = MaterialDefinitionBytes(*definition);

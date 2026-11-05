@@ -27,6 +27,8 @@ namespace Catalpa {
         if(args.size()==1&&args[0]=="--sample-reversed-z") {options.reversedZ=true;return {};}
         if(args.size()==1&&args[0].starts_with("--test-")) {
 #if !defined(CATALPA_DIST)
+            if (args[0] == "--test-s07-s09")
+                return {true, Tests::RunS07S09Tests()};
             if (args[0] == "--test-s05-s06")
                 return {true, Tests::RunS05S06Tests()};
             if(args[0]=="--test-s04") return {true,Tests::RunS04Tests()};
@@ -39,7 +41,7 @@ namespace Catalpa {
             CAT_ERROR("Tests are available in Debug/Release only.");return {true,2};
 #endif
         }
-        CAT_INFO("Usage: CatalpaBox [--project <absolute-file> | --test-s05-s06 | --test-s04 | --sample-reversed-z | --sample-error-material | --cook-shaders <tool arguments> | --build-assets <tool arguments> | --cook-assets <tool arguments> | --help]. No arguments opens the workspace.");
+        CAT_INFO("Usage: CatalpaBox [--project <absolute-file> | --test-s07-s09 | --test-s05-s06 | --test-s04 | --sample-reversed-z | --sample-error-material | --cook-shaders <tool arguments> | --build-assets <tool arguments> | --cook-assets <tool arguments> | --help]. No arguments opens the workspace.");
         return {true,args.size()==1&&args[0]=="--help"?0:2};
     }
 }

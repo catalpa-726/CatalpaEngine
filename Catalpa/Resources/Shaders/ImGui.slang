@@ -1,5 +1,5 @@
 // position 为 UI 逻辑坐标，uv 为归一化纹理坐标；color.rgb 为 sRGB，alpha 为线性覆盖率。
-struct ImGuiParameters { float4 transform; };
+struct ImGuiParameters { float4 transform; float4 textureOptions; };
 [[vk::push_constant]] ConstantBuffer<ImGuiParameters> ui;
 [[vk::binding(0, 0)]] Texture2D<float4> fontTexture;
 [[vk::binding(1, 0)]] SamplerState fontSampler;
@@ -35,7 +35,18 @@ float4 fragmentMain(VertexOutput input) : SV_Target0
 {
     // 字体图集使用线性 UNorm 覆盖率；UI RGB 只解码一次。
     // sRGB 附件在线性空间混合，并在写入时编码。
-    float4 texel = fontTexture.Sample(fontSampler, input.uv);
+    float4 texel = fontTexture.SampleLevel(fontSampler, input.uv, ui.textureOptions.x);
     float3 linearColor = float3(srgbToLinear(input.color.r), srgbToLinear(input.color.g), srgbToLinear(input.color.b));
+    if (ui.textureOptions.z > 0.5)
+    {
+        uint mask = uint(ui.textureOptions.y);
+        float3 displayed;
+        if (mask == 1u) displayed = texel.rrr;
+        else if (mask == 2u) displayed = texel.ggg;
+        else if (mask == 4u) displayed = texel.bbb;
+        else if (mask == 8u) displayed = texel.aaa;
+        else displayed = texel.rgb * float3(float(mask & 1u), float((mask >> 1) & 1u), float((mask >> 2) & 1u));
+        return float4(linearColor * displayed * exp2(ui.textureOptions.w), input.color.a);
+    }
     return float4(linearColor * texel.rgb, input.color.a * texel.a);
 }

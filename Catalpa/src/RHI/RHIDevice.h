@@ -12,6 +12,7 @@
 #include "RHIResourceState.h"
 #include "RHITextureDesc.h"
 #include "RHISamplerDesc.h"
+#include "RHIQueryDesc.h"
 
 namespace Catalpa {
 
@@ -58,6 +59,10 @@ namespace Catalpa {
         // 同步复制 CPU 数据并完成必要的 flush；当前拒绝写入仍被命令引用的 Buffer。
         [[nodiscard]] virtual RHIStatus WriteBuffer(BufferHandle buffer, uint64_t offset, std::span<const std::byte> data) = 0;
 
+        // 非阻塞读回：completion 须覆盖该 Buffer 最近一次接受的使用，完成后先 invalidate。
+        [[nodiscard]] virtual RHIStatus ReadBuffer(BufferHandle, uint64_t, std::span<std::byte>, RHICompletionPoint)
+        { return { .code = RHIErrorCode::Unsupported, .operation = "RHIDevice::ReadBuffer" }; }
+
         // 释放逻辑所有权；已有命令引用继续保留原生资源。
         virtual void ReleaseBuffer(BufferHandle buffer) = 0;
 
@@ -75,6 +80,10 @@ namespace Catalpa {
 
         // 释放逻辑所有权；命令引用继续保留原生对象。
         virtual void ReleaseSampler(SamplerHandle sampler) = 0;
+
+        // 可选时间戳能力，池必须先于设备释放；命令会保留池的寿命引用。
+        [[nodiscard]] virtual RHIStatus CreateQueryPool(const RHIQueryDesc&, std::shared_ptr<RHIQueryPool>& pool)
+        { pool.reset(); return { .code = RHIErrorCode::Unsupported, .operation = "RHIDevice::CreateQueryPool" }; }
 
         // 返回独立快照；已接受的队列状态不等于 GPU 已执行完成。
         [[nodiscard]] virtual RHIStatus GetBufferState(BufferHandle buffer, RHIBufferStateSnapshot& snapshot) const = 0;

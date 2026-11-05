@@ -12,6 +12,7 @@ namespace Catalpa {
             if (layout == RHITextureLayout::ColorAttachment) access = RHIResourceAccess::ColorReadWrite;
             else if (layout == RHITextureLayout::DepthAttachment) access = RHIResourceAccess::DepthReadWrite;
             else if (layout == RHITextureLayout::TransferDestination) access = RHIResourceAccess::TransferWrite;
+            else if (layout == RHITextureLayout::TransferSource) access = RHIResourceAccess::TransferRead;
             else if (layout == RHITextureLayout::ShaderReadOnly) access = RHIResourceAccess::SampledRead;
 
             return { .stage = RHIPipelineStage::AllCommands, .access = access, .layout = layout };
@@ -51,8 +52,7 @@ namespace Catalpa {
         };
         for (size_t i = 0; i < resources.size(); ++i) {
             const auto& resource = resources[i];
-            if (resource.size == 0 || (resource.kind != RGResourceKind::Buffer && resource.kind != RGResourceKind::Texture)
-                || (resource.kind == RGResourceKind::Texture && resource.size != 1))
+            if (resource.size == 0 || (resource.kind != RGResourceKind::Buffer && resource.kind != RGResourceKind::Texture))
                 return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
             auto& segments = states[i];
             segments.push_back({ .end = resource.size });
@@ -208,7 +208,9 @@ namespace Catalpa {
         plan = RenderGraphPlan{};
 
         if (m_Id == 0) return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
-        if (m_Compiled || !builder.Resolve(m_Present)) return { .code = RHIErrorCode::InvalidState, .operation = operation };
+        if (m_Compiled || (m_Present.HasValue() && !builder.Resolve(m_Present))
+            || (!m_Present.HasValue() && builder.m_Exports.empty() && builder.m_ReadbackExports.empty() && std::none_of(m_Passes.begin(), m_Passes.end(),
+                [](const auto& pass) { return pass.kind == PassKind::TextureReadback; }))) return { .code = RHIErrorCode::InvalidState, .operation = operation };
         if (m_Buffers.size() >= std::numeric_limits<uint32_t>::max()
             || m_Textures.size() >= std::numeric_limits<uint32_t>::max() - m_Buffers.size())
             return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
@@ -217,11 +219,21 @@ namespace Catalpa {
         std::vector<RGResourceDeclaration> resources;
         std::vector<RGPassDeclaration> declarations;
         builder.Describe(resources, declarations);
-        const RGResourceAccess output{
-            .resource = static_cast<uint32_t>(m_Buffers.size()) + m_Present.slot.index, .size = 1
-        };
-        if (const auto status = BuildSchedule(resources, declarations, builder.m_Dependencies, { &output, 1 }, compiled.m_Schedule);
+        std::vector<RGResourceAccess> outputs;
+        if (m_Present.HasValue()) outputs.push_back({ .resource = static_cast<uint32_t>(m_Buffers.size()) + m_Present.slot.index, .size = 1 });
+        for (const auto texture : builder.m_Exports) {
+            const auto& snapshot = m_Textures[texture.slot.index].snapshot;
+            outputs.push_back({ .resource = static_cast<uint32_t>(m_Buffers.size()) + texture.slot.index,
+                .size = uint64_t(snapshot.mipLevels) * snapshot.arrayLayers });
+        }
+        for (const auto texture : builder.m_ReadbackExports) {
+            const auto& snapshot = m_Textures[texture.slot.index].snapshot;
+            outputs.push_back({ .resource = static_cast<uint32_t>(m_Buffers.size()) + texture.slot.index,
+                .size = uint64_t(snapshot.mipLevels) * snapshot.arrayLayers });
+        }
+        if (const auto status = BuildSchedule(resources, declarations, builder.m_Dependencies, outputs, compiled.m_Schedule);
             !status.IsSuccess()) return status;
+        compiled.m_Queries = builder.m_Queries;
 
         if (m_Passes.size() >= compiled.m_Steps.max_size())
             return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
@@ -239,7 +251,19 @@ namespace Catalpa {
         textures.reserve(m_Textures.size());
 
         for (const auto& resource : m_Buffers) buffers.push_back(resource.snapshot.state);
-        for (const auto& resource : m_Textures) textures.push_back(resource.snapshot.state);
+        for (const auto& resource : m_Textures) {
+            auto state = resource.snapshot.state;
+            if (state.initialized && state.initializedSubresources.empty())
+                MarkInitialized(state.initializedSubresources, 0, uint64_t(resource.snapshot.mipLevels) * resource.snapshot.arrayLayers);
+            textures.push_back(std::move(state));
+        }
+        const auto fullTextureRange = [&](uint32_t index) {
+            RHITextureSubresourceRange range;
+            range.levelCount = m_Textures[index].snapshot.mipLevels;
+            range.layerCount = m_Textures[index].snapshot.arrayLayers;
+            range.aspect = GetPixelFormatInfo(m_Textures[index].snapshot.format).isDepth ? RHITextureAspect::Depth : RHITextureAspect::Color;
+            return range;
+        };
 
         // 添加整段 Buffer 屏障，并更新当前编译中的状态副本。
         const auto addBufferAccess = [&](RenderGraphPlan::Step& step, uint32_t index, RHIBufferAccess after) {
@@ -261,8 +285,7 @@ namespace Catalpa {
             auto& state = textures[index];
             if (loadOp == RHILoadOp::Load && !state.initialized)
                 return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedAttachmentLoad" };
-            RHITextureSubresourceRange range{};
-            range.aspect = GetPixelFormatInfo(m_Textures[index].snapshot.format).isDepth ? RHITextureAspect::Depth : RHITextureAspect::Color;
+            const auto range = fullTextureRange(index);
             step.textureBarriers.push_back({
                 .view = m_Textures[index].handle, .range = range,
                 .before = ConservativeTextureBefore(state.access.layout), .after = after
@@ -271,6 +294,8 @@ namespace Catalpa {
             if (loadOp == RHILoadOp::Clear) state.initialized = true;
             else if (loadOp == RHILoadOp::DontCare) state.initialized = false;
             if (storeOp == RHIStoreOp::DontCare) state.initialized = false;
+            if (state.initialized) MarkInitialized(state.initializedSubresources, 0, uint64_t(range.levelCount) * range.layerCount);
+            else state.initializedSubresources.clear();
             textureUsed[index] = 1;
             return {};
         };
@@ -339,44 +364,70 @@ namespace Catalpa {
 
                 step.textureBarriers.push_back({
                     .view = step.destinationView,
-                    .range = pass.textureCopy.range,
+                    .range = fullTextureRange(destination),
                     .before = ConservativeTextureBefore(destinationState.access.layout),
                     .after = destinationAccess
                     });
 
                 destinationState.access = destinationAccess;
-                destinationState.initialized = true;
+                MarkInitialized(destinationState.initializedSubresources,
+                    uint64_t(pass.textureCopy.range.baseArrayLayer) * m_Textures[destination].snapshot.mipLevels + pass.textureCopy.range.baseMipLevel, 1);
+                destinationState.initialized = RangeContains(destinationState.initializedSubresources, 0,
+                    uint64_t(m_Textures[destination].snapshot.mipLevels) * m_Textures[destination].snapshot.arrayLayers);
                 textureUsed[destination] = 1;
+            }
+            else if (pass.kind == PassKind::TextureReadback) {
+                const uint32_t source = pass.sourceTexture.slot.index;
+                const uint32_t destination = pass.destination.slot.index;
+                const auto& region = pass.readbackCopy;
+                if (!RangeContains(textures[source].initializedSubresources,
+                    uint64_t(region.range.baseArrayLayer) * m_Textures[source].snapshot.mipLevels + region.range.baseMipLevel, 1))
+                    return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedReadback" };
+                step.kind = RenderGraphPlan::StepKind::TextureReadback;
+                step.sourceView = m_Textures[source].handle;
+                step.destination = m_Buffers[destination].handle;
+                step.readbackCopy = region;
+                const RHITextureAccess after{ RHIPipelineStage::Transfer, RHIResourceAccess::TransferRead, RHITextureLayout::TransferSource };
+                step.textureBarriers.push_back({ .view = step.sourceView, .range = fullTextureRange(source),
+                    .before = ConservativeTextureBefore(textures[source].access.layout), .after = after });
+                textures[source].access = after;
+                textureUsed[source] = 1;
+                addBufferAccess(step, destination, { RHIPipelineStage::Transfer, RHIResourceAccess::TransferWrite });
+                MarkInitialized(buffers[destination].initialized, region.bufferOffset, pass.textureBytes);
             }
             else if (pass.kind == PassKind::Clear) {
                 const uint32_t color = pass.clearTexture.slot.index;
                 step.kind = RenderGraphPlan::StepKind::Clear;
-                step.color = m_Textures[color].handle;
+                const bool depthClear = GetPixelFormatInfo(m_Textures[color].snapshot.format).isDepth;
+                if (depthClear) step.depth = m_Textures[color].handle;
+                else step.color = m_Textures[color].handle;
                 step.extent = m_Textures[color].snapshot.extent;
                 step.draw.clearColor = pass.clearColor;
-                if (const auto status = addAttachmentAccess(step, color, RHILoadOp::Clear, RHIStoreOp::Store, {
-                    .stage = RHIPipelineStage::ColorAttachmentOutput,
-                    .access = RHIResourceAccess::ColorWrite, .layout = RHITextureLayout::ColorAttachment
-                }); !status.IsSuccess()) return status;
+                step.draw.clearDepth = pass.draw.clearDepth;
+                const RHITextureAccess clearAccess = depthClear
+                    ? RHITextureAccess{ RHIPipelineStage::DepthStencilTests, RHIResourceAccess::DepthWrite, RHITextureLayout::DepthAttachment }
+                    : RHITextureAccess{ RHIPipelineStage::ColorAttachmentOutput, RHIResourceAccess::ColorWrite, RHITextureLayout::ColorAttachment };
+                if (const auto status = addAttachmentAccess(step, color, RHILoadOp::Clear, RHIStoreOp::Store, clearAccess);
+                    !status.IsSuccess()) return status;
             }
             else {
                 const auto& draw = pass.draw;
+                const bool indexed = draw.vertexCount == 0;
                 const uint32_t vertices = draw.vertices.slot.index;
                 const uint32_t indices = draw.indices.slot.index;
-                const uint64_t vertexBytes = m_Buffers[vertices].snapshot.desc.size - draw.vertexOffset;
-                const uint64_t indexSize = draw.indexType == RHIIndexType::UInt16 ? 2u : 4u;
-                const uint64_t indexReadOffset = draw.indexOffset + static_cast<uint64_t>(draw.firstIndex) * indexSize;
-                const uint64_t indexReadBytes = static_cast<uint64_t>(draw.indexCount) * indexSize;
-                if (draw.indexCount != 0 && draw.instanceCount != 0) {
-                    if (!RangeContains(buffers[indices].initialized, indexReadOffset, indexReadBytes))
+                if (indexed && draw.indexCount != 0 && draw.instanceCount != 0) {
+                    const uint64_t indexSize = draw.indexType == RHIIndexType::UInt16 ? 2u : 4u;
+                    if (!RangeContains(buffers[indices].initialized, draw.indexOffset + uint64_t(draw.firstIndex) * indexSize,
+                        uint64_t(draw.indexCount) * indexSize))
                         return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedIndexInput" };
-                    if (!RangeContains(buffers[vertices].initialized, draw.vertexOffset, vertexBytes))
-                        return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedVertexInput" };
                 }
+                if (draw.vertices.HasValue() && (draw.vertexCount != 0 || draw.indexCount != 0) && draw.instanceCount != 0
+                    && !RangeContains(buffers[vertices].initialized, draw.vertexOffset, m_Buffers[vertices].snapshot.desc.size - draw.vertexOffset))
+                    return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedVertexInput" };
                 step.kind = RenderGraphPlan::StepKind::Draw;
                 step.draw = draw;
-                step.vertices = m_Buffers[vertices].handle;
-                step.indices = m_Buffers[indices].handle;
+                if (draw.vertices.HasValue()) step.vertices = m_Buffers[vertices].handle;
+                if (indexed) step.indices = m_Buffers[indices].handle;
                 step.extent = draw.color.HasValue() ? m_Textures[draw.color.slot.index].snapshot.extent
                     : m_Textures[draw.depth.slot.index].snapshot.extent;
                 step.bindings.reserve(draw.sampledTextures.size() * 2 + draw.uniformBuffers.size());
@@ -394,13 +445,14 @@ namespace Catalpa {
                     if (sampledState.access.stage != sampledAccess.stage || sampledState.access.access != sampledAccess.access
                         || sampledState.access.layout != sampledAccess.layout) {
                         step.textureBarriers.push_back({
-                            .view = view, .before = ConservativeTextureBefore(sampledState.access.layout), .after = sampledAccess
+                            .view = view, .range = fullTextureRange(sampled), .before = ConservativeTextureBefore(sampledState.access.layout), .after = sampledAccess
                         });
                     }
                     sampledState.access = sampledAccess;
                     textureUsed[sampled] = 1;
                     step.bindings.push_back({ .binding = binding.textureBinding, .type = RHIBindingType::SampledTexture, .texture = view });
-                    step.bindings.push_back({ .binding = binding.samplerBinding, .type = RHIBindingType::Sampler, .sampler = binding.sampler });
+                    if (std::none_of(step.bindings.begin(), step.bindings.end(), [&](const auto& entry) { return entry.binding == binding.samplerBinding; }))
+                        step.bindings.push_back({ .binding = binding.samplerBinding, .type = RHIBindingType::Sampler, .sampler = binding.sampler });
                 }
                 for (size_t i = 0; i < draw.uniformBuffers.size(); ++i) {
                     const auto& binding = draw.uniformBuffers[i];
@@ -428,11 +480,11 @@ namespace Catalpa {
                         .access = RHIResourceAccess::UniformRead
                     });
                 }
-                if (vertices == indices) {
+                if (indexed && vertices == indices) {
                     addBufferAccess(step, vertices, { .stage = RHIPipelineStage::VertexInput, .access = RHIResourceAccess::VertexIndexRead });
                 } else {
-                    addBufferAccess(step, vertices, { .stage = RHIPipelineStage::VertexInput, .access = RHIResourceAccess::VertexRead });
-                    addBufferAccess(step, indices, { .stage = RHIPipelineStage::VertexInput, .access = RHIResourceAccess::IndexRead });
+                    if (draw.vertices.HasValue()) addBufferAccess(step, vertices, { .stage = RHIPipelineStage::VertexInput, .access = RHIResourceAccess::VertexRead });
+                    if (indexed) addBufferAccess(step, indices, { .stage = RHIPipelineStage::VertexInput, .access = RHIResourceAccess::IndexRead });
                 }
                 if (draw.color.HasValue()) {
                     const uint32_t color = draw.color.slot.index;
@@ -455,34 +507,74 @@ namespace Catalpa {
             }
 
             compiled.m_Steps.push_back(std::move(step));
+            if (pass.kind == PassKind::TextureReadback) {
+                RenderGraphPlan::Step host;
+                host.name = "Readback host visibility";
+                host.kind = RenderGraphPlan::StepKind::Transition;
+                addBufferAccess(host, pass.destination.slot.index, { RHIPipelineStage::Host, RHIResourceAccess::HostRead });
+                compiled.m_Steps.push_back(std::move(host));
+            }
         }
 
-        const uint32_t present = m_Present.slot.index;
-        auto& presentState = textures[present];
+        if (m_Present.HasValue()) {
+            const uint32_t present = m_Present.slot.index;
+            auto& presentState = textures[present];
+    
+            if (!presentState.initialized)
+                return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedPresent" };
+    
+            RenderGraphPlan::Step presentStep;
+            presentStep.name = "Present";
+            presentStep.kind = RenderGraphPlan::StepKind::Transition;
+            presentStep.color = m_Textures[present].handle;
+            presentStep.extent = m_Textures[present].snapshot.extent;
+    
+            const RHITextureAccess presentAccess{ .layout = RHITextureLayout::Present };
+    
+            presentStep.textureBarriers.push_back({
+                .view = presentStep.color,
+                .before = ConservativeTextureBefore(presentState.access.layout),
+                .after = presentAccess
+                });
+    
+            presentState.access = presentAccess;
+    
+            // 当前交换链 clipped = VK_TRUE，不承诺下一次 Acquire 后可以 Load 旧内容。
+            presentState.initialized = false;
+            presentState.initializedSubresources.clear();
+            textureUsed[present] = 1;
+            compiled.m_Steps.push_back(std::move(presentStep));
+        }
 
-        if (!presentState.initialized)
-            return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedPresent" };
+        for (const auto resource : builder.m_Exports) {
+            const auto index = resource.slot.index;
+            auto& state = textures[index];
+            if (!state.initialized) return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedExport" };
+            RenderGraphPlan::Step exportStep;
+            exportStep.name = "Export sampled texture";
+            exportStep.kind = RenderGraphPlan::StepKind::Transition;
+            const RHITextureAccess after{ RHIPipelineStage::FragmentShader, RHIResourceAccess::SampledRead, RHITextureLayout::ShaderReadOnly };
+            exportStep.textureBarriers.push_back({ .view = m_Textures[index].handle, .range = fullTextureRange(index),
+                .before = ConservativeTextureBefore(state.access.layout), .after = after });
+            state.access = after;
+            textureUsed[index] = 1;
+            compiled.m_Steps.push_back(std::move(exportStep));
+        }
 
-        RenderGraphPlan::Step presentStep;
-        presentStep.name = "Present";
-        presentStep.kind = RenderGraphPlan::StepKind::Transition;
-        presentStep.color = m_Textures[present].handle;
-        presentStep.extent = m_Textures[present].snapshot.extent;
-
-        const RHITextureAccess presentAccess{ .layout = RHITextureLayout::Present };
-
-        presentStep.textureBarriers.push_back({
-            .view = presentStep.color,
-            .before = ConservativeTextureBefore(presentState.access.layout),
-            .after = presentAccess
-            });
-
-        presentState.access = presentAccess;
-
-        // 当前交换链 clipped = VK_TRUE，不承诺下一次 Acquire 后可以 Load 旧内容。
-        presentState.initialized = false;
-        textureUsed[present] = 1;
-        compiled.m_Steps.push_back(std::move(presentStep));
+        for (const auto resource : builder.m_ReadbackExports) {
+            const auto index = resource.slot.index;
+            auto& state = textures[index];
+            if (!state.initialized) return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedReadbackExport" };
+            RenderGraphPlan::Step exportStep;
+            exportStep.name = "Export readback texture";
+            exportStep.kind = RenderGraphPlan::StepKind::Transition;
+            const RHITextureAccess after{ RHIPipelineStage::Transfer, RHIResourceAccess::TransferRead, RHITextureLayout::TransferSource };
+            exportStep.textureBarriers.push_back({ .view = m_Textures[index].handle, .range = fullTextureRange(index),
+                .before = ConservativeTextureBefore(state.access.layout), .after = after });
+            state.access = after;
+            textureUsed[index] = 1;
+            compiled.m_Steps.push_back(std::move(exportStep));
+        }
 
         for (size_t i = 0; i < m_Buffers.size(); ++i) {
             if (!bufferUsed[i]) continue;

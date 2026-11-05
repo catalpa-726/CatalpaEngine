@@ -58,6 +58,22 @@ namespace Catalpa {
     const FrameTime& Application::GetFrameTime() const { return m_Runtime->GetFrameTime(); }
     const RenderFramePacket& Application::GetSceneFrame() const { return m_Runtime->GetSceneFrame(); }
 
+    bool Application::SetEditorPreview(SceneHandle scene, uint64_t viewId, Extent2D extent, std::string& error)
+    { return m_Runtime->SetEditorPreview(scene, viewId, extent, error); }
+    bool Application::GetEditorPreview(uint64_t viewId, RenderSurfaceSnapshot& surface) const
+    { return m_Runtime->GetEditorPreview(viewId, surface); }
+    void Application::CloseEditorPreview(uint64_t viewId) { m_Runtime->CloseEditorPreview(viewId); }
+    bool Application::SetEditorPreviewImage(uint64_t viewId, const AssetVersionRef<ImageAsset>& image,
+        uint32_t mip, uint32_t layer, uint32_t channelMask, std::string& error)
+    { return m_Runtime->SetEditorPreviewImage(viewId, image, mip, layer, channelMask, error); }
+    bool Application::RequestEditorPick(const PickingRequest& request, uint64_t& ticket, std::string& error)
+    { return m_Runtime->RequestEditorPick(request, ticket, error); }
+    bool Application::PollEditorPick(uint64_t ticket, PickingResult& result) { return m_Runtime->PollEditorPick(ticket, result); }
+    void Application::CancelEditorPick(uint64_t ticket) { m_Runtime->CancelEditorPick(ticket); }
+    bool Application::GetGpuFrameMilliseconds(double& milliseconds) const { return m_Runtime->GetGpuFrameMilliseconds(milliseconds); }
+    bool Application::AddDebugBounds(const Aabb& bounds, const Math::Vec4& color, std::string& error, uint64_t surfaceId)
+    { return m_Runtime->AddDebugBounds(bounds, color, error, surfaceId); }
+
     void Application::AttachPendingLayers()
     {
         auto pending = std::exchange(m_PendingLayers, {});

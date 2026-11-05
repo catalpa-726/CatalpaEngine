@@ -14,6 +14,9 @@
 #include "Assets/AssetManager.h"
 #include "Core/Jobs/JobSystem.h"
 #include "ECS/ComponentRegistry.h"
+#include "Renderer/RenderSurface.h"
+#include "Renderer/Readback/Picking.h"
+#include "Images/ImageAsset.h"
 
 namespace Catalpa {
 
@@ -64,6 +67,18 @@ namespace Catalpa {
         [[nodiscard]] const FrameTime& GetFrameTime() const noexcept { return m_FrameTime; }
         [[nodiscard]] const RenderFramePacket& GetSceneFrame() const noexcept;
 
+        // 编辑宿主只借用场景句柄与表现快照，不能接管设备或缓存所有权。
+        [[nodiscard]] bool SetEditorPreview(SceneHandle scene, uint64_t viewId, Extent2D extent, std::string& error);
+        [[nodiscard]] bool GetEditorPreview(uint64_t viewId, RenderSurfaceSnapshot& surface) const;
+        void CloseEditorPreview(uint64_t viewId);
+        [[nodiscard]] bool SetEditorPreviewImage(uint64_t viewId, const AssetVersionRef<ImageAsset>& image,
+            uint32_t mip, uint32_t layer, uint32_t channelMask, std::string& error);
+        [[nodiscard]] bool RequestEditorPick(const PickingRequest& request, uint64_t& ticket, std::string& error);
+        [[nodiscard]] bool PollEditorPick(uint64_t ticket, PickingResult& result);
+        void CancelEditorPick(uint64_t ticket);
+        [[nodiscard]] bool GetGpuFrameMilliseconds(double& milliseconds) const;
+        [[nodiscard]] bool AddDebugBounds(const Aabb& bounds, const Math::Vec4& color, std::string& error, uint64_t surfaceId = 0);
+
     private:
         // 持有运行期对象；Shutdown 显式按 Renderer、交换链、设备的顺序释放。
         std::unique_ptr<RHIDevice> m_Device;
@@ -86,6 +101,19 @@ namespace Catalpa {
 
         // 由窗口表面变化事件标记重建请求。
         bool m_SwapchainDirty = true;
+        struct PreviewRequest {
+            SceneHandle scene;
+            Extent2D extent;
+            uint64_t generation = 1;
+        };
+        std::map<uint64_t, PreviewRequest> m_PreviewRequests;
+        uint64_t m_NextPreviewGeneration = 1;
+        std::string m_LastPreviewError;
+        std::map<AssetId, std::string> m_EnvironmentRequestErrors;
+        // 仅发非阻塞加载请求；固定版本由 Renderer 接包边界解析，不反向进入工具链。
+        void RequestFrameAssets(const RenderFramePacket& packet);
+        // 在 Layer UI 绘制前提取最新场景，但只由 Renderer 在真实提交后发布显示帧。
+        [[nodiscard]] bool UpdateEditorPreviews(uint64_t sequence, std::string& error);
 
     private:
         // 缓存上次接受的请求配置。后端可能限制尺寸或回退呈现模式，因此不能用实际结果代替这个缓存，否则容易每轮都重建。

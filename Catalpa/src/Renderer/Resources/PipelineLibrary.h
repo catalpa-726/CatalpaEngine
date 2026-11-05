@@ -8,6 +8,7 @@ namespace Catalpa {
         RHIDevice* device = nullptr;
         GraphicsPipelineHandle pipeline{};
         AssetVersionRef<ShaderAsset> vertex, fragment;
+        std::vector<RHIBindingLayoutEntry> bindings;
         ~PipelineResource();
     };
     // 一个device的唯一管线owner缓存，键含完整shader版本/入口/布局/附件和状态。

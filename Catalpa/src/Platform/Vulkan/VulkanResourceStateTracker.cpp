@@ -35,8 +35,13 @@ namespace Catalpa {
         if (!ConvertVulkanTextureAccess(source, texture.desc.usage, texture.presentable, stage, access, layout))
             return false;
 
+        const uint64_t subresources = uint64_t(texture.desc.mipLevels) * texture.desc.arrayLayers;
+        if (!IsValidInitializedRanges(state.initializedSubresources, subresources)) return false;
+        if (!state.initializedSubresources.empty()
+            && state.initialized != RangeContains(state.initializedSubresources, 0, subresources)) return false;
+
         if (source.layout == RHITextureLayout::Undefined || source.layout == RHITextureLayout::Present)
-            return !state.initialized && source.access == RHIResourceAccess::None &&
+            return !state.initialized && state.initializedSubresources.empty() && source.access == RHIResourceAccess::None &&
             (source.stage == RHIPipelineStage::None || source.stage == RHIPipelineStage::AllCommands);
 
         if (source.access == RHIResourceAccess::DepthRead && !state.initialized) return false;
@@ -75,7 +80,9 @@ namespace Catalpa {
             .sampleCount = viewSlot->record.sampleCount,
             .state = textureSlot->state,
             .usage = textureSlot->record.desc.usage,
-            .presentable = textureSlot->record.presentable
+            .presentable = textureSlot->record.presentable,
+            .mipLevels = textureSlot->record.desc.mipLevels,
+            .arrayLayers = textureSlot->record.desc.arrayLayers
         };
 
         return {};
@@ -164,7 +171,7 @@ namespace Catalpa {
     void VulkanResourceStateTracker::CommitAccepted(
         VulkanResourceRegistry& registry,
         std::span<RHIBufferStateUpdate> buffers,
-        std::span<RHITextureStateUpdate> textures) noexcept
+        std::span<RHITextureStateUpdate> textures, RHICompletionPoint completion) noexcept
     {
         // 当前提交和状态发布都在同一线程，Validate 与此处之间不插入其他状态修改。
         for (auto& update : buffers) {
@@ -174,6 +181,7 @@ namespace Catalpa {
                 slot.state.revision == update.expectedRevision && slot.references != 0,
                 "Accepted Buffer state transaction is no longer valid!");
 
+            update.after.lastUse = completion;
             std::swap(slot.state, update.after);
         }
 

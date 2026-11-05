@@ -84,6 +84,7 @@ namespace Catalpa {
         // Buffer
         [[nodiscard]] RHIStatus CreateBuffer(const RHIBufferDesc& desc, BufferHandle& buffer) override;
         [[nodiscard]] RHIStatus WriteBuffer(BufferHandle buffer, uint64_t offset, std::span<const std::byte> data) override;
+        [[nodiscard]] RHIStatus ReadBuffer(BufferHandle buffer, uint64_t offset, std::span<std::byte> data, RHICompletionPoint completion) override;
         void ReleaseBuffer(BufferHandle buffer) override;
 
         [[nodiscard]] RHIStatus GetBufferState(BufferHandle buffer, RHIBufferStateSnapshot& snapshot) const override;
@@ -98,6 +99,7 @@ namespace Catalpa {
         // Sampler 创建和逻辑所有权。
         [[nodiscard]] RHIStatus CreateSampler(const RHISamplerDesc& desc, SamplerHandle& sampler) override;
         void ReleaseSampler(SamplerHandle sampler) override;
+        [[nodiscard]] RHIStatus CreateQueryPool(const RHIQueryDesc& desc, std::shared_ptr<RHIQueryPool>& pool) override;
 
     private:
         // 后端环境与设备句柄

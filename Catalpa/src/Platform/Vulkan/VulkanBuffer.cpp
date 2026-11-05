@@ -29,6 +29,13 @@ namespace Catalpa {
             allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
             allocationInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
             break;
+        case RHIMemoryDomain::Readback:
+            if (desc.size > std::numeric_limits<size_t>::max()
+                || !HasBufferUsage(desc.usage, RHIBufferUsage::TransferDestination))
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+            allocationInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            break;
         default:
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
         }
@@ -51,7 +58,7 @@ namespace Catalpa {
         record.desc = desc;
         record.mapped = static_cast<std::byte*>(allocated.pMappedData);
 
-        if (desc.memory == RHIMemoryDomain::Upload && !record.mapped) {
+        if (desc.memory != RHIMemoryDomain::Device && !record.mapped) {
             DestroyVulkanBuffer(device, record);
             return { .code = RHIErrorCode::BackendFailure, .operation = operation };
         }

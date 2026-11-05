@@ -26,6 +26,9 @@ namespace Catalpa::Editor {
         void CloseProject();
         void Draw(bool& visible, const PanelText&);
         bool Busy() const noexcept;
+        AssetId SelectedAsset() const noexcept { return m_AssetsReady ? m_Selected : AssetId{}; }
+        AssetId TakeOpenAsset() noexcept { return std::exchange(m_OpenAsset, AssetId{}); }
+        const auto& Recipe() const noexcept { return m_Recipe; }
 
         const Tools::AssetBuildResult& Result() const {
             return m_Result;
@@ -33,6 +36,7 @@ namespace Catalpa::Editor {
 
       private:
         struct TaskState {
+            std::shared_ptr<const Tools::AssetBuildRequest> recipe;
             std::mutex mutex;
             std::string phase;
             size_t done = 0, total = 1;
@@ -55,6 +59,7 @@ namespace Catalpa::Editor {
         SceneManager& m_Scenes;
         JobHandle m_Job;
         std::shared_ptr<TaskState> m_Task;
+        std::shared_ptr<const Tools::AssetBuildRequest> m_Recipe;
         Tools::AssetBuildResult m_Result;
         std::string m_Error, m_Phase;
         std::vector<AssetId> m_LoadOrder;
@@ -69,6 +74,7 @@ namespace Catalpa::Editor {
         bool m_PreviewRequested = false;
         bool m_ReturnScene = false;
         AssetId m_Selected;
+        AssetId m_OpenAsset;
         SceneHandle m_PreviewScene, m_PreviousScene;
         std::vector<std::pair<SceneHandle, EntityReference>> m_CreatedRoots;
     };

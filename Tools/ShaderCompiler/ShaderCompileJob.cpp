@@ -107,7 +107,7 @@ namespace Catalpa::Tools {
             if(!request.sourceRoot.is_absolute()||!request.sourceFile.is_absolute()||!request.sdkRoot.is_absolute()){error="shader fingerprint requires absolute source/SDK paths";return false;}
             const auto root=std::filesystem::canonical(request.sourceRoot),file=std::filesystem::canonical(request.sourceFile),sdk=std::filesystem::canonical(request.sdkRoot);
             if(!IsPathWithinRoot(file,root)||file.extension()!=L".slang"){error="shader fingerprint source escapes root";return false;}
-            BinaryWriter identity;identity.String("Catalpa.ShaderVariant/v1;target=vulkan1.3;profile=spirv_1_5;direct=1;invariant=1;slang-reflection=1;reflection-adapter=2;reflect=vulkan-sdk-1.4.363.0");
+            BinaryWriter identity;identity.String("Catalpa.ShaderVariant/v2;target=vulkan1.3;profile=spirv_1_5;direct=1;invariant=1;slang-reflection=1;reflection-adapter=3;image-dimension=2;reflect=vulkan-sdk-1.4.363.0");
             if(!LockedSdk(sdk,identity,error))return false;std::map<std::string,std::string,std::less<>> sources;if(!Snapshot(root,sources,error))return false;
             const auto relative=ShaderToolDetail::PathText(file.lexically_relative(root));if(!sources.contains(relative)){error="source missing from fingerprint snapshot";return false;}identity.String(relative);
             identity.U32(uint32_t(sources.size()));for(const auto& [name,hash]:sources){identity.String(name);identity.String(hash);}identity.U32(uint32_t(request.defines.size()));for(const auto& [name,value]:request.defines){identity.String(name);identity.String(value);}
@@ -120,7 +120,7 @@ namespace Catalpa::Tools {
             const auto root=std::filesystem::canonical(request.sourceRoot),file=std::filesystem::canonical(request.sourceFile),sdk=std::filesystem::canonical(request.sdkRoot);
             if(!IsPathWithinRoot(file,root)||file.extension()!=L".slang"){error="shader source is outside root or not .slang";return false;}
             ShaderCompileRequest job=request;job.sourceRoot=root;job.sourceFile=file;job.sdkRoot=sdk;
-            BinaryWriter identity;identity.String("Catalpa.ShaderVariant/v1;target=vulkan1.3;profile=spirv_1_5;direct=1;invariant=1;slang-reflection=1;reflection-adapter=2;reflect=vulkan-sdk-1.4.363.0");
+            BinaryWriter identity;identity.String("Catalpa.ShaderVariant/v2;target=vulkan1.3;profile=spirv_1_5;direct=1;invariant=1;slang-reflection=1;reflection-adapter=3;image-dimension=2;reflect=vulkan-sdk-1.4.363.0");
             if(!LockedSdk(sdk,identity,error))return false;
             std::map<std::string,std::string,std::less<>> before,after;if(!Snapshot(root,before,error))return false;
             const auto relative=ShaderToolDetail::PathText(file.lexically_relative(root));if(!before.contains(relative)){error="source not in captured dependency root";return false;}identity.String(relative);

@@ -29,7 +29,8 @@ namespace Catalpa {
     // 写入可完全初始化范围、保留已有初始化，或丢弃其内容；绘制不假定覆盖全部像素。
     enum class RGWriteInitialization { Preserve, Initialize, Discard };
 
-    // 编译器的物理范围目录。纹理目前仅接受 mip0/layer0，以 [0,1) 表示整附件。
+    // 编译器的物理范围目录：buffer 按字节，texture 按 layer*mipLevels+mip 登记初始化。
+    // 子资源的内容状态与完整唯一视图的布局分开跟踪；附件仍限单 mip、单层。
     struct RGResourceDeclaration {
         RGResourceKind kind = RGResourceKind::Buffer;
         uint64_t size = 0;

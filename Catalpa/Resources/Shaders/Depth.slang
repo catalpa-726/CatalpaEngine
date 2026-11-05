@@ -1,13 +1,14 @@
 import Common.Mesh;
+import Common.Surface;
 
-// 完整深度入口使用相同共享变换；当前Equal预通道实际复用Unlit VS字节码，避免重编译重关联。
+// 深度与颜色共享变换、UV时间和Mask采样，禁止纯实心预通道填满树叶孔洞。
 [shader("vertex")]
 MeshVertexOutput vertexMain(MeshVertexInput input)
 {
     return transformMeshVertex(input);
 }
-// 无颜色输出的合法fragment入口，S07再接与颜色pass一致的Mask语义。
 [shader("fragment")]
-void fragmentMain()
+void fragmentMain(MeshVertexOutput input)
 {
+    applySurfaceMask(surfaceBase(surfaceUV(input.uv), input.vertexColor).a);
 }

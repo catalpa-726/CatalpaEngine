@@ -11,5 +11,8 @@ namespace Catalpa::Tools {
 
         static bool Definition(const ImportedMaterial&, AssetId shader, bool preview, std::string& json,
                                std::string& error);
+        // glTF枚举是跨导入器可复核的源协议值；输出领域采样策略，不持有RHI对象。
+        static bool SamplerFlags(uint32_t wrapU, uint32_t wrapV, uint32_t minFilter, uint32_t magFilter,
+            uint32_t& output, std::string& error);
     };
 }

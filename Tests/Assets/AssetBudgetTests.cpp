@@ -127,17 +127,19 @@ namespace Catalpa::Tests {
             && history.GetStatus(child.id)==AssetStatus::Ready,"One bounded identity history slot records a real published digest");
         context.Check(!history.Request(parent.id,error) && error.find("history")!=std::string::npos,"Version-history capacity is explicit and refuses growth before further IO");
         // 使用本次构建的真正Unlit容器，内置材质不能靠未验证的空Shader对象提前发布。
-        std::filesystem::path resources;std::vector<AssetRecord> shaderRecords;VirtualFileSystem shaderFiles;AssetRegistry shaderRegistry;AssetId unlit;
+        std::filesystem::path resources;std::vector<AssetRecord> shaderRecords;VirtualFileSystem shaderFiles;AssetRegistry shaderRegistry;AssetId unlit, pbr;
         if(!GetExecutableDirectory(resources,error)
             ||!ShaderLibrary::ReadBuiltinCatalog(resources/"Resources"/"Shaders","shaders",shaderRecords,error)
             ||!shaderRegistry.Replace(shaderRecords,error)
             ||!shaderFiles.MountReadOnly("shaders",resources/"Resources"/"Shaders",0,error)
-            ||!ShaderLibrary::BuiltinId("Unlit.slang",unlit,error)){context.Check(false,error);return;}
+            ||!ShaderLibrary::BuiltinId("Unlit.slang",unlit,error)
+            ||!ShaderLibrary::BuiltinId("Pbr.slang",pbr,error)){context.Check(false,error);return;}
         AssetManager builtins(jobs,std::move(shaderFiles),std::move(shaderRegistry));
         context.Check(ShaderLibrary::RegisterAssetLoader(builtins,error) && RegisterGeometryAssetLoaders(builtins,error)
             && RegisterImageAssetLoader(builtins,error) && RegisterMaterialAssetLoaders(builtins,error),"Runtime domain loaders register before builtin publication");
         context.Check(!RegisterBuiltinAssets(builtins,error),"Builtin materials cannot publish before their actual shader becomes ready");
-        context.Check(builtins.Request(unlit,error)&&Await(builtins,unlit)&&RegisterBuiltinAssets(builtins,error),"Runtime builtin CPU assets publish after the fixed shader dependency is ready");
+        context.Check(builtins.Request(unlit,error)&&Await(builtins,unlit)&&builtins.Request(pbr,error)&&Await(builtins,pbr)
+            &&RegisterBuiltinAssets(builtins,error),"Runtime builtin CPU assets publish after both fixed surface shader dependencies are ready");
         AssetVersionRef<ImageAsset> errorImage; AssetVersionRef<MaterialInstance> errorMaterial;
         context.Check(builtins.Acquire(Id(900),errorImage,fallback,error) && fallback && errorImage.GetId()==BuiltinAssetIds::ErrorImage,"Missing image resolves the registered error image version");
         context.Check(builtins.Acquire(Id(901),errorMaterial,fallback,error) && fallback && errorMaterial.GetId()==BuiltinAssetIds::ErrorInstance,"Missing material resolves the shared error material instance");
@@ -145,6 +147,12 @@ namespace Catalpa::Tests {
         context.Check(builtins.Acquire(BuiltinAssetIds::ErrorDefinition,actualDefinition,fallback,error) && errorMaterial.HasValue()
             && errorMaterial.Get()->definition.Get()==actualDefinition.Get(),"Builtin material instances share the actual published definition owner");
         AssetVersionRef<ShaderAsset> fixedShader;
+        AssetVersionRef<ShaderAsset> fixedPbrShader;
+        AssetVersionRef<MaterialDefinition> actualPbr;
+        context.Check(builtins.Acquire(pbr, fixedPbrShader, fallback, error) &&
+            builtins.Acquire(BuiltinAssetIds::DefaultPbrDefinition, actualPbr, fallback, error) &&
+            actualPbr.Get()->shaderVersion.Get() == fixedPbrShader.Get() && actualPbr.Get()->shader.id == pbr,
+            "PBR builtin pins Pbr bytecode instead of accidentally sharing the Unlit shader");
         context.Check(builtins.Acquire(unlit,fixedShader,fallback,error)&&actualDefinition.HasValue()
             &&actualDefinition.Get()->shaderVersion.Get()==fixedShader.Get(),"Builtin definition pins the exact ready shader version, not only its logical ID");
         if(actualDefinition.HasValue()) {
@@ -159,7 +167,10 @@ namespace Catalpa::Tests {
             context.Check(ShaderLibrary::RegisterAssetLoader(revisions,error)&&RegisterImageAssetLoader(revisions,error)
                 &&RegisterMaterialAssetLoaders(revisions,error),"Register a separate owner for explicit generated shader revisions");
             auto firstShader=fixedShader.GetShared();
+            AssetSnapshot measuredPbr;
+            if (!builtins.GetAsset(pbr, std::type_index(typeid(ShaderAsset)), measuredPbr, error)) { context.Check(false,error); return; }
             context.Check(revisions.PublishBuiltin<ShaderAsset>(unlit,1,firstShader,measured.asset.residentBytes,error)
+                &&revisions.PublishBuiltin<ShaderAsset>(pbr,1,fixedPbrShader.GetShared(),measuredPbr.asset.residentBytes,error)
                 &&RegisterBuiltinAssets(revisions,error),"Publish material definitions bound to generated shader revision one");
             AssetVersionRef<MaterialInstance> oldMaterial;
             context.Check(revisions.Acquire(BuiltinAssetIds::DefaultUnlitInstance,oldMaterial,fallback,error),"Retain a material snapshot before shader replacement");

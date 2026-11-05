@@ -11,7 +11,10 @@ namespace Catalpa {
         AssetVersionRef<MeshAsset> asset;
         BufferHandle vertices{}, indices{};
         bool uploadPending = true;
+        bool hasSourceNormal = false;
+        float maximumVertexColor = 1.0f;
         ~GeometryGpuResource();
+        [[nodiscard]] static CATALPA_API VertexLayout GetVertexLayout() noexcept;
     };
     class CATALPA_API GeometryGpuCache {
     public:

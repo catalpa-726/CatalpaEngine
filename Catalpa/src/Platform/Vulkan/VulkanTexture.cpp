@@ -19,8 +19,7 @@ namespace Catalpa {
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
         const bool depth = GetPixelFormatInfo(desc.format).isDepth;
-        if (depth != HasTextureUsage(desc.usage, RHITextureUsage::DepthAttachment)
-            || (depth && desc.usage != RHITextureUsage::DepthAttachment)
+        if ((depth && HasTextureUsage(desc.usage, RHITextureUsage::ColorAttachment))
             || (!depth && HasTextureUsage(desc.usage, RHITextureUsage::DepthAttachment)))
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
         const auto support = device.GetFormatSupport(desc.format);
@@ -31,7 +30,10 @@ namespace Catalpa {
             || (HasTextureUsage(desc.usage, RHITextureUsage::TransferDestination) && !support.transferDestination))
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
 
-        if (desc.mipLevels != 1 || desc.arrayLayers != 1 || desc.sampleCount != 1)
+        uint32_t maxMips = 0;
+        for (uint32_t size = std::max(desc.extent.width, desc.extent.height); size != 0; size >>= 1) ++maxMips;
+        if (desc.mipLevels > maxMips || desc.sampleCount != 1
+            || (desc.cubeCompatible && (desc.extent.width != desc.extent.height || desc.arrayLayers != 6)))
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
 
         VkImageFormatProperties properties{};
@@ -39,7 +41,7 @@ namespace Catalpa {
         RHIStatus status = MakeVulkanStatus(
             vkGetPhysicalDeviceImageFormatProperties(
                 device.GetPhysicalDevice(), format, VK_IMAGE_TYPE_2D,
-                VK_IMAGE_TILING_OPTIMAL, usage, 0, &properties),
+                VK_IMAGE_TILING_OPTIMAL, usage, desc.cubeCompatible ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0, &properties),
             "vkGetPhysicalDeviceImageFormatProperties");
 
         if (!status.IsSuccess()) return status;
@@ -54,6 +56,7 @@ namespace Catalpa {
 
         const VkImageCreateInfo info{
             .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .flags = desc.cubeCompatible ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : VkImageCreateFlags(0),
             .imageType = VK_IMAGE_TYPE_2D,
             .format = format,
             .extent = { desc.extent.width, desc.extent.height, 1 },
@@ -105,8 +108,19 @@ namespace Catalpa {
         RHITextureSubresourceRange supportedRange{};
         const bool depth = GetPixelFormatInfo(format).isDepth;
         supportedRange.aspect = depth ? RHITextureAspect::Depth : RHITextureAspect::Color;
+        supportedRange.levelCount = parent.desc.mipLevels;
+        supportedRange.layerCount = parent.desc.arrayLayers;
         if (desc.range != supportedRange || format != parent.desc.format)
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
+
+        VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D;
+        if (desc.type == RHITextureViewType::Cube) {
+            if (!parent.desc.cubeCompatible || parent.desc.arrayLayers != 6)
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            viewType = VK_IMAGE_VIEW_TYPE_CUBE;
+        } else if (desc.type == RHITextureViewType::Texture2DArray) viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+        else if (desc.type != RHITextureViewType::Texture2D || parent.desc.arrayLayers != 1)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
         // 当前View支持颜色采样/附件，或独立D32深度附件。
         if (!HasTextureUsage(parent.desc.usage, RHITextureUsage::Sampled) &&
@@ -117,7 +131,7 @@ namespace Catalpa {
         const VkImageViewCreateInfo info{
             .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
             .image = parent.image,
-            .viewType = VK_IMAGE_VIEW_TYPE_2D,
+            .viewType = viewType,
             .format = ToVulkanFormat(format),
             .subresourceRange = {
                 .aspectMask = static_cast<VkImageAspectFlags>(depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT),
@@ -144,7 +158,10 @@ namespace Catalpa {
             .usage = parent.desc.usage,
             .presentable = parent.presentable,
             .linearFiltering = device.GetFormatSupport(format).linearFiltering,
-            .texture = texture
+            .texture = texture,
+            .mipLevels = parent.desc.mipLevels,
+            .arrayLayers = parent.desc.arrayLayers,
+            .type = desc.type
         };
 
         return {};

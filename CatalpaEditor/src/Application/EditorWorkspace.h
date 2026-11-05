@@ -10,6 +10,7 @@ namespace Catalpa::Editor {
     class ContentBrowserPanel;
     class ConsolePanel;
     class DependencyPanel;
+    class WorkspaceEditing;
 
     // 编辑工作区由宿主应用挂载；只借用引擎服务和既有 ImGui 上下文。
     class EditorWorkspace final : public Layer {
@@ -56,6 +57,7 @@ namespace Catalpa::Editor {
         std::unique_ptr<ContentBrowserPanel> m_Content;
         std::unique_ptr<ConsolePanel> m_Console;
         std::unique_ptr<DependencyPanel> m_Dependencies;
+        std::unique_ptr<WorkspaceEditing> m_Editing;
         std::array<char, 2048> m_ProjectPathInput{};
         bool m_OpenProjectPopup = false;
         std::filesystem::path m_ExecutableDirectory;
@@ -69,6 +71,8 @@ namespace Catalpa::Editor {
         std::string m_Status;
         std::string m_StatusError;
         Action m_Action = Action::None;
+        Action m_DiscardAction = Action::None;
+        bool m_DiscardExit = false, m_AllowDiscard = false;
         bool m_Attached = false;
         bool m_AutoSave = true;
         bool m_Dirty = false;

@@ -7,6 +7,10 @@
 #include "Images/ImageAssetLoader.h"
 #include "Materials/MaterialAssetLoader.h"
 #include "Shaders/ShaderLibrary.h"
+#include "Lighting/EnvironmentAssetLoader.h"
+#include "Lighting/LightValidation.h"
+#include "Lighting/EnvironmentSettings.h"
+#include "Camera/CameraProjection.h"
 
 namespace Catalpa {
     namespace {
@@ -40,6 +44,53 @@ namespace Catalpa {
             return true;
         }
     }
+    // 光源强度保留由类型定义的单位；schema 不把作者值转成 GPU 常量或静默裁剪。
+    static bool LightSchema(const ArchiveValue& value, std::string& error)
+    {
+        LightParameters light;
+        light.type = static_cast<LightType>(static_cast<uint32_t>(FieldNumber(*value.Find("type"))));
+        const auto& color = std::get<ArchiveValue::Array>(value.Find("color")->data);
+        light.color = { FieldNumber(color[0]), FieldNumber(color[1]), FieldNumber(color[2]) };
+        light.intensity = FieldNumber(*value.Find("intensity"));
+        light.range = FieldNumber(*value.Find("range"));
+        light.innerConeRadians = FieldNumber(*value.Find("inner_cone"));
+        light.outerConeRadians = FieldNumber(*value.Find("outer_cone"));
+        light.castShadows = std::get<bool>(value.Find("cast_shadows")->data);
+        light.shadowBiasMeters = FieldNumber(*value.Find("shadow_bias"));
+        return ValidateLightParameters(light, error);
+    }
+
+    static bool EnvironmentSchema(const ArchiveValue& value, std::string& error)
+    {
+        const float intensity = FieldNumber(*value.Find("intensity"));
+        const float rotation = FieldNumber(*value.Find("rotation"));
+        const float exposure = FieldNumber(*value.Find("exposure_ev"));
+        EnvironmentSettings settings{ .intensity = intensity, .rotationRadians = rotation, .exposureEV = exposure };
+        if (const auto* enabled = value.Find("fog_enabled")) settings.fogEnabled = std::get<bool>(enabled->data);
+        if (const auto* density = value.Find("fog_density")) settings.fogDensityPerMeter = FieldNumber(*density);
+        if (const auto* color = value.Find("fog_color")) {
+            const auto& values = std::get<ArchiveValue::Array>(color->data);
+            settings.fogColor = { FieldNumber(values[0]), FieldNumber(values[1]), FieldNumber(values[2]) };
+        }
+        return ValidateEnvironmentSettings(settings, error);
+    }
+
+    static bool CameraSchema(const ArchiveValue& value, std::string& error)
+    {
+        CameraLens lens;
+        lens.projection = static_cast<ProjectionType>(static_cast<uint32_t>(FieldNumber(*value.Find("projection"))));
+        lens.verticalFovRadians = FieldNumber(*value.Find("vertical_fov"));
+        lens.nearPlane = FieldNumber(*value.Find("near_plane"));
+        lens.farPlane = FieldNumber(*value.Find("far_plane"));
+        lens.orthographicHeight = FieldNumber(*value.Find("orthographic_height"));
+        lens.infiniteFar = std::get<bool>(value.Find("infinite_far")->data);
+        lens.reversedZ = std::get<bool>(value.Find("reversed_z")->data);
+        const auto status = ValidateCameraLens(lens);
+        if (!status.IsSuccess()) { error = status.message; return false; }
+        error.clear();
+        return true;
+    }
+
     bool RegisterRuntimeComponentSchemas(ComponentRegistry& registry,std::string& error)
     {
         try {
@@ -52,6 +103,38 @@ namespace Catalpa {
             schemas.push_back({"catalpa.mesh_renderer",1,{{"mesh","Mesh asset ID",ComponentFieldKind::StableId,true},
                 {"materials","Material asset IDs",ComponentFieldKind::StableIdArray,true},{"color","Instance color",ComponentFieldKind::Float4,true},
                 {"visible","Visible",ComponentFieldKind::Bool,true}},MeshRendererSchema});
+            schemas.push_back({ "catalpa.light", 1, {
+                { "type", "Light type", ComponentFieldKind::UInt, true, 0.0, 2.0 },
+                { "color", "Linear RGB", ComponentFieldKind::Float3, true },
+                { "intensity", "Illuminance (lux) / intensity (cd)", ComponentFieldKind::Number, true },
+                { "range", "Range (m)", ComponentFieldKind::Number, true },
+                { "inner_cone", "Inner cone (rad)", ComponentFieldKind::Number, true },
+                { "outer_cone", "Outer cone (rad)", ComponentFieldKind::Number, true },
+                { "cast_shadows", "Cast shadows", ComponentFieldKind::Bool, true },
+                { "shadow_bias", "Shadow bias (m)", ComponentFieldKind::Number, true },
+                { "enabled", "Enabled", ComponentFieldKind::Bool, true } }, LightSchema });
+            schemas.push_back({ "catalpa.environment", 1, {
+                { "environment", "Environment asset", ComponentFieldKind::StableId, true },
+                { "intensity", "Intensity", ComponentFieldKind::Number, true },
+                { "rotation", "Rotation (rad)", ComponentFieldKind::Number, true },
+                { "exposure_ev", "Exposure (EV)", ComponentFieldKind::Number, true },
+                { "draw_background", "Draw background", ComponentFieldKind::Bool, true },
+                { "enabled", "Enabled", ComponentFieldKind::Bool, true },
+                { "fog_enabled", "Uniform fog", ComponentFieldKind::Bool, false },
+                { "fog_color", "Linear fog RGB", ComponentFieldKind::Float3, false },
+                { "fog_density", "Fog density (1/m)", ComponentFieldKind::Number, false } }, EnvironmentSchema });
+            schemas.push_back({ "catalpa.camera", 1, {
+                { "projection", "Projection", ComponentFieldKind::UInt, true, 0.0, 1.0 },
+                { "vertical_fov", "Vertical FOV (rad)", ComponentFieldKind::Number, true },
+                { "near_plane", "Near plane (m)", ComponentFieldKind::Number, true },
+                { "far_plane", "Far plane (m)", ComponentFieldKind::Number, true },
+                { "orthographic_height", "Orthographic height (m)", ComponentFieldKind::Number, true },
+                { "infinite_far", "Infinite far", ComponentFieldKind::Bool, true },
+                { "reversed_z", "Reversed Z", ComponentFieldKind::Bool, true },
+                { "enabled", "Enabled", ComponentFieldKind::Bool, true },
+                { "priority", "Priority", ComponentFieldKind::Int, true, -2147483648.0, 2147483647.0 },
+                { "view_id", "View ID", ComponentFieldKind::UInt, true, 1.0 },
+                { "history_revision", "History revision", ComponentFieldKind::UInt, true, 1.0 } }, CameraSchema });
             return registry.RegisterMany(schemas,error);
         }catch(const std::exception& exception){error=exception.what();return false;}
     }
@@ -61,7 +144,8 @@ namespace Catalpa {
         return ShaderLibrary::RegisterAssetLoader(manager,error)
             && RegisterGeometryAssetLoaders(manager,error)
             && RegisterImageAssetLoader(manager,error)
-            && RegisterMaterialAssetLoaders(manager,error);
+            && RegisterMaterialAssetLoaders(manager,error)
+            && RegisterEnvironmentAssetLoader(manager,error);
     }
     AssetId BuiltinMaterialId(BuiltinMaterialKind kind,bool definition) noexcept
     {

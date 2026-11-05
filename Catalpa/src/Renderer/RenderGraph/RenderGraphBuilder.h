@@ -28,12 +28,18 @@ namespace Catalpa {
         [[nodiscard]] CATALPA_API RHIStatus AddCopyPass(const char* name, RGBuffer source, RGBuffer destination, const RHIBufferCopy& copy);
         // 登记整幅、紧密排列的颜色纹理上传。
         [[nodiscard]] CATALPA_API RHIStatus AddTextureUploadPass(const char* name, RGBuffer source, RGTexture destination, const RHIBufferTextureCopy& copy);
+        [[nodiscard]] CATALPA_API RHIStatus AddTextureReadbackPass(const char* name, RGTexture source, RGBuffer destination, const RHITextureBufferCopy& copy);
         [[nodiscard]] CATALPA_API RHIStatus AddDrawPass(const char* name, const RGIndexedDrawDesc& desc);
         // 空场景也以真实附件Clear初始化颜色，不用零顶点绘制或旧内容掩盖未初始化。
         [[nodiscard]] CATALPA_API RHIStatus AddClearPass(const char* name, RGTexture color, std::array<float, 4> clearColor);
+        [[nodiscard]] CATALPA_API RHIStatus AddDepthClearPass(const char* name, RGTexture depth, float clearDepth);
 
         // 指定最终呈现输出，并结束声明阶段。
         [[nodiscard]] CATALPA_API RHIStatus ExportPresent(RGTexture resource);
+        // 离屏结果作为真实输出保活，最终转为采样布局；无需伪造 Present。
+        [[nodiscard]] CATALPA_API RHIStatus ExportTexture(RGTexture resource);
+        [[nodiscard]] CATALPA_API RHIStatus ExportReadbackTexture(RGTexture resource);
+        [[nodiscard]] CATALPA_API RHIStatus SetTimestampQueries(std::shared_ptr<RHIQueryPool> pool);
 
         // 返回最后声明的 pass，用于补充不能由资源访问推导的先后关系。
         [[nodiscard]] CATALPA_API RGPass GetLastPass() const noexcept;
@@ -51,7 +57,7 @@ namespace Catalpa {
             RHITextureStateSnapshot snapshot{};
         };
 
-        enum class PassKind { Copy, TextureUpload, Draw, Clear };
+        enum class PassKind { Copy, TextureUpload, TextureReadback, Draw, Clear };
 
         // 保存不同 Pass 的声明参数，由 Compile 生成实际命令步骤。
         struct Pass {
@@ -63,6 +69,8 @@ namespace Catalpa {
             RGTexture destinationTexture{};
             RHIBufferTextureCopy textureCopy{};
             uint64_t textureBytes = 0;
+            RGTexture sourceTexture{};
+            RHITextureBufferCopy readbackCopy{};
             RGIndexedDrawDesc draw{};
             RGTexture clearTexture{};
             std::array<float, 4> clearColor{};
@@ -86,6 +94,9 @@ namespace Catalpa {
         std::vector<TextureResource> m_Textures;
         std::vector<Pass> m_Passes;
         RGTexture m_Present{};
+        std::vector<RGTexture> m_Exports;
+        std::vector<RGTexture> m_ReadbackExports;
+        std::shared_ptr<RHIQueryPool> m_Queries;
         std::vector<RGDependency> m_Dependencies;
     };
 

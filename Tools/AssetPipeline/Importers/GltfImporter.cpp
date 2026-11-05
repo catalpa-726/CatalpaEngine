@@ -250,6 +250,11 @@ namespace Catalpa::Tools {
                     ",wrapT=" + std::to_string(uint32_t(sampler.wrapT)) +
                     ",mag=" + (sampler.magFilter ? std::to_string(uint32_t(*sampler.magFilter)) : "default") +
                     ",min=" + (sampler.minFilter ? std::to_string(uint32_t(*sampler.minFilter)) : "default");
+                uint32_t flags = 0;
+                if (!MaterialImporter::SamplerFlags(uint32_t(sampler.wrapS), uint32_t(sampler.wrapT),
+                    sampler.minFilter ? uint32_t(*sampler.minFilter) : 9987u,
+                    sampler.magFilter ? uint32_t(*sampler.magFilter) : 9729u, flags, error)) return false;
+                material.samplers[semantic] = flags;
             }
             return true;
         };
@@ -560,8 +565,8 @@ namespace Catalpa::Tools {
             ctx.Diagnose(AssetDiagnosticLevel::Warning, "cameras",
                          "Source camera nodes retain transforms; camera lenses are outside static ModelAsset "
                          "and the editor owns preview framing");
-        ctx.Diagnose(AssetDiagnosticLevel::Warning, "material-preview",
-                     "Preview uses separate Unlit base-color instances; PBR/texture attributes remain in "
+        ctx.Diagnose(AssetDiagnosticLevel::Info, "material-preview",
+                     "Ordinary materials retain PBR/Unlit and texture semantics; separate Unlit base-color previews remain available in "
                      "cooked assets and report");
         result.assets.push_back(
             {result.primary, "model", AssetPathText(ctx.request.source.stem()), std::move(model)});

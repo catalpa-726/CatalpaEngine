@@ -13,7 +13,7 @@ namespace Catalpa {
     class RHIDevice;
     struct ShaderMetadata;
 
-    // 当前单视图路径的显式配置；正式画质分档和能力回退在后续扩展同一配置入口。
+    // 各独立视图共用的显式表现配置；正式画质分档在后续扩展同一入口。
     struct RendererProfile {
         PixelFormat depthFormat = PixelFormat::D32_Float;
         bool depthPrepass = true;
@@ -26,24 +26,28 @@ namespace Catalpa {
 
     // GPU ABI由float4列显式定义；与Common/Bindings.slang逐字段对应，不直接上传GLM对象。
     struct alignas(16) FrameGpuParameters {
-        std::array<float, 4> time{};    // simulation, realDelta, fixedDelta, interpolationAlpha，秒。
-        std::array<float, 4> options{}; // x=normalDebug，其余保留并清零。
+        std::array<float, 4> time{};    // simulation%4096, realDelta, fixedDelta, interpolationAlpha，秒。
+        std::array<float, 4> options{}; // x=normalDebug，y=Blend拾取alpha阈值，z=4096秒epoch，w保留。
     };
     struct alignas(16) ViewGpuParameters {
         std::array<std::array<float, 4>, 4> viewProjectionColumns{};
         std::array<float, 4> cameraPosition{};
+        std::array<std::array<float, 4>, 4> inverseViewProjectionColumns{};
+        std::array<std::array<float, 4>, 4> viewColumns{};
     };
     struct alignas(16) DrawGpuParameters {
         std::array<std::array<float, 4>, 4> worldColumns{};
         std::array<std::array<float, 4>, 3> normalColumns{};
         std::array<float, 4> color{};
+        std::array<uint32_t, 4> ids{}; // x为一基实例token，y为镜像手性bit；0 token专属背景。
     };
 
     static_assert(sizeof(float) == 4);
     static_assert(sizeof(FrameGpuParameters) == 32 && offsetof(FrameGpuParameters, options) == 16);
-    static_assert(sizeof(ViewGpuParameters) == 80 && offsetof(ViewGpuParameters, cameraPosition) == 64);
-    static_assert(sizeof(DrawGpuParameters) == 128 && offsetof(DrawGpuParameters, normalColumns) == 64
-        && offsetof(DrawGpuParameters, color) == 112);
+    static_assert(sizeof(ViewGpuParameters) == 208 && offsetof(ViewGpuParameters, cameraPosition) == 64
+        && offsetof(ViewGpuParameters, inverseViewProjectionColumns) == 80 && offsetof(ViewGpuParameters, viewColumns) == 144);
+    static_assert(sizeof(DrawGpuParameters) == 144 && offsetof(DrawGpuParameters, normalColumns) == 64
+        && offsetof(DrawGpuParameters, color) == 112 && offsetof(DrawGpuParameters, ids) == 128);
     static_assert(std::is_trivially_copyable_v<FrameGpuParameters> && std::is_trivially_copyable_v<ViewGpuParameters>
         && std::is_trivially_copyable_v<DrawGpuParameters>);
 

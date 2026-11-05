@@ -44,6 +44,11 @@ namespace Catalpa {
             layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
             break;
 
+        case RHITextureLayout::TransferSource:
+            if (!HasTextureUsage(usage, RHITextureUsage::TransferSource)) return false;
+            layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            break;
+
         case RHITextureLayout::TransferDestination:
             if (!HasTextureUsage(usage, RHITextureUsage::TransferDestination)) return false;
             layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -84,6 +89,11 @@ namespace Catalpa {
             return source.layout == RHITextureLayout::DepthAttachment
                 && (source.stage == RHIPipelineStage::DepthStencilTests || source.stage == RHIPipelineStage::AllCommands);
 
+        case RHIResourceAccess::TransferRead:
+            access = VK_ACCESS_2_TRANSFER_READ_BIT;
+            return source.layout == RHITextureLayout::TransferSource &&
+                (source.stage == RHIPipelineStage::Transfer || source.stage == RHIPipelineStage::AllCommands);
+
         case RHIResourceAccess::TransferWrite:
             access = VK_ACCESS_2_TRANSFER_WRITE_BIT;
             return source.layout == RHITextureLayout::TransferDestination &&
@@ -115,6 +125,8 @@ namespace Catalpa {
         RHITextureSubresourceRange supportedRange{};
         const bool depth = GetPixelFormatInfo(record->format).isDepth;
         supportedRange.aspect = depth ? RHITextureAspect::Depth : RHITextureAspect::Color;
+        supportedRange.levelCount = record->mipLevels;
+        supportedRange.layerCount = record->arrayLayers;
         if (desc.range != supportedRange || record->sampleCount != 1 || GetPixelFormatInfo(record->format).bytesPerBlock == 0)
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
 
@@ -148,6 +160,7 @@ namespace Catalpa {
     {
         switch (source.stage) {
             case RHIPipelineStage::None: stage = VK_PIPELINE_STAGE_2_NONE; break;
+            case RHIPipelineStage::Host: stage = VK_PIPELINE_STAGE_2_HOST_BIT; break;
             case RHIPipelineStage::Transfer: stage = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT; break;
             case RHIPipelineStage::VertexInput: stage = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT; break;
             case RHIPipelineStage::VertexShader: stage = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT; break;
@@ -169,6 +182,9 @@ namespace Catalpa {
                 return HasBufferUsage(usage, RHIBufferUsage::Uniform)
                     && (source.stage == RHIPipelineStage::VertexShader || source.stage == RHIPipelineStage::FragmentShader
                         || source.stage == RHIPipelineStage::VertexFragmentShader || source.stage == RHIPipelineStage::AllCommands);
+            case RHIResourceAccess::HostRead:
+                access = VK_ACCESS_2_HOST_READ_BIT;
+                return source.stage == RHIPipelineStage::Host || source.stage == RHIPipelineStage::AllCommands;
             case RHIResourceAccess::TransferRead:
                 access = VK_ACCESS_2_TRANSFER_READ_BIT;
                 requiredStage = RHIPipelineStage::Transfer;

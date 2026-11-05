@@ -7,6 +7,7 @@ namespace Catalpa {
     enum class ShaderStage : uint32_t { Vertex = 1, Fragment = 2, Compute = 3 };
     enum class ShaderScalarKind : uint32_t { Float = 1, SignedInteger = 2, UnsignedInteger = 3, Boolean = 4, Structure = 5 };
     enum class ShaderResourceKind : uint32_t { UniformBuffer = 1, StorageBuffer = 2, SampledImage = 3, StorageImage = 4, Sampler = 5, CombinedImageSampler = 6 };
+    enum class ShaderImageDimension : uint32_t { None = 0, Texture2D = 1, Cube = 2 };
     struct ShaderTypeShape {
         ShaderScalarKind scalar = ShaderScalarKind::Float;
         uint32_t width = 32;
@@ -31,6 +32,7 @@ namespace Catalpa {
         std::string name;
         uint32_t blockSize = 0;
         std::vector<ShaderBlockMember> members;
+        ShaderImageDimension imageDimension = ShaderImageDimension::None;
         bool operator==(const ShaderBinding&) const = default;
     };
     struct ShaderInterfaceVariable {
@@ -49,7 +51,7 @@ namespace Catalpa {
         bool operator==(const ShaderEntryPointMetadata&) const = default;
     };
     struct ShaderMetadata {
-        uint32_t schemaVersion = 1;
+        uint32_t schemaVersion = 2;
         std::string targetEnvironment = "vulkan1.3";
         uint32_t spirvVersion = 0x00010500;
         std::string bytecodeSha256;

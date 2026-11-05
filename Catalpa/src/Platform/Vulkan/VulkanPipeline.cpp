@@ -20,6 +20,10 @@ namespace Catalpa {
 
         const bool hasColor = desc.colorFormat != PixelFormat::Unknown;
         const bool hasDepth = desc.depthFormat != PixelFormat::Unknown;
+        if ((desc.topology != RHITopology::TriangleList && desc.topology != RHITopology::LineList)
+            || !std::isfinite(desc.depthBiasConstant) || !std::isfinite(desc.depthBiasSlope)
+            || (!hasDepth && (desc.depthBiasConstant != 0.0f || desc.depthBiasSlope != 0.0f)))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "CreateVulkanGraphicsPipeline/rasterization" };
         if (desc.sampleCount != 1 || (!hasColor && !hasDepth)
             || (hasColor && !device.GetFormatSupport(desc.colorFormat).colorAttachment)
             || (hasDepth && (desc.depthFormat != PixelFormat::D32_Float || !device.GetFormatSupport(desc.depthFormat).depthAttachment)))
@@ -47,10 +51,10 @@ namespace Catalpa {
         if (desc.frontFace != RHIFrontFace::CounterClockwise && desc.frontFace != RHIFrontFace::Clockwise)
             return { .code=RHIErrorCode::InvalidDescription,.operation="CreateVulkanGraphicsPipeline" };
 
-        if (desc.blendMode != RHIBlendMode::Opaque && desc.blendMode != RHIBlendMode::StraightAlpha)
+        if (desc.blendMode != RHIBlendMode::Opaque && desc.blendMode != RHIBlendMode::StraightAlpha && desc.blendMode != RHIBlendMode::Additive)
             return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
 
-        if (desc.blendMode == RHIBlendMode::StraightAlpha && (!hasColor || !device.GetFormatSupport(desc.colorFormat).colorAttachmentBlend))
+        if (desc.blendMode != RHIBlendMode::Opaque && (!hasColor || !device.GetFormatSupport(desc.colorFormat).colorAttachmentBlend))
             return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
 
         const auto& vertexLayout = desc.vertexLayout;
@@ -197,7 +201,7 @@ namespace Catalpa {
 
             const VkPipelineInputAssemblyStateCreateInfo assembly{
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-                .topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+                .topology = desc.topology == RHITopology::LineList ? VK_PRIMITIVE_TOPOLOGY_LINE_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
             };
 
             const VkPipelineViewportStateCreateInfo viewport{
@@ -211,6 +215,9 @@ namespace Catalpa {
                 .polygonMode = VK_POLYGON_MODE_FILL,
                 .cullMode = cullMode,
                 .frontFace = desc.frontFace == RHIFrontFace::Clockwise ? VK_FRONT_FACE_CLOCKWISE : VK_FRONT_FACE_COUNTER_CLOCKWISE,
+                .depthBiasEnable = desc.depthBiasConstant != 0.0f || desc.depthBiasSlope != 0.0f,
+                .depthBiasConstantFactor = desc.depthBiasConstant,
+                .depthBiasSlopeFactor = desc.depthBiasSlope,
                 .lineWidth = 1.0f
             };
 
@@ -220,9 +227,9 @@ namespace Catalpa {
             };
 
             const VkPipelineColorBlendAttachmentState attachment{
-                .blendEnable = static_cast<VkBool32>(desc.blendMode == RHIBlendMode::StraightAlpha),
+                .blendEnable = static_cast<VkBool32>(desc.blendMode != RHIBlendMode::Opaque),
                 .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
-                .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                .dstColorBlendFactor = desc.blendMode == RHIBlendMode::Additive ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
                 .colorBlendOp = VK_BLEND_OP_ADD,
                 .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
                 .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,

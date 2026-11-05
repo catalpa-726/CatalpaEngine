@@ -36,11 +36,24 @@ namespace Catalpa {
         // 在场景之后、Present 之前按 UI 顺序登记 Load/Store 绘制及采样访问。
         [[nodiscard]] RHIStatus AddPasses(RenderGraph& graph, RGTexture color, Extent2D extent,
             uint32_t slot, const ImGuiFrameData& frame);
+        // lease保活真正owner；注册表不取得第二份RHI owner，也不向Editor泄漏view句柄。
+        [[nodiscard]] RHIStatus RegisterTexture(TextureViewHandle, std::shared_ptr<void> lease,
+            uint64_t& token, uint32_t mip = 0, uint32_t channelMask = 15, bool preview = false);
+        void ReleaseTexture(uint64_t token) noexcept;
 
     private:
         struct FrameBuffers {
             BufferHandle vertices{}, indices{};
             uint64_t vertexCapacity = 0, indexCapacity = 0;
+        };
+        struct RegisteredTexture {
+            TextureViewHandle view{};
+            std::shared_ptr<void> lease;
+            uint32_t mip = 0;
+            uint32_t channelMask = 15;
+            bool preview = false;
+            bool retired = false;
+            bool linearFiltering = true;
         };
 
         [[nodiscard]] RHIStatus EnsurePipeline(PixelFormat format);
@@ -56,7 +69,11 @@ namespace Catalpa {
         std::shared_ptr<TextureGpuResource> m_Font;
         std::shared_ptr<PipelineResource> m_Pipeline;
         SamplerHandle m_Sampler{};
+        SamplerHandle m_NearestSampler{};
         PixelFormat m_Format = PixelFormat::Unknown;
+        std::map<uint64_t, RegisteredTexture> m_Registered;
+        uint64_t m_NextTextureToken = 1;
+        std::set<PixelFormat> m_ReportedNearestFormats;
     };
 
 }

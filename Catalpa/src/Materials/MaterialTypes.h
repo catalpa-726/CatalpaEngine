@@ -2,7 +2,7 @@
 #include "catpch.h"
 
 namespace Catalpa {
-    // 领域策略独立于具体RHI枚举；声明PBR数据不等于当前Renderer已实现PBR着色。
+    // 领域策略独立于具体RHI枚举；具体可绘制能力仍由实际shader和后端校验决定。
     enum class MaterialShadingModel { Unlit, Pbr };
     enum class MaterialDomain { Surface };
     enum class MaterialAlphaMode { Opaque, Mask, Blend };

@@ -2,6 +2,8 @@
 #include "Panels/BuildPanel.h"
 #include "AssetPipeline/AssetCooker.h"
 #include "Scene/Components/CameraComponent.h"
+#include "Scene/Components/LightComponent.h"
+#include "Scene/Components/EnvironmentComponent.h"
 #include "Geometry/Bounds.h"
 #include "Runtime/Systems/RenderExtractSystem.h"
 #include "Runtime/Systems/TransformSystem.h"
@@ -41,6 +43,10 @@ namespace Catalpa::Editor {
         }
         auto task = std::make_shared<TaskState>();
         task->phase = "Queued";
+        // 文档只保留已成功安装的源/设置；后台进度回调及取消令牌不可进入草稿。
+        request.cancellation = {};
+        request.progress = {};
+        task->recipe = std::make_shared<const Tools::AssetBuildRequest>(request);
         request.progress = [task](std::string_view phase, size_t done, size_t total) {
             std::lock_guard lock(task->mutex);
             task->phase = phase;
@@ -91,6 +97,8 @@ namespace Catalpa::Editor {
         m_Job = {};
         m_Task.reset();
         m_Result = {};
+        m_Recipe.reset();
+        m_OpenAsset = {};
         m_RecordIndices.clear();
         m_LoadOrder.clear();
         m_PendingLoad = {};
@@ -137,6 +145,7 @@ namespace Catalpa::Editor {
 
     void BuildPanel::FinishBuild() {
         const auto taskError = m_Job.GetError();
+        auto recipe = m_Task->recipe;
         Tools::AssetBuildResult next;
         {
             std::lock_guard lock(m_Task->mutex);
@@ -177,6 +186,7 @@ namespace Catalpa::Editor {
 
         // Runtime 安装整份已发布目录，本面板只请求本次源资产及它的依赖。
         m_Result = std::move(next);
+        m_Recipe = std::move(recipe);
         m_RecordIndices.clear();
         for (size_t i = 0; i < m_Result.records.size(); ++i)
             m_RecordIndices.emplace(m_Result.records[i].id, i);
@@ -399,6 +409,14 @@ namespace Catalpa::Editor {
             m_Error = configured.message;
             return false;
         }
+        PersistentEntityId lightId;
+        if (!GeneratePersistentEntityId(lightId,m_Error)) return false;
+        Math::TransformTRS lightPose;
+        lightPose.rotation = Math::Quat(Math::Vec3(-.55f,.65f,0));
+        auto status = scene.QueueCreate(lightId,"Preview light",lightPose);
+        if (status.IsSuccess()) status = scene.CommitPending();
+        if (status.IsSuccess()) status = scene.QueueSetLight(scene.Resolve(lightId),LightComponent{});
+        if (!status.IsSuccess()) { m_Error = status.message; return false; }
         CAT_INFO("Preview bounds in metres: min=({0},{1},{2}), max=({3},{4},{5}); camera framing only.",
                  bounds.minimum.x, bounds.minimum.y, bounds.minimum.z, bounds.maximum.x, bounds.maximum.y,
                  bounds.maximum.z);
@@ -425,19 +443,9 @@ namespace Catalpa::Editor {
         if (!acquireExact(m_Selected, model))
             return false;
 
-        std::map<AssetId, const std::string*> materialKeys;
-        std::map<std::string_view, AssetId> previews;
-        for (const auto& mapping : m_Result.mappings) {
-            if (mapping.kind == "material")
-                materialKeys.emplace(mapping.asset, &mapping.sourceKey);
-            else if (mapping.kind == "material_preview")
-                previews.emplace(mapping.sourceKey, mapping.asset);
-        }
-
         std::vector<AssetVersionRef<MeshAsset>> meshes;
         std::vector<AssetVersionRef<MaterialInstance>> materials;
         std::set<AssetId> meshIds, materialIds;
-        std::vector<ModelMaterialOverride> overrides;
         for (const auto& instance : model.Get()->meshes) {
             if (meshIds.insert(instance.mesh.id).second) {
                 AssetVersionRef<MeshAsset> mesh;
@@ -453,27 +461,13 @@ namespace Catalpa::Editor {
                     return false;
                 materials.push_back(std::move(value));
 
-                const auto key = materialKeys.find(material.id);
-                if (key == materialKeys.end()) {
-                    m_Error = "Source material mapping missing for " + material.id.ToString();
-                    return false;
-                }
-                const auto preview = previews.find(*key->second + "/preview");
-                if (preview == previews.end()) {
-                    m_Error = "Preview material mapping missing for " + *key->second;
-                    return false;
-                }
-                AssetVersionRef<MaterialInstance> display;
-                if (!acquireExact(preview->second, display))
-                    return false;
-                overrides.push_back({material.id, std::move(display)});
             }
         }
         if (previewViewport && !PreparePreviewCamera(scene, *model.Get(), meshes, *previewViewport))
             return false;
         // 只在工作区的主线程更新阶段提交，通过 ticket 同时检查整队列和模型事务的结果。
         if (!ModelInstantiation::Queue(scene, std::move(model), std::move(meshes), std::move(materials),
-                                       result, m_Error, {}, overrides))
+                                       result, m_Error))
             return false;
         const auto committed = scene.CommitPending();
         if (!committed.IsSuccess()) {
@@ -566,6 +560,15 @@ namespace Catalpa::Editor {
                 const auto found = m_RecordIndices.find(m_Selected);
                 if (found != m_RecordIndices.end()) {
                     const auto* selected = &m_Result.records[found->second];
+                    const bool environment = selected->type.ToString() == "environment";
+                    if (selected->type.ToString() == "material_instance" || selected->type.ToString() == "image" || environment) {
+                        ImGui::BeginDisabled(Busy() || !m_AssetsReady);
+                        const auto action = environment ? text("build.apply_environment","Apply to selected entity","ApplyEnvironment")
+                                                        : text("build.edit_asset","Open asset editor","EditAsset");
+                        if (ImGui::Button(action.c_str()))
+                            m_OpenAsset = selected->id;
+                        ImGui::EndDisabled();
+                    }
                     ImGui::Text("version: %llu", static_cast<unsigned long long>(selected->version));
                     if (selected->type.ToString() == "model") {
                         ImGui::BeginDisabled(Busy() || !m_AssetsReady);
@@ -606,8 +609,7 @@ namespace Catalpa::Editor {
                         ImGui::TextWrapped(
                             "%s",
                             text("build.preview_scope",
-                                 "Preview uses opaque two-sided Unlit base color. Authored materials stay in "
-                                 "Model/Cooked data; PBR, texture shading and alpha evaluation follow later.",
+                                 "Preview uses the model's authored material slots.",
                                  nullptr)
                                 .c_str());
                     } else if (selected->type.ToString() == "image") {

@@ -7,6 +7,7 @@
 #include "AssetPipeline/Cookers/MeshCooker.h"
 #include "AssetPipeline/Cookers/ModelCooker.h"
 #include "AssetPipeline/Cookers/TextureCooker.h"
+#include "AssetPipeline/Cookers/EnvironmentCooker.h"
 #include "AssetPipeline/Cookers/MaterialCooker.h"
 #include "AssetPipeline/Importers/MaterialImporter.h"
 #include "Assets/AssetDependencyGraph.h"
@@ -76,9 +77,84 @@ namespace Catalpa::Tools {
         bool CookDomainProducts(AssetBuildContext& context, AssetImportResult& imported,
                                 const AssetRecord& shader, std::vector<AssetBuildProduct>& products,
                                 std::vector<AssetSourceMapping>& mappings, std::string& error) {
+            // Assimp可给独立metallic/roughness图；只复制原8位R通道到新派生的B/G，绝不覆盖原图。
+            // 尺寸不一致显式拒绝，避免重采样策略悄悄改变原数据。
+            std::vector<ImportedAsset> packedImages;
+            for (auto& asset : imported.assets) {
+                auto* material = std::get_if<ImportedMaterial>(&asset.value);
+                if (!material) continue;
+                const auto metal = material->textures.find("metallic");
+                const auto rough = material->textures.find("roughness");
+                if (metal == material->textures.end() && rough == material->textures.end()) continue;
+                const auto samplerFor = [&](std::string_view name) {
+                    const auto found = material->samplers.find(name);
+                    return found == material->samplers.end() ? 240u : found->second;
+                };
+                if (metal != material->textures.end() && rough != material->textures.end() &&
+                    samplerFor("metallic") != samplerFor("roughness")) {
+                    error = "Separate metallic/roughness textures require matching sampler policies before packing";
+                    return false;
+                }
+                const auto packedSampler = samplerFor(metal != material->textures.end() ? "metallic" : "roughness");
+                const auto imageFor = [&](AssetId id) -> const ImageAsset* {
+                    const auto found = std::find_if(imported.assets.begin(), imported.assets.end(), [&](const auto& input) { return input.id == id; });
+                    return found == imported.assets.end() ? nullptr : std::get_if<ImageAsset>(&found->value);
+                };
+                const auto* metalImage = metal == material->textures.end() ? nullptr : imageFor(metal->second);
+                const auto* roughImage = rough == material->textures.end() ? nullptr : imageFor(rough->second);
+                const auto* source = metalImage ? metalImage : roughImage;
+                if (!source || (metal != material->textures.end() && !metalImage) ||
+                    (rough != material->textures.end() && !roughImage)) {
+                    error = "Separate metallic/roughness source image is missing";
+                    return false;
+                }
+                for (const auto* image : {metalImage, roughImage}) {
+                    if (image && (image->image.format != PixelFormat::RGBA8_UNorm ||
+                        image->image.width != source->image.width || image->image.height != source->image.height ||
+                        image->image.mipLevels != 1 || image->image.subresources.size() != 1)) {
+                        error = "Separate metallic/roughness packing requires equal-size linear RGBA8 sources";
+                        return false;
+                    }
+                }
+                ImageAsset packed;
+                packed.sourceUri = source->sourceUri + "#metallic-roughness-packed";
+                auto& image = packed.image;
+                image.format = PixelFormat::RGBA8_UNorm; image.semantic = ImageSemantic::Data;
+                image.width = source->image.width; image.height = source->image.height;
+                const size_t length = size_t(image.width) * image.height * 4;
+                if (!context.ReserveWorking(length, error)) return false;
+                image.pixels.resize(length, std::byte{255});
+                image.subresources.push_back({0, 0, 0, image.width, image.height, 1, 0,
+                    uint64_t(image.width) * 4, length, length});
+                for (uint32_t y = 0; y < image.height; ++y) {
+                    if (!context.CheckCancelled(error)) return false;
+                    for (uint32_t x = 0; x < image.width; ++x) {
+                        const size_t target = (size_t(y) * image.width + x) * 4;
+                        const auto red = [&](const ImageAsset& sourceImage) {
+                            const auto& sub = sourceImage.image.subresources.front();
+                            return sourceImage.image.pixels[size_t(sub.offset + uint64_t(y) * sub.rowPitch + uint64_t(x) * 4)];
+                        };
+                        if (roughImage) image.pixels[target + 1] = red(*roughImage);
+                        if (metalImage) image.pixels[target + 2] = red(*metalImage);
+                    }
+                }
+                const auto key = asset.sourceKey + "/metallic-roughness-packed";
+                const auto id = context.Identity(key);
+                material->textures.erase("metallic"); material->textures.erase("roughness");
+                material->textures["metallicRoughness"] = id;
+                material->samplers["metallicRoughness"] = packedSampler;
+                context.Diagnose(AssetDiagnosticLevel::Info, asset.sourceKey,
+                    "Packed original separate roughness R and metallic R into derived G/B; no source image changes or resampling");
+                mappings.push_back({id, key, "Metallic roughness", "image"});
+                packedImages.push_back({id, key, "Metallic roughness", std::move(packed)});
+            }
+            for (auto& image : packedImages) imported.assets.push_back(std::move(image));
             std::map<AssetId, AssetRecord> ready;
-            ready.emplace(products.front().record.id, products.front().record);
-            size_t encodedBytes = products.front().bytes.size();
+            size_t encodedBytes = 0;
+            for (const auto& product : products) {
+                ready.emplace(product.record.id, product.record);
+                encodedBytes += product.bytes.size();
+            }
             const auto append = [&](AssetBuildProduct product) {
                 if (product.bytes.size() >
                     context.request.settings.maxWorkingBytes -
@@ -106,6 +182,10 @@ namespace Catalpa::Tools {
                 } else if (const auto* image = std::get_if<ImageAsset>(&asset.value)) {
                     type = "image";
                     if (!TextureCooker::Encode(*image, payload, error))
+                        return false;
+                } else if (const auto* environment = std::get_if<EnvironmentAsset>(&asset.value)) {
+                    type = "environment";
+                    if (!EnvironmentCooker::Encode(*environment, payload, error))
                         return false;
                 } else
                     continue;
@@ -202,6 +282,7 @@ namespace Catalpa::Tools {
                                {"occlusionStrength", material->occlusionStrength},
                                {"uvFlipV", material->textureFlipV},
                                {"properties", material->sourceProperties}};
+                    value["samplers"] = material->samplers;
                     for (const auto& [semantic, id] : material->textures)
                         value["textures"][semantic] = id.ToString();
                     report["materials"].push_back(std::move(value));
@@ -341,8 +422,9 @@ namespace Catalpa::Tools {
                 return fail("Unsupported source extension; no parser fallback is attempted");
             progress("Checking inputs and cache", 0, 1);
             std::vector<AssetRecord> shaders;
-            AssetId unlit;
+            AssetId unlit, pbr;
             if (!ShaderLibrary::BuiltinId("Unlit.slang", unlit, error) ||
+                !ShaderLibrary::BuiltinId("Pbr.slang", pbr, error) ||
                 !ShaderLibrary::ReadBuiltinCatalog(context.request.shaderRoot, "build-shaders", shaders,
                                                    error))
                 return fail(error);
@@ -350,6 +432,9 @@ namespace Catalpa::Tools {
                 std::find_if(shaders.begin(), shaders.end(), [&](const auto& s) { return s.id == unlit; });
             if (shader == shaders.end())
                 return fail("Cooked Unlit shader is missing; build shaders first");
+            const auto pbrShader = std::find_if(shaders.begin(), shaders.end(), [&](const auto& s) { return s.id == pbr; });
+            if (pbrShader == shaders.end())
+                return fail("Cooked Pbr shader is missing; build shaders first");
             AssetBuildProduct shaderProduct;
             shaderProduct.record = *shader;
             const auto shaderFile =
@@ -357,13 +442,20 @@ namespace Catalpa::Tools {
             if (!Read(shaderFile, 64 * 1024 * 1024, shaderProduct.bytes, error) ||
                 AssetBuildDigest(shaderProduct.bytes) != shader->contentHash)
                 return fail("Shader input changed: " + error);
-            Json signatureFields{{"pipeline", 2},
+            AssetBuildProduct pbrProduct;
+            pbrProduct.record = *pbrShader;
+            const auto pbrFile = context.request.shaderRoot / std::filesystem::u8path(pbrShader->locator.path.RelativePath());
+            if (!Read(pbrFile, 64 * 1024 * 1024, pbrProduct.bytes, error) ||
+                AssetBuildDigest(pbrProduct.bytes) != pbrShader->contentHash)
+                return fail("Pbr shader input changed: " + error);
+            Json signatureFields{{"pipeline", 4},
                                  {"container", 1},
                                  {"domainSchema", 1},
                                  {"importer", importer->Name()},
                                  {"fastgltf", CATALPA_IMPORT_STRINGIFY(FASTGLTF_VERSION)},
                                  {"tangentGenerator", "MikkTSpace-orthogonal-fallback-v2"},
-                                 {"imageDecoder", "stb-rgba8-v1"},
+                                 {"imageDecoder", "stb-rgba8-hdr-float-v2"},
+                                 {"environmentPreprocessor", "cube-yup-vulkan-faces-ggx-split-sum-v2-128samples"},
                                  {"assimp", std::to_string(aiGetVersionMajor()) + "." +
                                                 std::to_string(aiGetVersionMinor()) + "." +
                                                 std::to_string(aiGetVersionPatch())},
@@ -374,6 +466,7 @@ namespace Catalpa::Tools {
                                  {"platform", current.targetPlatform},
                                  {"configuration", current.buildConfiguration},
                                  {"shader", shader->contentHash},
+                                 {"pbrShader", pbrShader->contentHash},
                                  {"cookedRoot", AssetPathText(current.cookedRoot)}};
             const auto signatureText = signatureFields.dump();
             const auto signature =
@@ -392,7 +485,9 @@ namespace Catalpa::Tools {
                     !Read(current.buildProfilesFile, 4 * 1024 * 1024, bytes, error) ||
                     AssetBuildDigest(bytes) != profileHash ||
                     !Read(shaderFile, 64 * 1024 * 1024, bytes, error) ||
-                    AssetBuildDigest(bytes) != shader->contentHash) {
+                    AssetBuildDigest(bytes) != shader->contentHash ||
+                    !Read(pbrFile, 64 * 1024 * 1024, bytes, error) ||
+                    AssetBuildDigest(bytes) != pbrShader->contentHash) {
                     if (error.empty())
                         error = "Project/profile/shader inputs changed before publication";
                     return false;
@@ -431,6 +526,7 @@ namespace Catalpa::Tools {
             result.report = current.cookedRoot / versionRoot / "SourceMap.json";
             std::vector<AssetBuildProduct> products;
             products.push_back(std::move(shaderProduct));
+            products.push_back(std::move(pbrProduct));
             progress("Cooking geometry, images, materials and models", 0, imported.assets.size());
             if (!CookDomainProducts(context, imported, *shader, products, result.mappings, error))
                 return fail(error);
@@ -442,7 +538,7 @@ namespace Catalpa::Tools {
             for (auto& product : products) {
                 // 容器哈希已包含资产身份。相同对象复用已有字节；源目录标明重导入时应替换的记录。
                 const auto relative = std::filesystem::path("objects") /
-                                      (product.record.id == unlit ? "shared" : sourceOwner) /
+                                      (product.record.id == unlit || product.record.id == pbr ? "shared" : sourceOwner) /
                                       (product.record.contentHash + ".catasset");
                 if (!VirtualPath::Parse(mount + ":/" + AssetPathText(relative), product.record.locator.path,
                                         error))

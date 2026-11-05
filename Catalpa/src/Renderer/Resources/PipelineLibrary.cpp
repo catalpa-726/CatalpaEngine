@@ -22,9 +22,16 @@ namespace Catalpa {
         for (const auto& a : desc.vertexLayout.attributes) { number(a.location); number(static_cast<uint32_t>(a.format)); number(a.offset); }
         number(desc.pushConstants.size); number(static_cast<uint32_t>(desc.pushConstants.visibility));
         number(desc.bindingLayout.entries.size());
-        for (const auto& b : desc.bindingLayout.entries) { number(b.binding); number(static_cast<uint32_t>(b.type)); number(static_cast<uint32_t>(b.visibility)); number(b.minimumBufferBytes); }
+        for (const auto& b : desc.bindingLayout.entries) {
+            number(b.binding); number(static_cast<uint32_t>(b.type)); number(static_cast<uint32_t>(b.visibility));
+            number(b.minimumBufferBytes); number(static_cast<uint32_t>(b.imageViewType));
+        }
         number(desc.depthState.testEnabled); number(desc.depthState.writeEnabled); number(static_cast<uint32_t>(desc.depthState.compareOp));
         number(static_cast<uint32_t>(desc.cullMode)); number(static_cast<uint32_t>(desc.frontFace));
+        number(static_cast<uint32_t>(desc.topology));
+        const auto floatBits = [&](float value) { uint32_t bits = 0; std::memcpy(&bits, &value, sizeof(bits)); number(bits); };
+        floatBits(desc.depthBiasConstant);
+        floatBits(desc.depthBiasSlope);
         if (const auto found=m_Entries.find(key);found!=m_Entries.end()) {
             if(found->second->vertex.Get()!=desc.vertex.asset.Get()||found->second->fragment.Get()!=desc.fragment.asset.Get())
                 return {.code=RHIErrorCode::InvalidState,.operation="PipelineLibrary/identity-version collision"};
@@ -35,6 +42,7 @@ namespace Catalpa {
 
         auto resource=std::make_shared<PipelineResource>();
         resource->device=&m_Device; resource->vertex=desc.vertex.asset; resource->fragment=desc.fragment.asset;
+        resource->bindings.assign(desc.bindingLayout.entries.begin(), desc.bindingLayout.entries.end());
         if (const auto status=m_Device.CreateGraphicsPipeline(desc,resource->pipeline);!status.IsSuccess()) return status;
         m_Entries.emplace(std::move(key),resource); output=std::move(resource); return {};
     }

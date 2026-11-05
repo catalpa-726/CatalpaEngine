@@ -22,8 +22,8 @@ namespace Catalpa {
         return (static_cast<uint32_t>(usage) & static_cast<uint32_t>(required)) == static_cast<uint32_t>(required);
     }
 
-    // Device 表示优先供 GPU 使用；Upload 表示允许 CPU 顺序写入。
-    enum class RHIMemoryDomain { Device, Upload };
+    // Readback 由 GPU 写、CPU 在完成点之后读取，不与 Upload 的顺序写缓存策略混用。
+    enum class RHIMemoryDomain { Device, Upload, Readback };
 
     struct RHIBufferDesc {
         uint64_t size = 0; // 字节。

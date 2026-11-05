@@ -192,7 +192,7 @@ namespace Catalpa::Editor {
                 ImGui::EndDisabled();
                 ImGui::EndDisabled();
                 ImGui::TextWrapped("%s", text("content.scope",
-                                              "glTF / GLB / FBX / OBJ and PNG / JPEG / TGA / BMP. Sources "
+                                              "glTF / GLB / FBX / OBJ, PNG / JPEG / TGA / BMP and HDR environments. Sources "
                                               "stay read-only; Cooked and DerivedDataCache are separate.",
                                               nullptr)
                                              .c_str());

@@ -14,6 +14,7 @@ namespace Catalpa::Tests {
         std::vector<RHIBufferStateUpdate> bufferUpdates;
         std::vector<RHITextureStateUpdate> textureUpdates;
         size_t copyCount = 0;
+        bool allowReadback = false;
 
         RHIStatus Begin() override
         {
@@ -70,6 +71,10 @@ namespace Catalpa::Tests {
         }
         // 本批只验证clear/copy/transition调度；未实现的绘制行为明确失败，不能默认为通过。
         RHIStatus CopyBufferToTexture(BufferHandle, TextureViewHandle, const RHIBufferTextureCopy&) override { return Unsupported(); }
+        RHIStatus CopyTextureToBuffer(TextureViewHandle, BufferHandle, const RHITextureBufferCopy&) override {
+            if (!allowReadback) return Unsupported();
+            return state == RHICommandListState::Recording ? Visit("CopyTextureToBuffer") : Invalid();
+        }
         RHIStatus BindGraphicsPipeline(GraphicsPipelineHandle) override { return Unsupported(); }
         RHIStatus SetGraphicsBindings(std::span<const RHIBinding>) override { return Unsupported(); }
         RHIStatus SetGraphicsPushConstants(std::span<const std::byte>) override { return Unsupported(); }

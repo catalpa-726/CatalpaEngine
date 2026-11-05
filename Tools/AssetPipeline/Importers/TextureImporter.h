@@ -3,11 +3,11 @@
 #include <utility>
 
 namespace Catalpa::Tools {
-    // 将内存里的八位图像解码为 RGBA8，保留像素行序，并按用途标明颜色空间。
+    // 八位图像保留RGBA8；Radiance HDR保留线性RGBA32F，不翻转、缩放或归一化原件。
     class TextureImporter final : public IAssetImporter {
       public:
         std::string_view Name() const noexcept override {
-            return "stb-image/rgba8-v1";
+            return "stb-image/rgba8-hdr-float-v2";
         }
 
         bool Import(AssetBuildContext&, AssetImportResult&, std::string&) const override;

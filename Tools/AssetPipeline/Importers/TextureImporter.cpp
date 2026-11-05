@@ -1,6 +1,7 @@
 #include "catpch.h"
 #include "AssetPipeline/Importers/TextureImporter.h"
 #include "Images/ImageValidation.h"
+#include "AssetPipeline/Environment/EnvironmentPreprocessor.h"
 #define STBI_NO_STDIO
 // Assimp随包已有自己的stb实现；本TU私有链接，避免两份实现导出同名全局符号。
 #define STB_IMAGE_STATIC
@@ -37,8 +38,43 @@ namespace Catalpa::Tools {
             return false;
         }
         if (stbi_is_hdr_from_memory(data, int(bytes.size()))) {
-            e = "HDR source requires a float-preserving image importer";
-            return false;
+            if (semantic != ImageSemantic::Color) {
+                e = "HDR source is linear radiance, not a normal or packed data texture";
+                return false;
+            }
+            const uint64_t size = uint64_t(w) * uint64_t(h) * 16;
+            if (size > 79 * 1024 * 1024 || !ctx.ReserveWorking(size_t(size), e) ||
+                !ctx.WorkspaceFits(size_t(size), e)) {
+                if (e.empty()) e = "HDR source exceeds bounded float image size; source is not resized";
+                return false;
+            }
+            std::unique_ptr<float, void (*)(void*)> pixels(
+                stbi_loadf_from_memory(data, int(bytes.size()), &w, &h, &c, 4), stbi_image_free);
+            if (!pixels) {
+                e = std::string("HDR decode failed: ") + (stbi_failure_reason() ? stbi_failure_reason() : "unknown");
+                return false;
+            }
+            ImageAsset image;
+            image.sourceUri = std::move(source);
+            auto& value = image.image;
+            value.width = uint32_t(w); value.height = uint32_t(h);
+            value.format = PixelFormat::RGBA32_Float;
+            value.colorSpace = ImageColorSpace::Linear;
+            value.semantic = ImageSemantic::Color;
+            value.pixels.resize(size_t(size));
+            for (size_t i = 0; i < size_t(size) / sizeof(float); ++i) {
+                if (!std::isfinite(pixels.get()[i]) || pixels.get()[i] < 0) {
+                    e = "HDR source contains negative or non-finite radiance";
+                    return false;
+                }
+            }
+            std::memcpy(value.pixels.data(), pixels.get(), size_t(size));
+            value.subresources.push_back({0, 0, 0, value.width, value.height, 1, 0, uint64_t(w) * 16, size, size});
+            if (!ValidateImageAsset(image, e) || !ctx.CheckCancelled(e))
+                return false;
+            ctx.Diagnose(AssetDiagnosticLevel::Info, image.sourceUri, "Decoded Radiance HDR to linear RGBA32F; no radiance normalization, flip or resizing");
+            out = std::move(image);
+            return true;
         }
         const auto pixelBytes = size_t(w) * size_t(h) * 4;
         if (pixelBytes > 80 * 1024 * 1024 - 1024 * 1024) {
@@ -84,6 +120,18 @@ namespace Catalpa::Tools {
             !Decode(ctx, bytes, AssetPathText(ctx.request.source), ImageSemantic::Color, image, e))
             return false;
         AssetImportResult result;
+        if (image.image.format == PixelFormat::RGBA32_Float) {
+            EnvironmentAsset environment;
+            EnvironmentPreprocessSettings settings;
+            settings.maxWorkingBytes = ctx.request.settings.maxWorkingBytes;
+            if (!EnvironmentPreprocessor::Build(image, settings, ctx.request.cancellation, environment, e))
+                return false;
+            result.primary = ctx.Identity("environment");
+            result.assets.push_back({result.primary, "environment", "Environment", std::move(environment)});
+            result.mappings.push_back({result.primary, "environment", "Environment", "environment"});
+            output = std::move(result);
+            return true;
+        }
         result.primary = ctx.Identity("image/color");
         result.assets.push_back(
             {result.primary, "image/color", AssetPathText(ctx.request.source.filename()), std::move(image)});

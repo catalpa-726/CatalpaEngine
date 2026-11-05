@@ -24,6 +24,7 @@ namespace Catalpa {
         uint64_t minStorageBufferOffsetAlignment = 0;
 
         bool presentFence = false;                      // 是否实际启用呈现 Fence；false 时采用设备空闲兼容回收。
+        float maxSamplerLodBias = 0.0f;
     };
 
 }

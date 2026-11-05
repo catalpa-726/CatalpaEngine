@@ -21,6 +21,15 @@ namespace Catalpa {
                     [&](const auto& value) { return value.parameterId == change.parameterId; });
                 if (destination == candidate.parameters.end()) { error = "Material candidate is missing a declared parameter"; return false; }
                 destination->value = change.value;
+                constexpr std::array<std::string_view, 5> textureIds{"baseColor_texture", "normal_texture",
+                    "metallicRoughness_texture", "emissive_texture", "occlusion_texture"};
+                const auto slot = std::find(textureIds.begin(), textureIds.end(), change.parameterId);
+                if (slot != textureIds.end()) {
+                    const auto* handle = std::get_if<AssetHandle<ImageAsset>>(&change.value);
+                    auto& fixed = candidate.textureVersions[size_t(slot - textureIds.begin())];
+                    if (!handle || !handle->HasValue() || fixed.GetId() != handle->id)
+                        fixed = {}; // 新纹理须由资产解析步骤固定，不能借用旧内容或隐式取latest。
+                }
             }
             return ResolveMaterialRenderState(definition, candidate.renderState, states, candidate.renderState, error)
                 && ValidateMaterialInstance(candidate, error);

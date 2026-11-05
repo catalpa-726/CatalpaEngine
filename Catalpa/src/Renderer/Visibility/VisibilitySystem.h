@@ -11,10 +11,19 @@ namespace Catalpa {
         std::vector<size_t> instanceIndices;
     };
 
+    struct VisibleSubmesh {
+        size_t instanceIndex = 0;
+        uint32_t submeshIndex = 0;
+        double cameraDepth = 0;
+    };
+
     // 全部索引均指向来源packet.instances；分组不改变主索引顺序，不复制或归一化实例。
     struct VisibilityResult {
         std::vector<size_t> instanceIndices;
         std::vector<VisibleMeshGroup> groups;
+        std::vector<VisibleSubmesh> opaque;
+        std::vector<VisibleSubmesh> masked;
+        std::vector<VisibleSubmesh> transparent; // 从后向前；相交透明几何不宣称OIT。
     };
 
     // 只消费RenderScene已验证的自有值快照；不遍历World、不创建GPU对象。

@@ -25,6 +25,8 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus Init(VulkanCommandPool& pool);
         [[nodiscard]] RHIStatus Begin() override;
         [[nodiscard]] RHIStatus End() override;
+        [[nodiscard]] RHIStatus ResetQueries(const std::shared_ptr<RHIQueryPool>& pool, uint32_t first, uint32_t count) override;
+        [[nodiscard]] RHIStatus WriteTimestamp(const std::shared_ptr<RHIQueryPool>& pool, uint32_t query, bool bottom) override;
 
         [[nodiscard]] RHIStatus SetResourceStatePlan(
             std::span<const RHIBufferStateUpdate> buffers,
@@ -59,6 +61,7 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus CopyBuffer(BufferHandle source, BufferHandle destination, const RHIBufferCopy& copy) override;
         // 录制整幅颜色纹理上传；不隐式生成访问屏障。
         [[nodiscard]] RHIStatus CopyBufferToTexture(BufferHandle source, TextureViewHandle destination, const RHIBufferTextureCopy& copy) override;
+        [[nodiscard]] RHIStatus CopyTextureToBuffer(TextureViewHandle source, BufferHandle destination, const RHITextureBufferCopy& copy) override;
         [[nodiscard]] RHIStatus BindVertexBuffer(uint32_t binding, BufferHandle buffer, uint64_t offset = 0) override;
         [[nodiscard]] RHIStatus BindIndexBuffer(BufferHandle buffer, RHIIndexType type, uint64_t offset = 0) override;
         [[nodiscard]] RHIStatus DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1, uint32_t firstIndex = 0, int32_t vertexOffset = 0, uint32_t firstInstance = 0) override;
@@ -102,7 +105,7 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus ValidateResourceStatePlan() const noexcept;
 
         // 仅由 Queue 在原生提交成功后发布状态。
-        void CommitResourceStatePlan() noexcept;
+        void CommitResourceStatePlan(RHICompletionPoint completion) noexcept;
 
         // 必须恰好导出当前 Acquire 的图像到 Present；允许同时更新普通纹理。
         bool ExportsPresent(TextureViewHandle view) const noexcept;
@@ -122,6 +125,7 @@ namespace Catalpa {
         VulkanDevice& m_Device;
         VulkanDescriptorAllocator m_Descriptors;
         std::vector<SamplerHandle> m_RetainedSamplers;
+        std::vector<std::shared_ptr<RHIQueryPool>> m_RetainedQueries;
         std::vector<TextureViewHandle> m_RetainedViews;
         std::vector<GraphicsPipelineHandle> m_RetainedPipelines;
 

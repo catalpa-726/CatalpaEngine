@@ -50,14 +50,37 @@ namespace Catalpa {
 
     RHIStatus UploadScheduler::CreateTexture(std::span<const std::byte> data, const RHITextureDesc& desc, TextureHandle& texture, TextureViewHandle& view)
     {
+        if (desc.mipLevels != 1 || desc.arrayLayers != 1)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "UploadScheduler/subresource copies required" };
+        uint64_t bytes = 0;
+        if (!TryGetTextureUploadByteSize(desc.extent, desc.format, bytes) || bytes != data.size())
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "UploadScheduler/tight texture byte count" };
+        const RHIBufferTextureCopy copy;
+        return CreateTexture(data, desc, std::span{ &copy, 1 }, texture, view);
+    }
+
+    RHIStatus UploadScheduler::CreateTexture(std::span<const std::byte> data, const RHITextureDesc& desc,
+        std::span<const RHIBufferTextureCopy> copies, TextureHandle& texture, TextureViewHandle& view)
+    {
         constexpr const char* operation = "UploadScheduler::CreateTexture";
         texture = {};
         view = {};
-        uint64_t bytes = 0;
-        if (!TryGetTextureUploadByteSize(desc.extent, desc.format, bytes))
-            return { .code = RHIErrorCode::Unsupported, .operation = operation };
-        if (static_cast<uint64_t>(data.size()) != bytes)
+        if (desc.mipLevels == 0 || desc.arrayLayers == 0
+            || copies.size() != uint64_t(desc.mipLevels) * desc.arrayLayers || data.empty())
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        std::set<std::pair<uint32_t, uint32_t>> seen;
+        for (const auto& copy : copies) {
+            const auto& range = copy.range;
+            const Extent2D extent{ std::max(1u, desc.extent.width >> std::min(range.baseMipLevel, 31u)),
+                std::max(1u, desc.extent.height >> std::min(range.baseMipLevel, 31u)) };
+            uint64_t bytes = 0;
+            if (range.levelCount != 1 || range.layerCount != 1 || range.aspect != RHITextureAspect::Color
+                || range.baseMipLevel >= desc.mipLevels || range.baseArrayLayer >= desc.arrayLayers
+                || !seen.emplace(range.baseMipLevel, range.baseArrayLayer).second
+                || !TryGetTextureUploadByteSize(extent, desc.format, bytes)
+                || copy.bufferOffset > data.size() || bytes > data.size() - copy.bufferOffset)
+                return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        }
         TextureHandle destination{};
         TextureViewHandle destinationView{};
         BufferHandle staging{};
@@ -73,15 +96,21 @@ namespace Catalpa {
             RHITextureDesc destinationDesc = desc;
             destinationDesc.usage = destinationDesc.usage | RHITextureUsage::TransferDestination;
             const RHIBufferDesc stagingDesc{
-                .size = bytes, .usage = RHIBufferUsage::TransferSource, .memory = RHIMemoryDomain::Upload
+                .size = data.size(), .usage = RHIBufferUsage::TransferSource, .memory = RHIMemoryDomain::Upload
             };
+            std::vector<RHIBufferTextureCopy> ownedCopies(copies.begin(), copies.end());
             RHIStatus status = m_Device.CreateTexture(destinationDesc, destination);
-            if (status.IsSuccess()) status = m_Device.CreateTextureView(destination, RHITextureViewDesc{}, destinationView);
+            RHITextureViewDesc viewDesc;
+            viewDesc.range.levelCount = desc.mipLevels;
+            viewDesc.range.layerCount = desc.arrayLayers;
+            viewDesc.type = desc.cubeCompatible ? RHITextureViewType::Cube
+                : desc.arrayLayers > 1 ? RHITextureViewType::Texture2DArray : RHITextureViewType::Texture2D;
+            if (status.IsSuccess()) status = m_Device.CreateTextureView(destination, viewDesc, destinationView);
             if (status.IsSuccess()) status = m_Device.CreateBuffer(stagingDesc, staging);
             if (status.IsSuccess()) status = m_Device.WriteBuffer(staging, 0, data);
             if (!status.IsSuccess()) { discard(); return status; }
 
-            m_PendingTextures.push_back({ .destination = destinationView, .staging = staging });
+            m_PendingTextures.push_back({ .destination = destinationView, .staging = staging, .copies = std::move(ownedCopies) });
             texture = std::exchange(destination, TextureHandle{});
             view = std::exchange(destinationView, TextureViewHandle{});
             staging = {};
@@ -116,15 +145,16 @@ namespace Catalpa {
         }
 
         for (size_t i = 0; i < m_RecordedTextureCount; ++i) {
-            const PendingTexture pending = m_PendingTextures[i];
+            const auto& pending = m_PendingTextures[i];
             RGBuffer source{};
             RGTexture destination{};
 
             if (const RHIStatus status = graph.ImportBuffer(pending.staging, source); !status.IsSuccess()) return status;
             if (const RHIStatus status = graph.ImportTexture(pending.destination, destination); !status.IsSuccess()) return status;
 
-            if (const RHIStatus status = graph.AddTextureUploadPass("Static Texture Upload", source, destination, RHIBufferTextureCopy{}); !status.IsSuccess())
-                return status;
+            for (const auto& copy : pending.copies)
+                if (const RHIStatus status = graph.AddTextureUploadPass("Static Texture Upload", source, destination, copy); !status.IsSuccess())
+                    return status;
         }
 
         return {};

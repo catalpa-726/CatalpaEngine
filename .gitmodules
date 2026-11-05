@@ -40,9 +40,14 @@
 [submodule "Catalpa/third_party/simdutf"]
 	path = Catalpa/third_party/simdutf
 	url = https://github.com/simdutf/simdutf.git
+[submodule "Catalpa/third_party/ImGuizmo"]
+	path = Catalpa/third_party/ImGuizmo
+	url = https://github.com/CedricGuillemet/ImGuizmo.git
 
 # GLM, EnTT, enkiTS and SPIRV-Reflect currently come from complete upstream archives.
 # These entries declare submodule paths/URLs; gitlink registration is not performed here.
 # Ordinary source files are ignored; acquisition facts remain in Dependencies.lock.json.
 
 # Asset import dependencies above are user-provided directories; no gitlink registration or acquisition audit was performed.
+# ImGuizmo is user-provided; only the compiled header/source and LICENSE were compared with upstream.
+# Its path/URL declaration does not register a gitlink or stage the ignored source tree.

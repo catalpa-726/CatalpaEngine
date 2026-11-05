@@ -35,12 +35,16 @@ namespace Catalpa {
         uint32_t mipLevels = 1;
         uint32_t arrayLayers = 1;
         uint32_t sampleCount = 1;
+        bool cubeCompatible = false;
     };
+
+    enum class RHITextureViewType { Texture2D, Texture2DArray, Cube };
 
     struct RHITextureViewDesc {
         // Unknown 表示沿用父图像格式。
         PixelFormat format = PixelFormat::Unknown;
         RHITextureSubresourceRange range{};
+        RHITextureViewType type = RHITextureViewType::Texture2D;
     };
 
     // 计算整幅紧密排列上传数据的字节数，不表示原生图像的实际分配大小。
@@ -49,7 +53,7 @@ namespace Catalpa {
         bytes = 0;
         const PixelFormatInfo info = GetPixelFormatInfo(format);
 
-        if (extent.IsEmpty() || info.isDepth || info.blockWidth != 1 || info.blockHeight != 1 || info.bytesPerBlock != 4)
+        if (extent.IsEmpty() || info.isDepth || info.blockWidth != 1 || info.blockHeight != 1 || info.bytesPerBlock == 0)
             return false;
 
         const uint64_t rowBytes = static_cast<uint64_t>(extent.width) * info.bytesPerBlock;

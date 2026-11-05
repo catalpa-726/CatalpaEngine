@@ -4,6 +4,7 @@
 #include "Core/Jobs/CancellationToken.h"
 #include "Geometry/ModelAsset.h"
 #include "Images/ImageAsset.h"
+#include "Lighting/EnvironmentAsset.h"
 
 namespace Catalpa::Tools {
     // unitScale 是转换到米后的附加倍率，仅影响派生模型。
@@ -55,9 +56,10 @@ namespace Catalpa::Tools {
         // 图像保留解码行序。采样时以此参数将 Assimp 的 UV 原点与图像行序对齐。
         bool textureFlipV = false;
         std::map<std::string, AssetId, std::less<>> textures;
+        std::map<std::string, uint32_t, std::less<>> samplers;
     };
 
-    using ImportedValue = std::variant<MeshAsset, ImageAsset, ImportedMaterial, ModelAsset>;
+    using ImportedValue = std::variant<MeshAsset, ImageAsset, ImportedMaterial, ModelAsset, EnvironmentAsset>;
 
     struct ImportedAsset {
         AssetId id;

@@ -26,7 +26,7 @@ namespace Catalpa {
         static void CommitAccepted(
             VulkanResourceRegistry& registry,
             std::span<RHIBufferStateUpdate> buffers,
-            std::span<RHITextureStateUpdate> textures) noexcept;
+            std::span<RHITextureStateUpdate> textures, RHICompletionPoint completion) noexcept;
     };
 
 }

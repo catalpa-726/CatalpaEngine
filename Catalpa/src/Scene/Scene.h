@@ -16,6 +16,9 @@ namespace Catalpa {
     struct ArchiveValue;
     struct CameraComponent;
     struct MeshRendererComponent;
+    class SceneSubtreeSnapshot;
+    struct LightComponent;
+    struct EnvironmentComponent;
 
     // 独占World及其结构命令；本步主线程同步操作，不承担资产加载或GPU资源。
     class CATALPA_API Scene {
@@ -29,6 +32,7 @@ namespace Catalpa {
         // 最近一次作者字段schema诊断由Scene持有，不在WorldStatus内借用临时字符串。
         [[nodiscard]] const std::string& GetLastComponentDiagnostic() const noexcept { return m_ComponentDiagnostic; }
         [[nodiscard]] const World& GetWorld() const noexcept { return m_World; }
+        [[nodiscard]] const ComponentRegistry* GetComponentSchemas() const noexcept { return m_ComponentSchemas.get(); }
         // 调度器由此 Scene 独占；调用方只在场景有效期间短期借用。
         [[nodiscard]] SystemScheduler& GetSystems() noexcept { return m_Systems; }
         [[nodiscard]] const SystemScheduler& GetSystems() const noexcept { return m_Systems; }
@@ -37,6 +41,8 @@ namespace Catalpa {
         [[nodiscard]] WorldStatus QueueCreate(PersistentEntityId persistent, std::string_view name, const Math::TransformTRS& local, EntityId parent = {});
         [[nodiscard]] WorldStatus QueueDestroySubtree(EntityId entity);
         [[nodiscard]] WorldStatus QueueSetLocal(EntityId entity, const Math::TransformTRS& local);
+        // 仅替换作者显示名称，持久实体身份及其查找映射由 Scene 保持。
+        [[nodiscard]] WorldStatus QueueSetName(EntityId entity, std::string_view name);
         [[nodiscard]] WorldStatus QueueSetParent(EntityId entity, EntityId parent, bool keepWorld = false);
         // 可选相机组件也走同一个结构安全点，不向客户端暴露可变 World。
         [[nodiscard]] WorldStatus QueueSetCamera(EntityId entity, const CameraComponent& camera);
@@ -44,6 +50,19 @@ namespace Catalpa {
         // 密封几何引用与显示参数由值捕获，在同一结构安全点增加或替换/移除组件。
         [[nodiscard]] WorldStatus QueueSetMeshRenderer(EntityId entity, const MeshRendererComponent& renderer);
         [[nodiscard]] WorldStatus QueueRemoveMeshRenderer(EntityId entity);
+        [[nodiscard]] WorldStatus QueueSetLight(EntityId entity, const LightComponent&);
+        [[nodiscard]] WorldStatus QueueSetEnvironment(EntityId entity, const EnvironmentComponent&);
+        [[nodiscard]] WorldStatus QueueRemoveLight(EntityId);
+        [[nodiscard]] WorldStatus QueueRemoveEnvironment(EntityId);
+        // 文档命令在主线程安全点独占执行；无损捕获失败时保留原实体。
+        [[nodiscard]] WorldStatus RemoveForUndo(EntityId root, SceneSubtreeSnapshot& output,
+                                                const SceneSubtreeSnapshot* expected = nullptr);
+        // 仅文档自己恢复过父实体时可显式传入已校验的代次；默认要求捕获时的父实体仍有效。
+        [[nodiscard]] WorldStatus RestoreForUndo(const SceneSubtreeSnapshot& snapshot, EntityId reboundParent = {});
+        [[nodiscard]] bool CanEditNow() const noexcept {
+            return !m_Committing && !m_UpdatingTransforms && !m_World.IsAccessActive() &&
+                   !m_Systems.IsRunning() && m_Commands.Size() == 0;
+        }
         // FIFO逐命令原子操作，不承诺整批回滚；保留全部结果，返回首个失败。
         [[nodiscard]] WorldStatus CommitPending();
         [[nodiscard]] const EntityCommandApplyResult& GetLastCommandResults() const noexcept { return m_LastCommands; }

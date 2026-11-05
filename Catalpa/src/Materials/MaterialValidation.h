@@ -28,7 +28,7 @@ namespace Catalpa {
     [[nodiscard]] CATALPA_API bool ParseMaterialInstance(std::string_view text,
         const AssetVersionRef<MaterialDefinition>& definition,
         std::shared_ptr<const MaterialInstance>& output, std::string& error, const ArchiveLimits& limits = {});
-    // 构造同一schema的内置Unlit/PBR/Error CPU定义；PBR只声明领域数据，不声称GPU照明已支持。
+    // 构造同一schema的内置Unlit/PBR/Error CPU定义；着色模型必须绑定各自的确切shader版本。
     [[nodiscard]] CATALPA_API bool CreateBuiltinMaterialDefinition(BuiltinMaterialKind kind, AssetId shaderId,
         std::shared_ptr<const MaterialDefinition>& output, std::string& error);
     // Error使用Unlit与品红色；caller提供统一内置身份，不在工厂重新编号。

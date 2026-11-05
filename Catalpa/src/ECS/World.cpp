@@ -74,6 +74,18 @@ namespace Catalpa {
     }
     bool World::IsAlive(EntityId entity) const noexcept { return Validate(entity).IsSuccess(); }
 
+    WorldStatus World::CountComponents(EntityId entity, size_t& count) const {
+        if (const auto status = Validate(entity); !status.IsSuccess()) return status;
+        const auto native = m_Impl->slots[entity.index].native;
+        size_t result = 0;
+        for (const auto& [id, storage] : m_Impl->registry.storage()) {
+            (void)id;
+            if (storage.contains(native)) ++result;
+        }
+        count = result;
+        return {};
+    }
+
     WorldStatus World::Validate(EntityId entity) const noexcept {
         if (m_Impl->ownerThread != std::this_thread::get_id()) return { WorldError::Busy, "World belongs to another thread" };
         if (m_Impl->mutating) return { WorldError::Busy, "World is changing component storage" };

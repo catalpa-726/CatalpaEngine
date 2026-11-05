@@ -1,5 +1,6 @@
 #include "catpch.h"
 #include "VulkanCommandList.h"
+#include "VulkanQueryPool.h"
 #include "VulkanBinding.h"
 #include "VulkanCommandPool.h"
 #include "VulkanUtils.h"
@@ -139,14 +140,14 @@ namespace Catalpa {
             m_Device.GetResourceRegistry(), m_BufferStateUpdates, m_TextureStateUpdates, true);
     }
 
-    void VulkanCommandList::CommitResourceStatePlan() noexcept
+    void VulkanCommandList::CommitResourceStatePlan(RHICompletionPoint completion) noexcept
     {
         CAT_CORE_ASSERT(
             m_State == RHICommandListState::Executable && m_ResourceStatePlanBound && !m_ResourceStatePlanCommitted,
             "Resource state plan must be valid and uncommitted!");
 
         VulkanResourceStateTracker::CommitAccepted(
-            m_Device.GetResourceRegistry(), m_BufferStateUpdates, m_TextureStateUpdates);
+            m_Device.GetResourceRegistry(), m_BufferStateUpdates, m_TextureStateUpdates, completion);
 
         m_ResourceStatePlanCommitted = true;
     }
@@ -247,6 +248,7 @@ namespace Catalpa {
             const auto* record = registry.ResolveTextureView(attachment.view);
             if (!record || !HasTextureUsage(record->usage, RHITextureUsage::ColorAttachment)
                 || GetPixelFormatInfo(record->format).isDepth || record->sampleCount != 1
+                || record->mipLevels != 1 || record->arrayLayers != 1
                 || right > record->extent.width || bottom > record->extent.height)
                 return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
             const auto loadOp = ToVulkanLoadOp(attachment.loadOp);
@@ -257,13 +259,22 @@ namespace Catalpa {
                 if (!std::isfinite(value)) return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
             colorFormat = record->format;
             const auto& c = attachment.clearColor;
+            VkClearValue clear{ .color = { .float32 = { c[0], c[1], c[2], c[3] } } };
+            if (GetPixelFormatInfo(record->format).isInteger) {
+                for (size_t channel = 0; channel < 4; ++channel) {
+                    const double value = c[channel];
+                    if (value < 0.0 || value > double(UINT32_MAX) || std::floor(value) != value)
+                        return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+                    clear.color.uint32[channel] = static_cast<uint32_t>(value);
+                }
+            }
             attachments.push_back({
                 .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
                 .imageView = record->view,
                 .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 .loadOp = loadOp,
                 .storeOp = storeOp,
-                .clearValue = { .color = { .float32 = { c[0], c[1], c[2], c[3] } } }
+                .clearValue = clear
             });
         }
         VkRenderingAttachmentInfo depthInfo{};
@@ -272,6 +283,7 @@ namespace Catalpa {
             const auto* record = registry.ResolveTextureView(depth.view);
             if (!record || !HasTextureUsage(record->usage, RHITextureUsage::DepthAttachment)
                 || record->format != PixelFormat::D32_Float || record->sampleCount != 1
+                || record->mipLevels != 1 || record->arrayLayers != 1
                 || right > record->extent.width || bottom > record->extent.height
                 || !std::isfinite(depth.clearDepth) || depth.clearDepth < 0.0f || depth.clearDepth > 1.0f
                 || (depth.readOnly && (depth.loadOp != RHILoadOp::Load || depth.storeOp != RHIStoreOp::Store)))
@@ -407,6 +419,30 @@ namespace Catalpa {
         }
     }
 
+    RHIStatus VulkanCommandList::ResetQueries(const std::shared_ptr<RHIQueryPool>& pool, uint32_t first, uint32_t count)
+    {
+        const auto native = std::dynamic_pointer_cast<VulkanQueryPool>(pool);
+        if (m_State != RHICommandListState::Recording || !native || native->GetDeviceId() != m_Device.GetDeviceId()
+            || count == 0 || first >= native->GetCount() || count > native->GetCount() - first)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanCommandList::ResetQueries" };
+        if (std::find(m_RetainedQueries.begin(), m_RetainedQueries.end(), pool) == m_RetainedQueries.end())
+            m_RetainedQueries.push_back(pool);
+        vkCmdResetQueryPool(m_CommandBuffer, native->GetHandle(), first, count);
+        return {};
+    }
+
+    RHIStatus VulkanCommandList::WriteTimestamp(const std::shared_ptr<RHIQueryPool>& pool, uint32_t query, bool bottom)
+    {
+        const auto native = std::dynamic_pointer_cast<VulkanQueryPool>(pool);
+        if ((m_State != RHICommandListState::Recording && m_State != RHICommandListState::Rendering)
+            || !native || native->GetDeviceId() != m_Device.GetDeviceId() || query >= native->GetCount()
+            || std::find(m_RetainedQueries.begin(), m_RetainedQueries.end(), pool) == m_RetainedQueries.end())
+            return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::WriteTimestamp" };
+        vkCmdWriteTimestamp2(m_CommandBuffer, bottom ? VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
+            native->GetHandle(), query);
+        return {};
+    }
+
     RHIStatus VulkanCommandList::OnPoolReset()
     {
         if (const RHIStatus status = m_Device.ObserveStatus(m_Descriptors.Reset()); !status.IsSuccess()) {
@@ -418,6 +454,8 @@ namespace Catalpa {
         ReleaseSamplers();
         ReleasePipelines();
         ReleaseBuffers();
+
+        m_RetainedQueries.clear();
 
         m_BufferStateUpdates.clear();
         m_LocalBufferStates.clear();
@@ -543,7 +581,7 @@ namespace Catalpa {
             case RHIBindingType::SampledTexture: {
                 const auto* record = registry.ResolveTextureView(binding.texture);
                 if (!record || !HasTextureUsage(record->usage, RHITextureUsage::Sampled)
-                    || GetPixelFormatInfo(record->format).isDepth || binding.sampler.HasValue()
+                    || record->type != expected->imageViewType || binding.sampler.HasValue()
                     || binding.buffer.HasValue() || binding.offset != 0 || binding.size != 0)
                     return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
                 images[i].imageView = record->view;
@@ -799,12 +837,16 @@ namespace Catalpa {
             destinationRecord->presentable || GetPixelFormatInfo(destinationRecord->format).isDepth || copy.bufferOffset % 4 != 0)
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
-        if (copy.range != RHITextureSubresourceRange{} || destinationRecord->sampleCount != 1)
+        if (copy.range.aspect != RHITextureAspect::Color || copy.range.levelCount != 1 || copy.range.layerCount != 1
+            || copy.range.baseMipLevel >= destinationRecord->mipLevels || copy.range.baseArrayLayer >= destinationRecord->arrayLayers
+            || destinationRecord->sampleCount != 1)
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
 
         uint64_t bytes = 0;
 
-        if (!TryGetTextureUploadByteSize(destinationRecord->extent, destinationRecord->format, bytes))
+        const Extent2D extent{ std::max(1u, destinationRecord->extent.width >> copy.range.baseMipLevel),
+            std::max(1u, destinationRecord->extent.height >> copy.range.baseMipLevel) };
+        if (!TryGetTextureUploadByteSize(extent, destinationRecord->format, bytes))
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
 
         if (!IsValidBufferRange(sourceRecord->desc.size, copy.bufferOffset, bytes))
@@ -816,7 +858,6 @@ namespace Catalpa {
 
         const VkBuffer sourceBuffer = sourceRecord->buffer;
         const VkImage destinationImage = destinationRecord->image;
-        const Extent2D extent = destinationRecord->extent;
         const size_t firstBuffer = m_RetainedBuffers.size();
 
         if (const RHIStatus status = RetainBuffer(source); !status.IsSuccess()) return status;
@@ -844,6 +885,47 @@ namespace Catalpa {
             m_CommandBuffer, sourceBuffer, destinationImage,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
+        return {};
+    }
+
+    // GPU 写入与主机读取之间由图显式插入 HostRead 屏障；这里仅记录指定像素矩形复制。
+    RHIStatus VulkanCommandList::CopyTextureToBuffer(TextureViewHandle source, BufferHandle destination, const RHITextureBufferCopy& copy)
+    {
+        constexpr const char* operation = "VulkanCommandList::CopyTextureToBuffer";
+        if (m_State != RHICommandListState::Recording)
+            return { .code = RHIErrorCode::InvalidState, .operation = operation };
+        auto& registry = m_Device.GetResourceRegistry();
+        const auto* image = registry.ResolveTextureView(source);
+        const auto* buffer = registry.ResolveBuffer(destination);
+        if (!image || !buffer || !HasTextureUsage(image->usage, RHITextureUsage::TransferSource)
+            || !HasBufferUsage(buffer->desc.usage, RHIBufferUsage::TransferDestination)
+            || buffer->desc.memory != RHIMemoryDomain::Readback || image->sampleCount != 1
+            || copy.range.aspect != RHITextureAspect::Color || copy.range.levelCount != 1 || copy.range.layerCount != 1
+            || copy.range.baseMipLevel >= image->mipLevels || copy.range.baseArrayLayer >= image->arrayLayers
+            || copy.textureOffset.x < 0 || copy.textureOffset.y < 0 || copy.bufferOffset % 4 != 0)
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+        const Extent2D extent{ std::max(1u, image->extent.width >> copy.range.baseMipLevel),
+            std::max(1u, image->extent.height >> copy.range.baseMipLevel) };
+        uint64_t bytes = 0;
+        if (!TryGetTextureUploadByteSize(copy.extent, image->format, bytes)
+            || uint32_t(copy.textureOffset.x) > extent.width || copy.extent.width > extent.width - uint32_t(copy.textureOffset.x)
+            || uint32_t(copy.textureOffset.y) > extent.height || copy.extent.height > extent.height - uint32_t(copy.textureOffset.y)
+            || !IsValidBufferRange(buffer->desc.size, copy.bufferOffset, bytes))
+            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
+        LocalBufferState* local = nullptr;
+        if (const auto status = GetLocalBufferState(destination, local); !status.IsSuccess()) return status;
+        local->snapshot.state.initialized.reserve(local->snapshot.state.initialized.size() + 1);
+        if (const auto status = RetainTextureView(source); !status.IsSuccess()) return status;
+        if (const auto status = RetainBuffer(destination); !status.IsSuccess()) return status;
+        const VkBufferImageCopy region{
+            .bufferOffset = copy.bufferOffset,
+            .imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, copy.range.baseMipLevel, copy.range.baseArrayLayer, 1 },
+            .imageOffset = { copy.textureOffset.x, copy.textureOffset.y, 0 },
+            .imageExtent = { copy.extent.width, copy.extent.height, 1 }
+        };
+        vkCmdCopyImageToBuffer(m_CommandBuffer, image->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer->buffer, 1, &region);
+        MarkInitialized(local->snapshot.state.initialized, copy.bufferOffset, bytes);
         return {};
     }
 

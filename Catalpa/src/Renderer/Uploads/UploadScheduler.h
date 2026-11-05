@@ -6,6 +6,7 @@
 #include "RHI/RHICompletionPoint.h"
 #include "RHI/RHIError.h"
 #include "RHI/RHITextureDesc.h"
+#include "RHI/RHICommandTypes.h"
 
 // 声明静态 Buffer 和颜色纹理上传调度器
 namespace Catalpa {
@@ -29,6 +30,9 @@ namespace Catalpa {
         // 立即复制 CPU 数据；自动补充 TransferDestination。
         // 纹理和 View 的所有权交给调用方，须保留至请求提交或调度器关闭。
         [[nodiscard]] RHIStatus CreateTexture(std::span<const std::byte> data, const RHITextureDesc& desc, TextureHandle& texture, TextureViewHandle& view);
+        // 多mip/层逐项描述紧密载荷；偏移指向同一CPU副本，调度器不重排源字节。
+        [[nodiscard]] RHIStatus CreateTexture(std::span<const std::byte> data, const RHITextureDesc& desc,
+            std::span<const RHIBufferTextureCopy> copies, TextureHandle& texture, TextureViewHandle& view);
 
         // 冻结本次请求前缀并加入图，复制和屏障由图统一生成。
         [[nodiscard]] RHIStatus AddPasses(RenderGraph& graph);
@@ -54,6 +58,7 @@ namespace Catalpa {
         struct PendingTexture {
             TextureViewHandle destination{};
             BufferHandle staging{};
+            std::vector<RHIBufferTextureCopy> copies;
         };
 
         RHIDevice& m_Device;
