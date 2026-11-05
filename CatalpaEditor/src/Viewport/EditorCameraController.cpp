@@ -6,6 +6,8 @@ namespace Catalpa::Editor {
     namespace {
         constexpr float SpeedMetresPerSecond = 3.0f;
         constexpr float MouseRadiansPerPixel = 0.0025f;
+        constexpr float WheelMetresPerStep = 0.5f;
+        constexpr float WheelStepsPerOrthoDoubling = 4.0f;
 
         // 与 Runtime 相机选择顺序相同。忽略不具备可用刚性世界姿态的相机，不修整作者数据。
         bool ReadSceneCamera(const Scene& scene, const CameraViewport& viewport, Math::TransformTRS& pose, CameraLens& lens,
@@ -86,7 +88,7 @@ namespace Catalpa::Editor {
     bool EditorCameraController::Navigate(const EditorCameraInput& input, std::string& error) {
         if (!std::isfinite(input.seconds) || input.seconds < 0 || !std::isfinite(input.right) ||
             !std::isfinite(input.up) || !std::isfinite(input.forward) || !std::isfinite(input.lookX) ||
-            !std::isfinite(input.lookY)) {
+            !std::isfinite(input.lookY) || !std::isfinite(input.wheel)) {
             error = "Editor camera input contains an invalid time or axis";
             return false;
         }
@@ -107,12 +109,27 @@ namespace Catalpa::Editor {
             direction /= length;
         // 避免窗口失焦、拖动或调试暂停之后的巨步长，不改变模拟时钟。
         pose.translation += direction * (std::min(input.seconds, 0.25f) * SpeedMetresPerSecond);
+        auto lens = m_Lens;
+        if (input.wheel != 0) {
+            if (lens.projection == ProjectionType::Perspective) {
+                pose.translation += pose.rotation * Math::Vec3{0, 0, -input.wheel * WheelMetresPerStep};
+            } else {
+                // 正交画面中沿视线移动不会放大物体，缩放独立视口的可见高度。
+                lens.orthographicHeight *= std::exp2(-input.wheel / WheelStepsPerOrthoDoubling);
+                if (const auto status = ValidateCameraLens(lens); !status.IsSuccess()) {
+                    error = status.message;
+                    return false;
+                }
+            }
+        }
+
         const auto status = Math::ValidateTRS(pose);
         if (!status.IsSuccess()) {
             error = status.message;
             return false;
         }
         m_Pose = pose;
+        m_Lens = lens;
         return true;
     }
 }

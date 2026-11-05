@@ -12,6 +12,12 @@ namespace Catalpa::Tools {
         }
     }
 
+    std::string AssetSourceExtension(const std::filesystem::path& source) {
+        auto extension = AssetPathText(source.extension());
+        LowercaseExtension(extension);
+        return extension;
+    }
+
     bool AssetImportRegistry::Register(std::string ext, std::shared_ptr<const IAssetImporter> importer,
                                        std::string& e) {
         LowercaseExtension(ext);
@@ -25,9 +31,7 @@ namespace Catalpa::Tools {
     }
 
     const IAssetImporter* AssetImportRegistry::Find(const std::filesystem::path& p) const {
-        auto ext = AssetPathText(p.extension());
-        LowercaseExtension(ext);
-        const auto it = m_Importers.find(ext);
+        const auto it = m_Importers.find(AssetSourceExtension(p));
         return it == m_Importers.end() ? nullptr : it->second.get();
     }
 

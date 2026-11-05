@@ -597,6 +597,55 @@ Connections: {
                 "MTL texture resolves relative to its material library");
         }
 
+        void FbxRoughnessContract(Fixture& fixture, const std::filesystem::path& shaders,
+                                  TestContext& context) {
+            // Ns=156.25 时 Assimp 恰好推导出 -0.25，可区分派生越界与作者显式提交同一数值。
+            constexpr std::string_view diffuse = R"(P: "DiffuseColor", "Color", "", "A",1,0,0)";
+            const auto makeSource = [&](std::string_view roughness) {
+                std::string properties(diffuse);
+                properties += "\n            " R"(P: "ShininessExponent", "double", "Number", "",156.25)";
+                if (!roughness.empty()) {
+                    properties += "\n            " R"(P: "Maya|roughness", "double", "Number", "",)";
+                    properties += roughness;
+                }
+                return Replace(std::string(Fbx), diffuse, properties);
+            };
+
+            const auto request = fixture.Request("phong.fbx", shaders);
+            std::string error;
+            const auto checkValid = [&](std::string_view authored, float expected) {
+                if (!CheckOperation(context,
+                                    fixture.Store("Raw/phong.fbx", makeSource(authored), error), error))
+                    return;
+                AssetBuildContext input(request);
+                AssetImportResult imported;
+                if (!CheckOperation(context,
+                                    input.Initialize(error) && AssimpImporter{}.Import(input, imported, error),
+                                    error))
+                    return;
+                const auto expectedMaterial = std::find_if(
+                    imported.assets.begin(), imported.assets.end(), [](const auto& asset) {
+                        const auto* material = std::get_if<ImportedMaterial>(&asset.value);
+                        return material && material->sourceProperties.contains("phong.Ns");
+                    });
+                context.Check(expectedMaterial != imported.assets.end() &&
+                                  std::abs(std::get<ImportedMaterial>(expectedMaterial->value).roughness -
+                                           expected) < 1e-6f,
+                              "FBX preserves authored roughness or converts the original Phong exponent");
+                const auto built = AssetCooker::Build(request);
+                CheckOperation(context, built.success, "Cook FBX material: ", built.error);
+            };
+            checkValid({}, std::sqrt(2.0f / 158.25f));
+            checkValid("0", 0.0f);
+
+            if (!CheckOperation(context, fixture.Store("Raw/phong.fbx", makeSource("-0.25"), error), error))
+                return;
+            const auto invalid = AssetCooker::Build(request);
+            context.Check(!invalid.success && invalid.error.find("roughness") != std::string::npos,
+                          "Explicit out-of-range FBX roughness produces a diagnostic even when it equals "
+                          "the Assimp-derived value");
+        }
+
         // 归档将 PNG 放在 FBX 旁。导出时引用的目录后来恢复时，缓存必须重新选择该目录。
         void RelocatedFbxTextureContract(Fixture& fixture, const std::filesystem::path& shaders,
                                          TestContext& context) {
@@ -820,6 +869,7 @@ Connections: {
         CheckCrossFormatImports(fixture, shaders, context);
         TangentCornerContract(request, context);
         MaterialLibraryPathContract(fixture, shaders, context);
+        FbxRoughnessContract(fixture, shaders, context);
         RelocatedFbxTextureContract(fixture, shaders, context);
 
         const auto negative = [&](std::string source) {

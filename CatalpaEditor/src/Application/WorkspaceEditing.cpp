@@ -198,6 +198,14 @@ namespace Catalpa::Editor {
             m_RightLook = false;
             return input;
         }
+
+        // 滚轮跟随悬停的图像；其他面板已消费的滚动，以及 Shift 横向滚动，不驱动相机。
+        // 键盘导航和右键转向仍要求视口获得焦点。
+        if (io.MouseWheel != 0 && !io.KeyShift &&
+            ImGui::GetCurrentContext()->WheelingWindowScrolledFrame != ImGui::GetFrameCount() &&
+            ImGui::TestKeyOwner(ImGuiKey_MouseWheelY, ImGui::GetCurrentWindowRead()->ID))
+            input.wheel = io.MouseWheel;
+
         const bool rightPressed = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
         if (rightPressed)
             ImGui::SetWindowFocus();
@@ -234,7 +242,8 @@ namespace Catalpa::Editor {
             ImGuiDockNodeFlags_NoDockingOverMe | ImGuiDockNodeFlags_NoWindowMenuButton;
         ImGui::SetNextWindowClass(&viewportClass);
         const bool shown = ImGui::Begin(text("panel.viewport", "Scene Viewport", "Catalpa.Viewport").c_str(),
-                                        nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove);
+                                        nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove |
+                                                     ImGuiWindowFlags_NoScrollWithMouse);
         if (!shown || !doc) {
             m_Picking.Cancel(m_App);
             m_Gizmo.Cancel(m_Error);
@@ -257,7 +266,7 @@ namespace Catalpa::Editor {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", text("viewport.navigation",
                                          "Click the image and keep the pointer over it. WASD moves, Q/E descends or rises, "
-                                         "hold right mouse to look.",
+                                         "hold right mouse to look. Scroll over the image to zoom.",
                                          nullptr)
                                         .c_str());
         ImGui::SameLine();

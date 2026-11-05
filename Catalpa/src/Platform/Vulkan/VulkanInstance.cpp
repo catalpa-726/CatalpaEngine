@@ -173,8 +173,7 @@ namespace Catalpa {
             }
         }
 
-        CAT_CORE_INFO("Vulkan instance created.");
-        CAT_CORE_INFO("Vulkan diagnostics configured: {0}.",
+        CAT_CORE_INFO("[VulkanInstance] Vulkan diagnostics configured: {0}.",
             synchronizationRequested ? "core and synchronization validation" :
             validationEnabled ? "core validation" : "disabled");
 

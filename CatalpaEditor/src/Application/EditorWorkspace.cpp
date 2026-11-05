@@ -220,7 +220,8 @@ namespace Catalpa::Editor {
         ImGui::GetIO().WantSaveIniSettings = false;
         m_Dirty = false;
         m_AutoSave = true;
-        Report("status.saved", "Workspace saved");
+        m_Status = Text("status.saved", "Workspace saved");
+        m_StatusError.clear();
         return true;
     }
 

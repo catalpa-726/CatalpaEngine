@@ -1,6 +1,7 @@
 #include "catpch.h"
 #include "Panels/BuildPanel.h"
 #include "AssetPipeline/AssetCooker.h"
+#include "Camera/CameraProjection.h"
 #include "Scene/Components/CameraComponent.h"
 #include "Scene/Components/LightComponent.h"
 #include "Scene/Components/EnvironmentComponent.h"
@@ -367,19 +368,32 @@ namespace Catalpa::Editor {
         Math::TransformTRS pose;
         pose.translation = {sphere.center.x, sphere.center.y, static_cast<float>(cameraZ)};
         const double depth = double(pose.translation.z) - sphere.center.z;
-        // 球体在相机前方的深度范围为 [depth-r, depth+r]，两侧各留半个半径。
-        // 近面跟随球体前缘，避免过小的 near 在 float 逆视投影中放大平移舍入误差。
-        const double nearPlane = depth - 1.5 * radius, farPlane = depth + 1.5 * radius;
-        if (depth < fitDistance || nearPlane <= 0.0 || farPlane > std::numeric_limits<float>::max()) {
+        const double tightNear = depth - 1.5 * radius, tightFar = depth + 1.5 * radius;
+        if (depth < fitDistance || tightNear <= 0.0 || tightFar > std::numeric_limits<float>::max()) {
             error = "Preview bounds and camera position cannot be represented at this scale";
             return false;
         }
-        candidate.nearPlane = static_cast<float>(nearPlane);
+
+        // 给前后移动留空间；极窄视口需要很远的初始机位，限制远近面比以保留深度精度。
+        const double farPlane = std::min(depth + 16.0 * radius, double(std::numeric_limits<float>::max()));
+        candidate.nearPlane = static_cast<float>(std::max(radius * 0.01, farPlane / 10000.0));
         candidate.farPlane = static_cast<float>(farPlane);
-        if (candidate.nearPlane >= candidate.farPlane || !Math::ValidateTRS(pose).IsSuccess()) {
-            error = "Preview camera has insufficient precision for these bounds";
+        Math::Mat4 world;
+        if (const auto status = Math::ComposeTRS(pose, world); !status.IsSuccess()) {
+            error = status.message;
             return false;
         }
+        CameraMatrices matrices;
+        if (!BuildCameraMatrices(world, candidate, viewport, matrices).IsSuccess()) {
+            // 远离世界原点时，较小近面可能超出位置精度预算。此时保留原有的包围球取景。
+            candidate.nearPlane = static_cast<float>(tightNear);
+            candidate.farPlane = static_cast<float>(tightFar);
+            if (const auto status = BuildCameraMatrices(world, candidate, viewport, matrices); !status.IsSuccess()) {
+                error = status.message;
+                return false;
+            }
+        }
+
         lens = candidate;
         placement = pose;
         error.clear();

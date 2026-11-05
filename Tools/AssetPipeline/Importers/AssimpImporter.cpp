@@ -1,5 +1,6 @@
 #include "catpch.h"
 #include "AssetPipeline/Importers/AssimpImporter.h"
+#include "AssetPipeline/AssetImportRegistry.h"
 #include "AssetPipeline/Importers/ImportGeometry.h"
 #include "AssetPipeline/Importers/TextureImporter.h"
 #include "AssetPipeline/Importers/MaterialImporter.h"
@@ -74,7 +75,7 @@ namespace Catalpa::Tools {
 
         class SourceIO final : public Assimp::IOSystem {
           public:
-            explicit SourceIO(AssetBuildContext& c) : context(c) {}
+            SourceIO(AssetBuildContext& c, bool isFbx) : context(c), m_CheckFbxSource(isFbx) {}
 
             bool Exists(const char* file) const override {
                 try {
@@ -109,6 +110,14 @@ namespace Catalpa::Tools {
                             failure = error;
                         return nullptr;
                     }
+                    if (m_CheckFbxSource && p == context.request.source && !b.empty()) {
+                        // Assimp 将 Phong 推导值和 Maya 显式值写到同一材质键。
+                        // 属性名在 FBX 文本和二进制中都按字节保存。只用其缺席证明来源；
+                        // 如果其它材质或模板也声明了该名字，则保留 Assimp 的结果并校验。
+                        const std::string_view bytes(reinterpret_cast<const char*>(b.data()), b.size());
+                        fbxHasOnlyPhongRoughness = bytes.find("Maya|roughness") == std::string_view::npos;
+                        m_CheckFbxSource = false;
+                    }
                     return new SourceStream(std::move(b));
                 } catch (const std::exception& x) {
                     if (failure.empty())
@@ -123,6 +132,10 @@ namespace Catalpa::Tools {
 
             AssetBuildContext& context;
             std::string failure;
+            bool fbxHasOnlyPhongRoughness = false;
+
+          private:
+            bool m_CheckFbxSource;
         };
 
         class Progress final : public Assimp::ProgressHandler {
@@ -144,12 +157,50 @@ namespace Catalpa::Tools {
                     out[c][row] = in[row][c];
             return out;
         }
+
+        bool ReadRoughness(const aiMaterial& source, bool isFbx, bool fbxHasOnlyPhongRoughness,
+                           AssetBuildContext& context, unsigned index, ImportedMaterial& material,
+                           std::string& error) {
+            float shininess = 0, factor = 0;
+            const bool hasShininess = source.Get(AI_MATKEY_SHININESS, shininess) == AI_SUCCESS;
+            const bool hasFactor = source.Get(AI_MATKEY_ROUGHNESS_FACTOR, factor) == AI_SUCCESS;
+            if (hasShininess)
+                material.sourceProperties["phong.Ns"] = std::to_string(shininess);
+
+            if (hasFactor && !(fbxHasOnlyPhongRoughness && hasShininess)) {
+                if (isFbx && (!std::isfinite(factor) || factor < 0 || factor > 1)) {
+                    error = "material/" + std::to_string(index) + ": FBX roughness " + std::to_string(factor) +
+                            " is outside [0,1]; check the source material's roughness";
+                    return false;
+                }
+                material.roughness = factor;
+                return true;
+            }
+
+            if (!hasShininess)
+                return true;
+            if (!std::isfinite(shininess) || shininess < 0) {
+                error = "Invalid Phong shininess";
+                return false;
+            }
+            // FBX 的 Assimp 近似在 Ns > 100 时会变负。对已确认的 Phong 材质，
+            // 全程使用同一指数转换，避免在 Ns = 100 两侧切换公式。
+            material.roughness = std::sqrt(2.0f / (shininess + 2.0f));
+            if (hasFactor)
+                material.sourceProperties["phong.assimpRoughness"] = std::to_string(factor);
+            const auto note = "Phong Ns to roughness sqrt(2/(Ns+2)); original Ns=" + std::to_string(shininess);
+            material.sourceProperties["approximation"] = note;
+            context.Diagnose(AssetDiagnosticLevel::Warning, "material/" + std::to_string(index), note);
+            return true;
+        }
     }
 
     bool AssimpImporter::Import(AssetBuildContext& ctx, AssetImportResult& output, std::string& error) const
         try {
+        const auto extension = AssetSourceExtension(ctx.request.source);
+        const bool isFbx = extension == ".fbx";
         Assimp::Importer importer;
-        auto* io = new SourceIO(ctx);
+        auto* io = new SourceIO(ctx, isFbx);
         importer.SetIOHandler(io);
         importer.SetProgressHandler(new Progress(ctx.request.cancellation));
         // 不使用预变换、法线平滑、优化、全局缩放或隐式UV翻转。
@@ -175,9 +226,6 @@ namespace Catalpa::Tools {
         }
         AssetImportResult result;
         result.primary = ctx.Identity("model");
-        auto extension = AssetPathText(ctx.request.source.extension());
-        std::transform(extension.begin(), extension.end(), extension.begin(),
-                       [](unsigned char c) { return char(c >= 'A' && c <= 'Z' ? c + 32 : c); });
         std::map<std::pair<std::string, std::string>, AssetId> imageIds;
         const auto image = [&](const aiString& source, const std::string& semantic,
                                ImportedMaterial& material) -> bool {
@@ -319,26 +367,11 @@ namespace Catalpa::Tools {
             float ior = 1;
             if (in->Get(AI_MATKEY_REFRACTI, ior) == AI_SUCCESS)
                 material.sourceProperties["indexOfRefraction"] = std::to_string(ior);
-            float sourceNs = 0;
-            if (in->Get(AI_MATKEY_SHININESS, sourceNs) == AI_SUCCESS)
-                material.sourceProperties["phong.Ns"] = std::to_string(sourceNs);
             float bump = 1;
             if (in->Get(AI_MATKEY_BUMPSCALING, bump) == AI_SUCCESS)
                 material.sourceProperties["height.scale"] = std::to_string(bump);
-            if (in->Get(AI_MATKEY_ROUGHNESS_FACTOR, material.roughness) != AI_SUCCESS) {
-                float shininess = 0;
-                if (in->Get(AI_MATKEY_SHININESS, shininess) == AI_SUCCESS) {
-                    if (!std::isfinite(shininess) || shininess < 0) {
-                        error = "Invalid Phong shininess";
-                        return false;
-                    }
-                    material.roughness = std::sqrt(2.0f / (shininess + 2.0f));
-                    material.sourceProperties["approximation"] =
-                        "Phong Ns to roughness sqrt(2/(Ns+2)); original Ns=" + std::to_string(shininess);
-                    ctx.Diagnose(AssetDiagnosticLevel::Warning, "material/" + std::to_string(i),
-                                 material.sourceProperties["approximation"]);
-                }
-            }
+            if (!ReadRoughness(*in, isFbx, io->fbxHasOnlyPhongRoughness, ctx, i, material, error))
+                return false;
             float opacity = 1;
             in->Get(AI_MATKEY_OPACITY, opacity);
             material.baseColor[3] *= opacity;

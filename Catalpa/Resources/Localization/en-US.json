@@ -59,7 +59,7 @@
     "viewport.gpu_time": "GPU frame (ms)",
     "viewport.no_scene": "No active scene.",
     "viewport.reset_camera": "Reset view",
-    "viewport.navigation": "Click the image and keep the pointer over it. WASD moves, Q/E descends or rises, hold right mouse to look.",
+    "viewport.navigation": "Click the image and keep the pointer over it. WASD moves, Q/E descends or rises, hold right mouse to look. Scroll over the image to zoom.",
     "viewport.preparing": "Preparing scene image...",
     "document.assets": "Open drafts",
     "material.cull": "Cull",

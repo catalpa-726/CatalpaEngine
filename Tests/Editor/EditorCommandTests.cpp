@@ -224,20 +224,47 @@ namespace Catalpa::Tests {
                         std::abs(glm::length(editor.Pose().translation - authored.translation) - .6f) <
                             1.e-4f,
                     "Diagonal navigation has the same speed as a single axis");
-            TransformComponent original;
-            t.Check(scene.GetTransform(scene.Resolve(cameraId), original).IsSuccess() &&
-                        original.local.translation == authored.translation &&
-                        editor.HistoryRevision() == history,
-                    "Navigation changes only the editor view and keeps continuous camera history");
             const auto beforeLook = editor.Pose();
             t.Check(editor.Navigate({.lookX = 20, .lookY = 10, .seconds = 0}, error) &&
                         editor.Pose().rotation != beforeLook.rotation &&
                         editor.Pose().translation == beforeLook.translation,
                     "Mouse look uses pixel delta independently of simulation time");
+
+            // 转动后再滚动，以区分视线方向与固定世界轴；半刻度也应产生位移。
+            const auto start = editor.Pose();
+            const auto forward = start.rotation * Math::Vec3{0, 0, -1};
+            auto timedView = editor;
+            EditorCameraInput scroll;
+            scroll.wheel = .5f;
+            const bool advanced = editor.Navigate(scroll, error);
+            const auto movement = editor.Pose().translation - start.translation;
+            const float alongView = glm::dot(movement, forward);
+            t.Check(advanced && alongView > 0 && glm::length(movement - alongView * forward) < 1.e-4f,
+                    "Fractional wheel input dollies along the rotated view even at zero frame time");
+            scroll.seconds = .2f;
+            t.Check(timedView.Navigate(scroll, error) &&
+                        glm::length(timedView.Pose().translation - editor.Pose().translation) < 1.e-4f,
+                    "A wheel step has the same displacement at different frame times");
+            const auto afterForward = editor.Pose().translation;
+            scroll.wheel = -.5f;
+            t.Check(editor.Navigate(scroll, error) &&
+                        glm::dot(editor.Pose().translation - afterForward, forward) < 0 &&
+                        editor.Pose().rotation == start.rotation &&
+                        editor.Lens().verticalFovRadians == camera.lens.verticalFovRadians,
+                    "Scrolling back retreats without rotating or changing the field of view");
+
+            TransformComponent original;
+            t.Check(scene.GetTransform(scene.Resolve(cameraId), original).IsSuccess() &&
+                        original.local.translation == authored.translation &&
+                        editor.HistoryRevision() == history,
+                    "Navigation changes only the editor view and keeps continuous camera history");
             const auto beforeInvalid = editor.Pose();
             t.Check(!editor.Navigate({.forward = 1, .seconds = -1}, error) &&
                         editor.Pose().translation == beforeInvalid.translation,
                     "Invalid camera input preserves the previous independent pose");
+            scroll.wheel = std::numeric_limits<float>::quiet_NaN();
+            t.Check(!editor.Navigate(scroll, error) && editor.Pose().translation == beforeInvalid.translation,
+                    "Invalid wheel input preserves the previous independent pose");
             t.Check(editor.Reset(&scene, error) && editor.Pose().translation == authored.translation &&
                         editor.HistoryRevision() > history,
                     "Explicit reset realigns the view and invalidates prior camera history");
@@ -246,6 +273,35 @@ namespace Catalpa::Tests {
                         scene.CommitPending().IsSuccess() && editor.Reset(&scene, error) &&
                         editor.Pose().translation == Math::Vec3(0, 2, 10) && !error.empty(),
                     "An unrepresentable scene camera leaves a usable default editor view and a diagnostic");
+        }
+
+        void CheckOrthographicWheel(TestContext& t) {
+            Scene scene("Orthographic view");
+            const PersistentEntityId id{StableId::FromWords(38, 5)};
+            CameraComponent source;
+            source.lens.projection = ProjectionType::Orthographic;
+            source.lens.orthographicHeight = 12.f;
+            EditorCameraController editor;
+            std::string error;
+            const bool ready = scene.QueueCreate(id, "Source camera", {}).IsSuccess() &&
+                               scene.CommitPending().IsSuccess() &&
+                               scene.QueueSetCamera(scene.Resolve(id), source).IsSuccess() &&
+                               scene.CommitPending().IsSuccess() && editor.Reset(&scene, error) &&
+                               editor.Lens() == source.lens;
+            t.Check(ready, "Prepare an independent orthographic view");
+            if (!ready)
+                return;
+
+            const auto pose = editor.Pose();
+            CameraComponent observed;
+            t.Check(editor.Navigate({.wheel = .5f}, error) &&
+                        editor.Lens().orthographicHeight < source.lens.orthographicHeight &&
+                        editor.Pose().translation == pose.translation && editor.Pose().rotation == pose.rotation &&
+                        scene.GetWorld().Get(scene.Resolve(id), observed).IsSuccess() && observed.lens == source.lens,
+                    "Orthographic wheel zooms the editor lens without moving the view or editing the source lens");
+            t.Check(editor.Navigate({.wheel = -.5f}, error) &&
+                        std::abs(editor.Lens().orthographicHeight - source.lens.orthographicHeight) < 1.e-4f,
+                    "The opposite wheel step restores orthographic framing");
         }
 
         void CheckContinuousDrag(TestContext& t) {
@@ -348,6 +404,7 @@ namespace Catalpa::Tests {
         CheckScenes(t);
         CheckIdentityAndCamera(t);
         CheckEditorCamera(t);
+        CheckOrthographicWheel(t);
         CheckContinuousDrag(t);
         CheckAssetDraft(t);
     }

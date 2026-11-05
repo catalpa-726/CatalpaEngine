@@ -399,7 +399,33 @@ namespace Catalpa::Tests {
                     for (float z : {bounds.minimum.z, bounds.maximum.z})
                         enclosed &= InClip(view.matrices.viewProjection, {x, y, z});
             context.Check(enclosed, "All eight model corners fit the preview depth and side planes");
+
+            // 镜头不变，仅前后移动；前表面中心在两次移动后都应能通过实际 VP 裁剪。
+            const Math::Vec3 front{placement.translation.x, placement.translation.y, bounds.maximum.z};
+            const auto frontVisible = [&](float cameraZ) {
+                auto world = view.matrices.inverseView;
+                world[3][2] = cameraZ;
+                CameraMatrices moved;
+                return BuildCameraMatrices(world, camera.lens, viewport, moved).IsSuccess()
+                    && InClip(moved.viewProjection, front);
+            };
+            context.Check(frontVisible(front.z + 0.1f), "Preview allows a close view ten centimetres from the surface");
+            context.Check(frontVisible(placement.translation.z + 8.0f), "Preview keeps the model visible after backing away");
         }
+
+        // 远离原点的盒子可用较紧的深度范围取景，不能因拓宽导航范围而拒绝原本可见的模型。
+        const Aabb translated{{99996, -4, -4}, {100004, 4, 4}, false};
+        const CameraViewport viewport{1280, 720};
+        CameraLens lens;
+        Math::TransformTRS pose;
+        std::string error;
+        const bool fit = Editor::FitModelPreviewCamera(translated, viewport, lens, pose, error);
+        Math::Mat4 world;
+        CameraMatrices farFromOrigin;
+        context.Check(fit && Math::ComposeTRS(pose, world).IsSuccess()
+            && BuildCameraMatrices(world, lens, viewport, farFromOrigin).IsSuccess()
+            && InClip(farFromOrigin.viewProjection, {100000, 0, 0}),
+            "A translated preview uses a representable depth range: " + error);
     }
 
     // 独立核算可见范围/平面方向，覆盖归一化、裁剪误差和逐view的稳定可见列表。

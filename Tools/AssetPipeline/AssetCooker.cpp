@@ -468,6 +468,8 @@ namespace Catalpa::Tools {
                                  {"shader", shader->contentHash},
                                  {"pbrShader", pbrShader->contentHash},
                                  {"cookedRoot", AssetPathText(current.cookedRoot)}};
+            if (AssetSourceExtension(context.request.source) == ".fbx")
+                signatureFields["fbxPhongRoughness"] = 1;
             const auto signatureText = signatureFields.dump();
             const auto signature =
                 AssetBuildDigest(std::as_bytes(std::span(signatureText.data(), signatureText.size())));

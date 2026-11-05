@@ -5,11 +5,12 @@
 #include "Scene/Scene.h"
 
 namespace Catalpa::Editor {
-    // 输入适配器已经处理焦点、文字输入和 Gizmo 占用；位移用秒，右键视角用帧内鼠标增量。
+    // 键盘移动按秒积分；右键视角和滚轮使用本帧累计的像素、刻度增量。
     struct EditorCameraInput {
         float right = 0, up = 0, forward = 0;
         float lookX = 0, lookY = 0;
         float seconds = 0;
+        float wheel = 0;
     };
 
     // 工作区持有的独立视角。只在显式复位时读取场景相机，移动过程不修改 World。
