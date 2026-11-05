@@ -6,6 +6,7 @@
 #include "AssetPipeline/Cookers/TextureCooker.h"
 #include "AssetPipeline/AssetImportRegistry.h"
 #include "AssetPipeline/Importers/GltfImporter.h"
+#include "AssetPipeline/Importers/ImportGeometry.h"
 #include "AssetPipeline/Importers/AssimpImporter.h"
 #include "AssetPipeline/Importers/TextureImporter.h"
 #include "Assets/AssetDependencyGraph.h"
@@ -518,6 +519,57 @@ Connections: {
             }
         }
 
+        // 第一个角的源法线平行于 dP/du，MikkTSpace 的切平面投影在该角为零。
+        void TangentCornerContract(const AssetBuildRequest& request, TestContext& context) {
+            std::vector<ImportVertex> vertices(3);
+            vertices[1].position = {1, 0, 0};
+            vertices[2].position = {0, 1, 0};
+            vertices[1].uv = {1, 0};
+            vertices[2].uv = {0, 1};
+            vertices[0].normal = {1, 0, 0};
+            vertices[1].normal = vertices[2].normal = {0, 0, 1};
+
+            AssetBuildContext input(request);
+            MeshAsset mesh;
+            std::string error;
+            if (!CheckOperation(context,
+                                input.Initialize(error) && BuildImportedMesh(input, vertices, {0, 1, 2}, true,
+                                                                             true, false, mesh, error),
+                                error))
+                return;
+            const auto& stream = mesh.mesh->GetData();
+            const auto tangent =
+                std::find_if(stream.attributes.begin(), stream.attributes.end(),
+                             [](const auto& attr) { return attr.semantic == VertexSemantic::Tangent; });
+            if (tangent == stream.attributes.end() || stream.vertexCount != 3) {
+                context.Check(false, "The three input corners must retain an explicit tangent stream");
+                return;
+            }
+            std::array<float, 4> first{}, second{};
+            std::memcpy(first.data(), stream.vertexData.data() + tangent->offset, sizeof(first));
+            std::memcpy(second.data(), stream.vertexData.data() + stream.vertexStride + tangent->offset,
+                        sizeof(second));
+            context.Check(std::abs(first[0]) < 1e-5f &&
+                              std::abs(std::hypot(first[1], first[2]) - 1) < 1e-5f && std::abs(first[3]) == 1,
+                          "Degenerate corner receives a unit tangent orthogonal to its source normal");
+            context.Check(std::abs(second[0] - 1) < 1e-5f && std::abs(second[1]) < 1e-5f &&
+                              std::abs(second[2]) < 1e-5f && second[3] == 1,
+                          "Ordinary corner keeps the Mikk tangent and handedness");
+            context.Check(std::any_of(input.diagnostics.begin(), input.diagnostics.end(),
+                                      [](const auto& diagnostic) {
+                                          return diagnostic.level == AssetDiagnosticLevel::Warning &&
+                                                 diagnostic.message.find("orthogonal fallback") !=
+                                                     std::string::npos;
+                                      }),
+                          "Generated tangent repair is reported");
+
+            const auto previous = mesh.mesh;
+            vertices[0].tangent = {0, 0, 0, 1};
+            context.Check(!BuildImportedMesh(input, vertices, {0, 1, 2}, true, true, true, mesh, error) &&
+                              mesh.mesh == previous,
+                          "An invalid authored tangent still fails without changing the published mesh");
+        }
+
         // OBJ 和 MTL 旁各有一个同名文件，贴图引用应按声明它的 MTL 定位。
         void MaterialLibraryPathContract(Fixture& fixture, const std::filesystem::path& shaders,
                                          TestContext& context) {
@@ -543,6 +595,73 @@ Connections: {
                 std::any_of(inputs.begin(), inputs.end(),
                             [&](const auto& dep) { return dep.path == materialDir / "albedo.png"; }),
                 "MTL texture resolves relative to its material library");
+        }
+
+        // 归档将 PNG 放在 FBX 旁。导出时引用的目录后来恢复时，缓存必须重新选择该目录。
+        void RelocatedFbxTextureContract(Fixture& fixture, const std::filesystem::path& shaders,
+                                         TestContext& context) {
+            std::string error;
+            auto source = Replace(std::string(Fbx), "Count: 3\n",
+                                  "Count: 4\n    ObjectType: \"Texture\" { Count: 1 }\n");
+            source = Replace(source, "    Material: 1002,", R"(    Texture: 1003, "Texture::Albedo", "" {
+        Type: "TextureVideoClip"
+        RelativeFilename: "../maps/albedo.png"
+    }
+    Material: 1002,)");
+            source = Replace(source, "    C: \"OO\",1002,1001",
+                             "    C: \"OP\",1003,1002,\"DiffuseColor\"\n    C: \"OO\",1002,1001");
+            std::filesystem::create_directories(fixture.root / "Raw/packed");
+            if (!CheckOperation(context,
+                                fixture.Store("Raw/packed/relocated.fbx", source, error) &&
+                                    fixture.StoreBytes("Raw/packed/albedo.png", Png(), error),
+                                error))
+                return;
+            const auto request = fixture.Request("packed/relocated.fbx", shaders);
+            AssetBuildContext input(request);
+            AssetImportResult imported;
+            if (!CheckOperation(context,
+                                input.Initialize(error) && AssimpImporter{}.Import(input, imported, error),
+                                error))
+                return;
+            const auto& inputs = input.Dependencies();
+            context.Check(std::any_of(inputs.begin(), inputs.end(),
+                                      [&](const auto& file) {
+                                          return file.path == fixture.root / "Raw/packed/albedo.png";
+                                      }) &&
+                              !input.RelocatedTextures().empty(),
+                          "FBX resolves a missing relative texture to the adjacent same-name file");
+            AssetBuildContext absoluteInput(request);
+            std::filesystem::path resolved;
+            const auto authorPath = fixture.root.parent_path() / "foreign-author-directory" / "albedo.png";
+            context.Check(absoluteInput.Initialize(error) &&
+                              absoluteInput.Resolve(request.source, AssetPathText(authorPath), resolved,
+                                                    error, SourceReferenceSyntax::FbxTexture) &&
+                              resolved == fixture.root / "Raw/packed/albedo.png",
+                          "Foreign author absolute paths can still name a packaged texture without opening "
+                          "the external path");
+            context.Check(!absoluteInput.Resolve(request.source, "../../../albedo.png", resolved, error,
+                                                 SourceReferenceSyntax::FbxTexture),
+                          "A relative texture path that escapes its declared source root is rejected");
+
+            const auto first = AssetCooker::Build(request);
+            if (!CheckOperation(context, first.success && !first.cacheHit, first.error))
+                return;
+            const auto warm = AssetCooker::Build(request);
+            context.Check(warm.success && warm.cacheHit && warm.key == first.key,
+                          "Unchanged FBX texture selection hits the cache");
+
+            auto mapped = request;
+            mapped.settings.dependencyRemaps.emplace("../maps/albedo.png", "missing-explicit.png");
+            context.Check(!AssetCooker::Build(mapped).success,
+                          "A broken explicit FBX remap must not fall back silently");
+            std::filesystem::create_directories(fixture.root / "Raw/maps");
+            if (!CheckOperation(context, fixture.StoreBytes("Raw/maps/albedo.png", Png(), error), error))
+                return;
+            context.Check(!input.InputsUnchanged(error),
+                          "FBX publication guard detects a restored authored texture path");
+            const auto restored = AssetCooker::Build(request);
+            context.Check(restored.success && !restored.cacheHit && restored.key != first.key,
+                          "Restoring the authored texture path invalidates even an identical-byte fallback");
         }
 
         // 同一内容版本改在新根下提供。旧根没有该容器，读取成功只能来自新定位。
@@ -699,7 +818,9 @@ Connections: {
         context.Check(!boundedImport && boundedOutput.primary == gltf.primary,
                       "Source byte bound rejects import before parsing or publishing output");
         CheckCrossFormatImports(fixture, shaders, context);
+        TangentCornerContract(request, context);
         MaterialLibraryPathContract(fixture, shaders, context);
+        RelocatedFbxTextureContract(fixture, shaders, context);
 
         const auto negative = [&](std::string source) {
             if (!CheckOperation(context, fixture.Store("Raw/bad.gltf", source, error), error))

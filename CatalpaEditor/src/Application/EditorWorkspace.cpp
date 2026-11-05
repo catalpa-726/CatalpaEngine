@@ -298,8 +298,10 @@ namespace Catalpa::Editor {
             m_CloseRequested = false;
         } else if (m_AutoSave && !m_ResetLayout && m_FrameSeen
             && (m_Dirty || ImGui::GetIO().WantSaveIniSettings)) SaveWorkspace();
-        if (m_Build)
-            m_Build->Update();
+        if (m_Build) {
+            const auto [width, height] = Application::Get().GetWindow().GetFramebufferSize();
+            m_Build->Update({width, height});
+        }
         if (m_Console)
             m_Console->Update();
     }

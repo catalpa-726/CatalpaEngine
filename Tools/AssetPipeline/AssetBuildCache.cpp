@@ -67,6 +67,18 @@ namespace Catalpa::Tools {
 
             // 试探旧索引时单独记录依赖。未命中后，导入器只承担实际打开的文件和工作预算。
             AssetBuildContext probe = c;
+            if (const auto aliases = doc.find("relocatedTextures"); aliases != doc.end()) {
+                if (!aliases->is_object() || aliases->size() > 4096)
+                    return false;
+                for (const auto& [uri, path] : aliases->items()) {
+                    std::filesystem::path selected;
+                    if (!probe.Resolve(probe.request.source, uri, selected, e,
+                                       SourceReferenceSyntax::FbxTexture) ||
+                        !probe.RelocatedTextures().contains(uri) ||
+                        AssetPathText(selected) != path.get_ref<const std::string&>())
+                        return false;
+                }
+            }
             for (const auto& f : files) {
                 const auto file = std::filesystem::u8path(f.at("path").get<std::string>());
                 const auto previousCount = probe.Dependencies().size();
@@ -187,6 +199,8 @@ namespace Catalpa::Tools {
         for (const auto& f : c.Dependencies())
             doc["files"].push_back(
                 {{"path", AssetPathText(f.path)}, {"sha256", f.sha256}, {"bytes", f.bytes}});
+        for (const auto& [uri, selected] : c.RelocatedTextures())
+            doc["relocatedTextures"][uri] = AssetPathText(selected);
         const auto target = Index(c);
         const auto& root = c.request.project.derivedDataRoot;
         if (!IsPathWithinRoot(std::filesystem::weakly_canonical(target.parent_path()), root)) {

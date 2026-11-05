@@ -13,6 +13,8 @@ namespace Catalpa::Tools {
         nlohmann::json key{{"signature", signature}, {"inputs", nlohmann::json::array()}};
         for (const auto& d : Snapshot(c))
             key["inputs"].push_back({AssetPathText(d.path), d.sha256, d.bytes});
+        for (const auto& [uri, selected] : c.RelocatedTextures())
+            key["relocatedTextures"][uri] = AssetPathText(selected);
         const auto text = key.dump();
         return AssetBuildDigest(std::as_bytes(std::span(text.data(), text.size())));
     }

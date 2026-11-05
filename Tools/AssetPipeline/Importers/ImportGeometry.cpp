@@ -8,6 +8,8 @@ namespace Catalpa::Tools {
     namespace {
         struct TangentData {
             std::vector<ImportVertex>* vertices;
+            size_t repairedCorners = 0;
+            bool nonFiniteOutput = false;
         };
 
         int Faces(const SMikkTSpaceContext* c) {
@@ -40,10 +42,49 @@ namespace Catalpa::Tools {
             std::copy(p.begin(), p.end(), out);
         }
 
-        void Tangent(const SMikkTSpaceContext* c, const float p[], float sign, int f, int v) {
-            auto& t =
-                (*static_cast<TangentData*>(c->m_pUserData)->vertices)[size_t(f) * 3 + size_t(v)].tangent;
-            t = {p[0], p[1], p[2], sign};
+        // UV 退化时一个角可能没有有效的 dP/du。只修正生成值，源切线走独立的严格校验。
+        void Tangent(const SMikkTSpaceContext* c, const float p[], const float b[], float, float,
+                     tbool orientationPreserving, int f, int v) {
+            auto& data = *static_cast<TangentData*>(c->m_pUserData);
+            auto& vertex = (*data.vertices)[size_t(f) * 3 + size_t(v)];
+            const float sign = orientationPreserving ? 1.0f : -1.0f;
+            for (size_t k = 0; k < 3; ++k) {
+                if (!std::isfinite(p[k]) || !std::isfinite(b[k])) {
+                    data.nonFiniteOutput = true;
+                    return;
+                }
+            }
+
+            const glm::dvec3 n =
+                glm::normalize(glm::dvec3(vertex.normal[0], vertex.normal[1], vertex.normal[2]));
+            const glm::dvec3 t(p[0], p[1], p[2]);
+            const double lengthSquared = glm::dot(t, t);
+            const double parallel = glm::dot(n, t);
+            constexpr double tolerance = 16.0 * std::numeric_limits<float>::epsilon();
+            if (lengthSquared > 0 && parallel * parallel <= tolerance * tolerance * lengthSquared) {
+                vertex.tangent = {p[0], p[1], p[2], sign};
+                return;
+            }
+
+            glm::dvec3 projected = t - n * parallel;
+            if (glm::dot(projected, projected) <= tolerance * tolerance * lengthSquared) {
+                // B = sign * cross(N, T)。优先使用仍有效的副切线，保留 UV 的方向信息。
+                const glm::dvec3 bitangent(b[0], b[1], b[2]);
+                projected = double(sign) * glm::cross(bitangent, n);
+                if (glm::dot(projected, projected) <=
+                    tolerance * tolerance * glm::dot(bitangent, bitangent)) {
+                    // 两个 UV 导数都没有方向时，选与 N 最不平行的坐标轴来构造局部正交基。
+                    const auto axisIndex = std::abs(n.x) <= std::abs(n.y) && std::abs(n.x) <= std::abs(n.z)
+                                               ? 0
+                                               : (std::abs(n.y) <= std::abs(n.z) ? 1 : 2);
+                    glm::dvec3 axis(0.0);
+                    axis[axisIndex] = 1.0;
+                    projected = glm::cross(n, axis);
+                }
+            }
+            const glm::dvec3 direction = glm::normalize(projected);
+            vertex.tangent = {float(direction.x), float(direction.y), float(direction.z), sign};
+            ++data.repairedCorners;
         }
     }
 
@@ -137,13 +178,21 @@ namespace Catalpa::Tools {
                 api.m_getPosition = Position;
                 api.m_getNormal = Normal;
                 api.m_getTexCoord = UV;
-                api.m_setTSpaceBasic = Tangent;
+                api.m_setTSpace = Tangent;
                 TangentData data{&corners};
                 SMikkTSpaceContext context{&api, &data};
                 if (!genTangSpaceDefault(&context)) {
                     e = "MikkTSpace tangent generation failed";
                     return false;
                 }
+                if (data.nonFiniteOutput) {
+                    e = "MikkTSpace produced a non-finite tangent frame";
+                    return false;
+                }
+                if (data.repairedCorners > 0)
+                    ctx.Diagnose(AssetDiagnosticLevel::Warning, "geometry",
+                                 "Generated tangent used an orthogonal fallback at " +
+                                     std::to_string(data.repairedCorners) + " triangle corners");
                 tangents = true;
                 ctx.Diagnose(AssetDiagnosticLevel::Info, "geometry",
                              "MikkTSpace per-corner tangents; derived vertices retain tangent seams");

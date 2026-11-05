@@ -362,7 +362,7 @@ namespace Catalpa::Tools {
                                  {"domainSchema", 1},
                                  {"importer", importer->Name()},
                                  {"fastgltf", CATALPA_IMPORT_STRINGIFY(FASTGLTF_VERSION)},
-                                 {"tangentGenerator", "MikkTSpace-reference-v1"},
+                                 {"tangentGenerator", "MikkTSpace-orthogonal-fallback-v2"},
                                  {"imageDecoder", "stb-rgba8-v1"},
                                  {"assimp", std::to_string(aiGetVersionMajor()) + "." +
                                                 std::to_string(aiGetVersionMinor()) + "." +

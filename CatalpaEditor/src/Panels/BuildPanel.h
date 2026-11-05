@@ -5,8 +5,14 @@
 #include "Assets/AssetDependencyGraph.h"
 #include "Scene/SceneManager.h"
 #include "Scene/ModelInstantiation.h"
+#include "Camera/CameraLens.h"
+#include "Geometry/Bounds.h"
 
 namespace Catalpa::Editor {
+    // 以主窗口的像素宽高为模型包围盒计算预览相机和裁剪面，失败时保留输出。
+    bool FitModelPreviewCamera(const Aabb& bounds, const CameraViewport& viewport, CameraLens& lens,
+                               Math::TransformTRS& placement, std::string& error);
+
     // 工作区拥有任务；关闭窗口只隐藏。工作线程仅持值请求/共享结果，不捕获this。
     class BuildPanel final {
       public:
@@ -15,7 +21,7 @@ namespace Catalpa::Editor {
         BuildPanel(const BuildPanel&) = delete;
         BuildPanel& operator=(const BuildPanel&) = delete;
         bool Start(Tools::AssetBuildRequest, std::string& error);
-        void Update();
+        void Update(const CameraViewport& viewport);
         void Cancel();
         void CloseProject();
         void Draw(bool& visible, const PanelText&);
@@ -38,9 +44,10 @@ namespace Catalpa::Editor {
         void FinishBuild();
         void UpdateLoad();
         bool InstantiateSelectedModel(Scene&, std::shared_ptr<ModelInstantiationResult>&,
-                                      bool framePreview = false);
-        bool PreparePreviewCamera(Scene&, const ModelAsset&, const std::vector<AssetVersionRef<MeshAsset>>&);
-        bool UsePreviewScene(); // 先装配独立候选场景，提交成功后才切换显示。
+                                      const CameraViewport* previewViewport = nullptr);
+        bool PreparePreviewCamera(Scene&, const ModelAsset&, const std::vector<AssetVersionRef<MeshAsset>>&,
+                                  const CameraViewport&);
+        bool UsePreviewScene(const CameraViewport&); // 先装配独立候选场景，提交成功后才切换显示。
         void DrawImage(const ImageAsset&);
 
         JobSystem& m_Jobs;
@@ -63,7 +70,6 @@ namespace Catalpa::Editor {
         bool m_ReturnScene = false;
         AssetId m_Selected;
         SceneHandle m_PreviewScene, m_PreviousScene;
-        float m_PreviewAspect = 16.0f / 9.0f;
         std::vector<std::pair<SceneHandle, EntityReference>> m_CreatedRoots;
     };
 }

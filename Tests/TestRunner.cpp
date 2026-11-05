@@ -118,6 +118,7 @@ namespace Catalpa::Tests {
         try {
             context.Check(RunS04Tests() == 0, "Existing identity/domain/job CPU regression remains valid");
             RunAssetPipelineTests(context);
+            RunModelPreviewCameraTests(context);
         } catch (const std::exception& exception) {
             context.Check(false, exception.what());
         } catch (...) {

@@ -16,7 +16,6 @@
 #include "Runtime/RuntimeServices.h"
 #include "Runtime/Input/InputActions.h"
 #include "ECS/SystemContext.h"
-#include "Renderer/RenderFramePacket.h"
 #include "Log/Log.h"
 #include <algorithm>
 #include <cmath>
@@ -49,7 +48,6 @@ namespace Catalpa {
     {
         try {
         m_Scenes = &scenes;
-        m_ReportSeconds = 0.0;
         m_ReportedHierarchy = false;
         m_State = std::make_shared<State>();
         m_State->camera.translation = Math::Vec3{ 0.0f, 2.0f, 10.0f };
@@ -178,35 +176,18 @@ namespace Catalpa {
         }
     }
 
-    void BoxGameplay::Update(const FrameTime& time, const RenderFramePacket& frame)
+    void BoxGameplay::ReportHierarchyOnce()
     {
-        if (!m_Scenes || !m_Scene.HasValue()) return;
+        if (m_ReportedHierarchy || !m_Scenes || !m_Scene.HasValue()) return;
         const Scene* scene = m_Scenes->GetScene(m_Scene);
         if (!scene) return;
-        if (!m_ReportedHierarchy) {
-            TransformComponent transform;
-            if (const auto status = scene->GetTransform(scene->Resolve(ChildId), transform); status.IsSuccess() && transform.worldValid) {
-                const auto& position = transform.worldMatrix[3];
-                CAT_INFO("[S03.1 sample] Child world origin = ({0}, {1}, {2}); expected (1, 2, 1).", position.x, position.y, position.z);
-                m_ReportedHierarchy = true;
-            }
-        }
-        m_ReportSeconds += time.realDeltaSeconds;
-        if (m_ReportSeconds < 1.0 || frame.views.empty() || frame.sceneIdentity != scene->GetWorld().GetIdentity()) return;
-        m_ReportSeconds = 0.0;
-        const auto& position = frame.views.front().matrices.position;
-        size_t uniqueMeshes = 0;
-        for (size_t index = 0; index < frame.instances.size(); ++index) {
-            bool seen = false;
-            for (size_t prior = 0; prior < index; ++prior)
-                if (frame.instances[index].mesh == frame.instances[prior].mesh) { seen = true; break; }
-            if (!seen) ++uniqueMeshes;
-        }
-        CAT_INFO("Geometry snapshot: {0} instances, {1} unique meshes, shared geometry = {2}",
-            frame.instances.size(), uniqueMeshes, uniqueMeshes < frame.instances.size());
-        CAT_INFO("[S03.2] tick={0}, simulation={1}s, steps={2}, alpha={3}, camera=({4}, {5}, {6})",
-            time.tickCount == 0 ? time.firstTick - 1 : time.firstTick + time.tickCount - 1, time.simulationSeconds, time.tickCount,
-            time.interpolationAlpha, position.x, position.y, position.z);
+        TransformComponent transform;
+        const auto status = scene->GetTransform(scene->Resolve(ChildId), transform);
+        if (!status.IsSuccess() || !transform.worldValid) return;
+
+        const auto& position = transform.worldMatrix[3];
+        CAT_INFO("[S03.1 sample] Child world origin = ({0}, {1}, {2}); expected (1, 2, 1).", position.x, position.y, position.z);
+        m_ReportedHierarchy = true;
     }
 
     void BoxGameplay::Detach()

@@ -23,8 +23,7 @@ public:
         CAT_INFO("Box layer detached.");
     }
     void OnUpdate(Catalpa::Deltatime) override {
-        const auto& application = Catalpa::Application::Get();
-        m_Gameplay.Update(application.GetFrameTime(), application.GetSceneFrame());
+        m_Gameplay.ReportHierarchyOnce();
     }
 
     void OnEvent(Catalpa::Event& event) override

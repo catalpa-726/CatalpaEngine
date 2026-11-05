@@ -6,7 +6,7 @@ namespace Catalpa::Tools {
     class AssimpImporter final : public IAssetImporter {
       public:
         std::string_view Name() const noexcept override {
-            return "assimp/fbx-obj-v2";
+            return "assimp/fbx-obj-v3";
         }
 
         bool Import(AssetBuildContext&, AssetImportResult&, std::string&) const override;

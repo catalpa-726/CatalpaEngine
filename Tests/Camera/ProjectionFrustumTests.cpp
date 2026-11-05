@@ -2,6 +2,7 @@
 
 #include "Camera/CameraProjection.h"
 #include "Camera/Frustum.h"
+#include "Panels/BuildPanel.h"
 #include "Renderer/RenderScene.h"
 #include "Renderer/Visibility/VisibilitySystem.h"
 #include "Geometry/PrimitiveMesh.h"
@@ -254,6 +255,41 @@ namespace Catalpa::Tests {
     {
         CheckProjection(context);
         CheckCameraAndExtraction(context);
+    }
+
+    // 复用编辑器的取景计算，再以真实帧提取检查头盔大小的模型在横屏、竖屏下的相机。
+    void RunModelPreviewCameraTests(TestContext& context)
+    {
+        const Aabb bounds{{-.94745857f, -.900974f, -1.1871551f}, {.9424954f, .900995f, .8128452f}, false};
+        for (const CameraViewport viewport : {CameraViewport{1980, 1020}, CameraViewport{600, 1000}}) {
+            Scene scene("Model preview camera");
+            CameraComponent camera;
+            Math::TransformTRS placement;
+            std::string error;
+            const auto fit = Editor::FitModelPreviewCamera(bounds, viewport, camera.lens, placement, error);
+            context.Check(fit, "Fit the preview lens and pose to the model bounds: " + error);
+            if (!fit) continue;
+
+            auto status = scene.QueueCreate(Id(99), "Preview camera", placement);
+            if (status.IsSuccess()) status = scene.CommitPending();
+            if (status.IsSuccess()) status = scene.QueueSetCamera(scene.Resolve(Id(99)), camera);
+            if (status.IsSuccess()) status = scene.CommitPending();
+            if (status.IsSuccess()) status = TransformSystem::Update(scene);
+            RenderFramePacket packet;
+            if (status.IsSuccess())
+                status = RenderExtractSystem::Extract(scene, 1, viewport.width, viewport.height, packet);
+            const bool extracted = status.IsSuccess() && packet.views.size() == 1;
+            context.Check(extracted, std::string("Extract the preview camera before scene activation: ") + status.message);
+            if (!extracted) continue;
+            const auto& view = packet.views.front();
+            context.Check(ValidateRenderView(view).IsSuccess(), "Preview VP and inverse pass the renderer residual bounds");
+            bool enclosed = true;
+            for (float x : {bounds.minimum.x, bounds.maximum.x})
+                for (float y : {bounds.minimum.y, bounds.maximum.y})
+                    for (float z : {bounds.minimum.z, bounds.maximum.z})
+                        enclosed &= InClip(view.matrices.viewProjection, {x, y, z});
+            context.Check(enclosed, "All eight model corners fit the preview depth and side planes");
+        }
     }
 
     // 独立核算可见范围/平面方向，覆盖归一化、裁剪误差和逐view的稳定可见列表。

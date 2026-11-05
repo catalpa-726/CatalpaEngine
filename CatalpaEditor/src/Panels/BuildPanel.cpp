@@ -3,6 +3,8 @@
 #include "AssetPipeline/AssetCooker.h"
 #include "Scene/Components/CameraComponent.h"
 #include "Geometry/Bounds.h"
+#include "Runtime/Systems/RenderExtractSystem.h"
+#include "Runtime/Systems/TransformSystem.h"
 #include "Log/Log.h"
 #include "imgui.h"
 
@@ -227,7 +229,7 @@ namespace Catalpa::Editor {
         }
     }
 
-    void BuildPanel::Update() {
+    void BuildPanel::Update(const CameraViewport& viewport) {
         if (std::exchange(m_ReturnScene, false) && m_Scenes.GetScene(m_PreviousScene)) {
             const auto status = m_Scenes.SetActive(m_PreviousScene);
             if (!status.IsSuccess())
@@ -241,7 +243,7 @@ namespace Catalpa::Editor {
         if (Busy() || !m_AssetsReady)
             return;
         if (std::exchange(m_PreviewRequested, false)) {
-            if (!UsePreviewScene())
+            if (!UsePreviewScene(viewport))
                 Fail(m_Error);
         } else if (std::exchange(m_InstantiateRequested, false)) {
             const auto handle = m_Scenes.GetActiveHandle();
@@ -262,7 +264,7 @@ namespace Catalpa::Editor {
         }
     }
 
-    bool BuildPanel::UsePreviewScene() {
+    bool BuildPanel::UsePreviewScene(const CameraViewport& viewport) {
         // 候选场景的相机、模型或材质出错时只卸载候选，旧预览及当前活动场景仍可用。
         SceneHandle candidate;
         const auto created = m_Scenes.CreateScene("Imported model preview", candidate);
@@ -283,8 +285,23 @@ namespace Catalpa::Editor {
                 return discard();
             }
             std::shared_ptr<ModelInstantiationResult> result;
-            if (!InstantiateSelectedModel(*scene, result, true))
+            if (!InstantiateSelectedModel(*scene, result, &viewport))
                 return discard();
+
+            // 复用普通帧提取的像素视口和相机校验，候选无效时留在原场景。
+            RenderFramePacket frame;
+            auto status = TransformSystem::Update(*scene);
+            if (status.IsSuccess())
+                status = RenderExtractSystem::Extract(*scene, 1, viewport.width, viewport.height, frame);
+            if (!status.IsSuccess() || frame.views.size() != 1) {
+                m_Error = status.IsSuccess() ? "Preview requires one active camera" : status.message;
+                return discard();
+            }
+            const auto valid = ValidateRenderView(frame.views.front());
+            if (!valid.IsSuccess()) {
+                m_Error = valid.message;
+                return discard();
+            }
         } catch (const std::exception& exception) {
             m_Error = exception.what();
             return discard();
@@ -313,35 +330,61 @@ namespace Catalpa::Editor {
         return true;
     }
 
-    bool BuildPanel::PreparePreviewCamera(Scene& scene, const ModelAsset& source,
-                                          const std::vector<AssetVersionRef<MeshAsset>>& meshes) {
-        Aabb bounds;
-        if (!ComputeModelBounds(source, meshes, bounds, m_Error))
+    bool FitModelPreviewCamera(const Aabb& bounds, const CameraViewport& viewport, CameraLens& lens,
+                               Math::TransformTRS& placement, std::string& error) {
+        if (viewport.width == 0 || viewport.height == 0) {
+            error = "Preview requires a nonempty framebuffer";
             return false;
+        }
         BoundingSphere sphere;
         const auto bounded = ComputeBoundingSphere(bounds, sphere);
         if (!bounded.IsSuccess() || sphere.empty) {
-            m_Error = "Preview model has no finite bounds";
+            error = "Preview model has no finite bounds";
             return false;
         }
-        CameraComponent camera;
+        CameraLens candidate;
         // 球体与视锥相切时 sin(halfFov) = radius / distance；按较窄的视场留出边距。
         const double radius = std::max(double(sphere.radius), 0.001);
-        const double halfVertical = camera.lens.verticalFovRadians * 0.5;
-        const double halfHorizontal = std::atan(std::tan(halfVertical) * m_PreviewAspect);
-        const double distance = radius / std::sin(std::min(halfVertical, halfHorizontal)) * 2.5;
-        if (!std::isfinite(distance) || distance + radius * 4 > std::numeric_limits<float>::max()) {
-            m_Error = "Preview camera distance is outside float range";
+        const double halfVertical = candidate.verticalFovRadians * 0.5;
+        const double aspect = double(viewport.width) / viewport.height;
+        const double halfHorizontal = std::atan(std::tan(halfVertical) * aspect);
+        const double fitDistance = radius / std::sin(std::min(halfVertical, halfHorizontal));
+        const double cameraZ = double(sphere.center.z) + fitDistance * 2.5;
+        if (!std::isfinite(cameraZ) || std::abs(cameraZ) > std::numeric_limits<float>::max()) {
+            error = "Preview camera position is outside float range";
             return false;
         }
-        camera.lens.nearPlane = float(std::max(radius * .001, .0001));
-        camera.lens.farPlane = float(distance + radius * 4);
+        Math::TransformTRS pose;
+        pose.translation = {sphere.center.x, sphere.center.y, static_cast<float>(cameraZ)};
+        const double depth = double(pose.translation.z) - sphere.center.z;
+        // 球体在相机前方的深度范围为 [depth-r, depth+r]，两侧各留半个半径。
+        // 近面跟随球体前缘，避免过小的 near 在 float 逆视投影中放大平移舍入误差。
+        const double nearPlane = depth - 1.5 * radius, farPlane = depth + 1.5 * radius;
+        if (depth < fitDistance || nearPlane <= 0.0 || farPlane > std::numeric_limits<float>::max()) {
+            error = "Preview bounds and camera position cannot be represented at this scale";
+            return false;
+        }
+        candidate.nearPlane = static_cast<float>(nearPlane);
+        candidate.farPlane = static_cast<float>(farPlane);
+        if (candidate.nearPlane >= candidate.farPlane || !Math::ValidateTRS(pose).IsSuccess()) {
+            error = "Preview camera has insufficient precision for these bounds";
+            return false;
+        }
+        lens = candidate;
+        placement = pose;
+        error.clear();
+        return true;
+    }
+
+    bool BuildPanel::PreparePreviewCamera(Scene& scene, const ModelAsset& source,
+                                          const std::vector<AssetVersionRef<MeshAsset>>& meshes,
+                                          const CameraViewport& viewport) {
+        Aabb bounds;
+        CameraComponent camera;
         Math::TransformTRS placement;
-        placement.translation = sphere.center + Math::Vec3{0, 0, float(distance)};
-        if (!Math::ValidateTRS(placement).IsSuccess()) {
-            m_Error = "Preview camera position is outside the transform domain";
+        if (!ComputeModelBounds(source, meshes, bounds, m_Error) ||
+            !FitModelPreviewCamera(bounds, viewport, camera.lens, placement, m_Error))
             return false;
-        }
         PersistentEntityId cameraId;
         if (!GeneratePersistentEntityId(cameraId, m_Error))
             return false;
@@ -363,7 +406,7 @@ namespace Catalpa::Editor {
     }
 
     bool BuildPanel::InstantiateSelectedModel(Scene& scene, std::shared_ptr<ModelInstantiationResult>& result,
-                                              bool framePreview) {
+                                              const CameraViewport* previewViewport) {
         // 查询时同时核对 ID 和内容版本。回退或上一次构建的版本均不能进入这次场景。
         const auto acquireExact = [&](AssetId id, auto& value) {
             bool fallback = false;
@@ -426,7 +469,7 @@ namespace Catalpa::Editor {
                 overrides.push_back({material.id, std::move(display)});
             }
         }
-        if (framePreview && !PreparePreviewCamera(scene, *model.Get(), meshes))
+        if (previewViewport && !PreparePreviewCamera(scene, *model.Get(), meshes, *previewViewport))
             return false;
         // 只在工作区的主线程更新阶段提交，通过 ticket 同时检查整队列和模型事务的结果。
         if (!ModelInstantiation::Queue(scene, std::move(model), std::move(meshes), std::move(materials),
@@ -481,9 +524,6 @@ namespace Catalpa::Editor {
     void BuildPanel::Draw(bool& visible, const PanelText& text) {
         if (!visible)
             return;
-        const auto viewport = ImGui::GetMainViewport();
-        if (viewport->Size.x > 0 && viewport->Size.y > 0)
-            m_PreviewAspect = viewport->Size.x / viewport->Size.y;
         if (ImGui::Begin(text("panel.build", "Build", "Catalpa.Build").c_str(), &visible)) {
             if (m_Task) {
                 std::lock_guard lock(m_Task->mutex);

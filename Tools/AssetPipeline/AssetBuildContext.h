@@ -3,7 +3,7 @@
 
 namespace Catalpa::Tools {
     // glTF 外部引用是 URI；OBJ、MTL 和 FBX 提供的是文件路径。
-    enum class SourceReferenceSyntax { Uri, FilePath };
+    enum class SourceReferenceSyntax { Uri, FilePath, FbxTexture };
 
     // 一个构建请求拥有独立的输入清单和工作预算，源文件统一通过只读 VFS 打开。
     class AssetBuildContext final {
@@ -29,6 +29,11 @@ namespace Catalpa::Tools {
             return m_Dependencies;
         }
 
+        // 导出器引用缺失时采用的同目录贴图；原引用恢复后，缓存必须重新选择来源。
+        const std::map<std::string, std::filesystem::path, std::less<>>& RelocatedTextures() const {
+            return m_RelocatedTextures;
+        }
+
         std::string SourceKey() const {
             return m_SourceKey;
         }
@@ -37,11 +42,14 @@ namespace Catalpa::Tools {
         std::vector<AssetBuildDiagnostic> diagnostics;
 
       private:
+        bool LocateTextureFile(const std::filesystem::path& reference, std::filesystem::path& out,
+                               bool& relocated, std::string& error) const;
         bool ReadSource(const std::filesystem::path& path, size_t byteLimit, std::vector<std::byte>& bytes,
                         std::string& error) const;
         std::vector<std::filesystem::path> m_Roots;
         std::vector<std::string> m_RootNames;
         std::vector<AssetSourceDependency> m_Dependencies;
+        std::map<std::string, std::filesystem::path, std::less<>> m_RelocatedTextures;
         std::string m_SourceKey;
         size_t m_ReadBytes = 0;
         size_t m_WorkingBytes = 0;

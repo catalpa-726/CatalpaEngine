@@ -237,6 +237,58 @@ namespace Catalpa::Tools {
         return false;
     }
 
+    // 优先读声明位置。制作机器的绝对地址仅提供文件名，包内缺失的相对地址可尝试同级原件。
+    bool AssetBuildContext::LocateTextureFile(const std::filesystem::path& reference,
+                                              std::filesystem::path& out, bool& relocated,
+                                              std::string& error) const {
+        const auto directory = request.source.parent_path();
+        auto candidate = reference.is_absolute() ? reference : directory / reference;
+        const auto inSourceRoot = [&](const std::filesystem::path& path) {
+            return std::any_of(m_Roots.begin(), m_Roots.end(),
+                               [&](const auto& root) { return IsPathWithinRoot(path, root); });
+        };
+        // 外部绝对地址沿用归档包的同名寻回规则，不对作者机器的路径进行文件系统查询。
+        relocated = reference.is_absolute() && !inSourceRoot(reference.lexically_normal());
+        if (relocated) candidate = directory / reference.filename();
+        if (!inSourceRoot(std::filesystem::weakly_canonical(candidate))) {
+            error = "Texture reference escapes declared source roots: " + AssetPathText(reference);
+            return false;
+        }
+
+        std::error_code code;
+        auto canonical = std::filesystem::canonical(candidate, code);
+        if (!relocated && code == std::errc::no_such_file_or_directory && reference.has_parent_path() &&
+            !reference.filename().empty()) {
+            // 链接本身存在但目标已失效时应报告错误，不能用同级贴图掩盖损坏的引用。
+            auto prefix = candidate;
+            while (prefix.has_relative_path()) {
+                std::error_code statusError;
+                const auto status = std::filesystem::symlink_status(prefix, statusError);
+                if (std::filesystem::is_symlink(status) ||
+                    (statusError && statusError != std::errc::no_such_file_or_directory)) {
+                    error = "Inaccessible texture path or link: " + AssetPathText(prefix);
+                    return false;
+                }
+                if (std::filesystem::exists(status))
+                    break;
+                prefix = prefix.parent_path();
+            }
+            candidate = directory / reference.filename();
+            canonical = std::filesystem::canonical(candidate, code);
+            relocated = true;
+        }
+        if (code) {
+            error = "Cannot resolve texture " + AssetPathText(reference) + ": " + code.message();
+            return false;
+        }
+        if (!inSourceRoot(canonical) || !std::filesystem::is_regular_file(canonical)) {
+            error = "Texture must be a regular file in a declared source root: " + AssetPathText(candidate);
+            return false;
+        }
+        out = std::move(canonical);
+        return true;
+    }
+
     bool AssetBuildContext::Resolve(const std::filesystem::path& owner, std::string_view reference,
                                     std::filesystem::path& out, std::string& e,
                                     SourceReferenceSyntax syntax) try {
@@ -287,6 +339,28 @@ namespace Catalpa::Tools {
             e = "Relative dependencies require an absolute owner and no drive-relative prefix";
             return false;
         }
+        if (syntax == SourceReferenceSyntax::FbxTexture) {
+            if (owner != request.source) {
+                e = "Packaged texture resolution requires the model as owner";
+                return false;
+            }
+            std::filesystem::path selected;
+            bool relocated = false;
+            if (!LocateTextureFile(relative, selected, relocated, e))
+                return false;
+            if (relocated) {
+                const auto [it, inserted] = m_RelocatedTextures.try_emplace(std::string(reference), selected);
+                if (it->second != selected) {
+                    e = "Texture location changed during import: " + std::string(reference);
+                    return false;
+                }
+                if (inserted)
+                    Diagnose(AssetDiagnosticLevel::Warning, std::string(reference),
+                             "Packaged texture resolved beside the model: " + AssetPathText(selected));
+            }
+            out = std::move(selected);
+            return true;
+        }
         const auto p =
             std::filesystem::canonical(relative.is_absolute() ? relative : owner.parent_path() / relative);
         for (const auto& root : m_Roots)
@@ -303,6 +377,20 @@ namespace Catalpa::Tools {
     }
 
     bool AssetBuildContext::InputsUnchanged(std::string& e) const try {
+        for (const auto& [uri, selected] : m_RelocatedTextures) {
+            if (!CheckCancelled(e))
+                return false;
+            auto filename = uri;
+            std::replace(filename.begin(), filename.end(), '\\', '/');
+            std::filesystem::path current;
+            bool relocated = false;
+            if (!LocateTextureFile(std::filesystem::u8path(filename), current, relocated, e))
+                return false;
+            if (!relocated || current != selected) {
+                e = "Texture location changed before publication: " + uri;
+                return false;
+            }
+        }
         for (const auto& d : m_Dependencies) {
             if (!CheckCancelled(e))
                 return false;
