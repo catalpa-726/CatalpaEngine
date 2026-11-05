@@ -2,8 +2,30 @@
 #include "VulkanDebugUtils.h"
 #include "VulkanUtils.h"
 #include "Log/Log.h"
+#include <string_view>
 
 namespace Catalpa {
+
+    namespace {
+        // 仅略过加载器枚举 Epic Overlay 时的两种清单提示；验证层及其他层的诊断照常记录。
+        bool IsEosOverlayManifestNotice(VkDebugUtilsMessageTypeFlagsEXT types,
+                                        std::string_view id, std::string_view message) noexcept
+        {
+            if (types != VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT || id != "Loader Message")
+                return false;
+
+            constexpr std::string_view missing = "loader_get_json: Failed to open JSON file ";
+            if (message.starts_with(missing)) {
+                auto path = message.substr(missing.size());
+                const auto separator = path.find_last_of("/\\");
+                const auto filename = separator == path.npos ? path : path.substr(separator + 1);
+                return filename == "EOSOverlayVkLayer-Win32.json" || filename == "EOSOverlayVkLayer-Win64.json";
+            }
+
+            return message.starts_with("Removing layer VK_LAYER_EOS_Overlay (")
+                && message.find(") because it is a duplicate of VK_LAYER_EOS_Overlay (") != message.npos;
+        }
+    }
 
     // 保留消息类型、ID、原文及命令标签上下文；只观察，不改变 Vulkan 操作结果。
     static VKAPI_ATTR VkBool32 VKAPI_CALL DebugMessageCallback(
@@ -14,6 +36,7 @@ namespace Catalpa {
     {
         const char* id = data && data->pMessageIdName ? data->pMessageIdName : "unknown";
         const char* message = data && data->pMessage ? data->pMessage : "(no message)";
+        if (IsEosOverlayManifestNotice(types, id, message)) return VK_FALSE;
         const int32_t number = data ? data->messageIdNumber : 0;
 
         std::string labels;
