@@ -9,9 +9,6 @@
 
 namespace Catalpa {
 
-    // S01 仅注册静态字体 atlas；其它 UI 纹理需要后续资源注册协议。
-    static constexpr ImTextureID FontTextureId = 1;
-
     ImGuiLayer::ImGuiLayer() : Layer("ImGuiLayer") {}
     ImGuiLayer::~ImGuiLayer() { OnDetach(); }
 
@@ -63,7 +60,7 @@ namespace Catalpa {
         }
         m_FontExtent = { static_cast<unsigned int>(width), static_cast<unsigned int>(height) };
         m_FontPixels = { reinterpret_cast<const std::byte*>(pixels), static_cast<size_t>(width) * height * 4 };
-        io.Fonts->SetTexID(FontTextureId);
+        io.Fonts->SetTexID(ImGuiFontAtlasId);
     }
 
     void ImGuiLayer::OnDetach()
@@ -154,13 +151,17 @@ namespace Catalpa {
                     || command.VtxOffset > static_cast<uint32_t>(list->VtxBuffer.Size))
                     return { RHIErrorCode::InvalidDescription, 0, "ImGuiLayer::End/DrawRange" };
 
+                const ImTextureID textureId = command.GetTexID();
+                if (textureId == ImTextureID_Invalid)
+                    return { RHIErrorCode::InvalidDescription, 0, "ImGuiLayer::End/InvalidTextureId" };
+
                 m_FrameData.draws.push_back({
                     .firstIndex = indexBase + command.IdxOffset,
                     .indexCount = command.ElemCount,
                     .baseVertex = vertexBase + static_cast<int32_t>(command.VtxOffset),
                     .clipRect = { command.ClipRect.x, command.ClipRect.y, command.ClipRect.z, command.ClipRect.w },
                     // 字体使用内部零 token；其它 token 由 Renderer 注册并验证，不解释为原生地址。
-                    .textureToken = command.TexRef.GetTexID() == FontTextureId ? 0 : static_cast<uint64_t>(command.TexRef.GetTexID())
+                    .textureToken = textureId == ImGuiFontAtlasId ? 0 : static_cast<uint64_t>(textureId)
                 });
             }
         }

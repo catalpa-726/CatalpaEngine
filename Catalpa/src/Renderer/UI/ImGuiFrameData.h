@@ -5,6 +5,10 @@
 
 namespace Catalpa {
 
+    // ImGui 侧的 0 为无效 ID，1 专属字体图集；注册纹理从下一号起分配。
+    // 写入引擎帧包时仅将字体转换为内部 token 0，其余 ID 原样传递。
+    inline constexpr uint64_t ImGuiFontAtlasId = 1;
+
     // CPU 自有 UI 帧包；Renderer 不依赖 ImGui 对象或借用其下一帧会失效的内存。
     struct ImGuiVertex {
         float position[2]{}; // 逻辑窗口坐标。

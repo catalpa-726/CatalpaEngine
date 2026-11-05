@@ -11,6 +11,7 @@
 #include "RHI/RHIError.h"
 #include "RHI/RHIBufferDesc.h"
 #include "Images/PixelFormat.h"
+#include "Renderer/UI/ImGuiFrameData.h"
 #include "Renderer/RenderGraph/RenderGraphResource.h"
 
 namespace Catalpa {
@@ -19,7 +20,6 @@ namespace Catalpa {
     class AssetManager;
     class RenderGraph;
     class UploadScheduler;
-    struct ImGuiFrameData;
 
     // 主窗口 UI 的 RHI 桥；只消费自有 CPU 数据，不访问 ImGui 上下文或原生 Vulkan。
     class ImGuiRenderer {
@@ -72,7 +72,7 @@ namespace Catalpa {
         SamplerHandle m_NearestSampler{};
         PixelFormat m_Format = PixelFormat::Unknown;
         std::map<uint64_t, RegisteredTexture> m_Registered;
-        uint64_t m_NextTextureToken = 1;
+        uint64_t m_NextTextureToken = ImGuiFontAtlasId + 1;
         std::set<PixelFormat> m_ReportedNearestFormats;
     };
 
