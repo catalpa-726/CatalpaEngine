@@ -77,3 +77,14 @@ Desktop.ini
 /Catalpa/third_party/nativefiledialog-extended/
 /Catalpa/third_party/imgui-node-editor/
 /Catalpa/third_party/lua/
+
+# S14-S17 用户提供的第三方源码（不包含联网库）
+/Catalpa/third_party/meshoptimizer/
+/Catalpa/third_party/zstd/
+/Catalpa/third_party/KTX-Software/
+/Catalpa/third_party/freetype/
+/Catalpa/third_party/ozz-animation/
+/Catalpa/third_party/JoltPhysics/
+/Catalpa/third_party/miniaudio/
+/Catalpa/third_party/RmlUi/
+/Catalpa/third_party/recastnavigation/

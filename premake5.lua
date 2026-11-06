@@ -143,6 +143,7 @@ include "Script/Build/SPIRVReflect.lua"
 include "Script/Build/AssetImport.lua"
 include "Script/Build/Assimp.lua"
 include "Script/Build/Authoring.lua"
+include "Script/Build/StageDependencies.lua"
 filter {}
 
 
@@ -385,4 +386,24 @@ project "Tests"
     filter "configurations:Dist"
         excludefrombuild "On"
 
+filter {}
+
+-- 公开包含目录和静态库宏，供各阶段的真实消费者直接引用。
+for _, consumer in ipairs { "Catalpa", "Tools", "CatalpaEditor", "CatalpaBox", "Tests" } do
+    filter {}
+    project(consumer)
+        includedirs {
+            "Catalpa/third_party/meshoptimizer/src", "Catalpa/third_party/zstd/lib",
+            "Catalpa/third_party/KTX-Software/lib/include", "Catalpa/third_party/KTX-Software/external/dfdutils",
+            "Catalpa/third_party/freetype/include", "Catalpa/third_party/ozz-animation/include",
+            "Catalpa/third_party/JoltPhysics", "Catalpa/third_party/miniaudio", "Catalpa/third_party/RmlUi/Include",
+            "Catalpa/third_party/recastnavigation/Recast/Include", "Catalpa/third_party/recastnavigation/Detour/Include",
+            "Catalpa/third_party/recastnavigation/DetourCrowd/Include", "Catalpa/third_party/recastnavigation/DetourTileCache/Include"
+        }
+        defines { "RMLUI_STATIC_LIB", "KHRONOS_STATIC" }
+end
+filter {}
+project "CatalpaBox"
+    links { "meshoptimizer", "ktx", "astcenc", "zstd", "FreeType", "ozz_animation_offline", "ozz_animation",
+        "ozz_base", "Jolt", "miniaudio", "RmlUi", "Recast", "DetourCrowd", "DetourTileCache", "Detour", "winmm" }
 filter {}

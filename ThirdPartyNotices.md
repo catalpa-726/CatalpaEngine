@@ -73,3 +73,17 @@ S03.1-B 历史获取记录：当时优先尝试完整 Git 克隆，未完成后�
 - Lua 5.5.1 使用 [发行包 readme 中的 MIT 许可](Catalpa/third_party/lua/doc/readme.html#license)。静态库保留标准库实现，运行时的库开放策略由后续 ScriptRuntime 制定；不编译解释器和编译器入口。Catalpa 与 Tools 可私有调用 Lua，VM 和 Lua 对象不通过公共 API 传递。
 
 新目录沿用外部依赖的忽略规则。`.gitmodules` 声明仓库来源，尚未登记 gitlink。接线只经过静态核对，工程生成、编译、文件对话框和脚本/画布功能等待各阶段验证。
+
+## S14-S17 user-provided source libraries
+
+Local source/license evidence only; exact upstream commits and complete transitive license audit remain unverified. See Dependencies.lock.json. KTX uses its bundled Basis transcoder and ASTC sources; their individual notices under external/ remain applicable. No network transport library was added.
+
+- `meshoptimizer`: local license files: `Catalpa/third_party/meshoptimizer/LICENSE.md`.
+- `zstd`: local license files: `Catalpa/third_party/zstd/COPYING`, `Catalpa/third_party/zstd/LICENSE`.
+- `KTX-Software`: local license files: `Catalpa/third_party/KTX-Software/LICENSE.md`.
+- `freetype`: local license files: `Catalpa/third_party/freetype/LICENSE.TXT`.
+- `ozz-animation`: local license files: `Catalpa/third_party/ozz-animation/LICENSE.md`.
+- `JoltPhysics`: local license files: `Catalpa/third_party/JoltPhysics/LICENSE`.
+- `miniaudio`: local license files: `Catalpa/third_party/miniaudio/LICENSE`.
+- `RmlUi`: local license files: `Catalpa/third_party/RmlUi/LICENSE.txt`.
+- `recastnavigation`: local license files: `Catalpa/third_party/recastnavigation/License.txt`.

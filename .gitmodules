@@ -63,3 +63,32 @@
 # Its path/URL declaration does not register a gitlink or stage the ignored source tree.
 # Authoring dependencies are user-provided. Lua uses the official release's src/ layout;
 # its upstream Git mirror keeps sources at the root, and Premake accepts both layouts.
+
+# User-provided S14-S17 directories; declarations do not register gitlinks.
+[submodule "Catalpa/third_party/meshoptimizer"]
+	path = Catalpa/third_party/meshoptimizer
+	url = https://github.com/zeux/meshoptimizer.git
+[submodule "Catalpa/third_party/zstd"]
+	path = Catalpa/third_party/zstd
+	url = https://github.com/facebook/zstd.git
+[submodule "Catalpa/third_party/KTX-Software"]
+	path = Catalpa/third_party/KTX-Software
+	url = https://github.com/KhronosGroup/KTX-Software.git
+[submodule "Catalpa/third_party/freetype"]
+	path = Catalpa/third_party/freetype
+	url = https://github.com/freetype/freetype.git
+[submodule "Catalpa/third_party/ozz-animation"]
+	path = Catalpa/third_party/ozz-animation
+	url = https://github.com/guillaumeblanc/ozz-animation.git
+[submodule "Catalpa/third_party/JoltPhysics"]
+	path = Catalpa/third_party/JoltPhysics
+	url = https://github.com/jrouwe/JoltPhysics.git
+[submodule "Catalpa/third_party/miniaudio"]
+	path = Catalpa/third_party/miniaudio
+	url = https://github.com/mackron/miniaudio.git
+[submodule "Catalpa/third_party/RmlUi"]
+	path = Catalpa/third_party/RmlUi
+	url = https://github.com/mikke89/RmlUi.git
+[submodule "Catalpa/third_party/recastnavigation"]
+	path = Catalpa/third_party/recastnavigation
+	url = https://github.com/recastnavigation/recastnavigation.git
