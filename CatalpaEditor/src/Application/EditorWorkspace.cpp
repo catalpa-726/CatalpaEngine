@@ -248,6 +248,14 @@ namespace Catalpa::Editor {
         Report("status.loaded", "Workspace reloaded");
     }
 
+    void EditorWorkspace::OnEvent(Event& event)
+    {
+        if (event.GetEventType() == EventType::WindowClose && m_Attached && !m_SavedForExit) {
+            event.Handled = true;
+            m_CloseRequested = true;
+        }
+    }
+
     void EditorWorkspace::OnUpdate(Deltatime)
     {
         if (!m_Attached) return;
@@ -262,11 +270,13 @@ namespace Catalpa::Editor {
             auto candidate = std::make_unique<EditorProject>();
             if (!candidate->Load(std::filesystem::u8path(m_ProjectPathInput.data()), error))
                 Report("status.project_failed", "Project open failed", error);
+            else if (m_Editing && !m_Editing->Reset(error))
+                Report("status.project_failed", "Project open failed", error);
             else {
                 if (m_Build)
                     m_Build->CloseProject();
-                if (m_Editing) m_Editing->Reset();
                 m_Project = std::move(candidate);
+                m_ProjectSettings.Reset();
                 m_ProjectFile = m_Project->GetSession()->config.projectFile;
                 m_BrowseDirectory = m_Project->GetSession()->config.contentRoot;
                 m_SelectedFile.clear();
@@ -278,17 +288,22 @@ namespace Catalpa::Editor {
                 Report("status.project_opened", "Project opened");
             }
         } else if (action == Action::CloseProject) {
-            if (m_Editing) m_Editing->Reset();
-            if (m_Build)
-                m_Build->CloseProject();
-            m_Project.reset();
-            m_ProjectFile.clear();
-            m_SelectedFile.clear();
-            if (m_Content)
-                m_Content->Reset();
-            m_BrowseDirectory = m_ExecutableDirectory / "Resources";
-            RefreshFiles();
-            Report("status.project_closed", "Project closed");
+            std::string error;
+            if (m_Editing && !m_Editing->Reset(error))
+                Report("status.project_failed", "Project close failed", error);
+            else {
+                if (m_Build)
+                    m_Build->CloseProject();
+                m_Project.reset();
+                m_ProjectSettings.Reset();
+                m_ProjectFile.clear();
+                m_SelectedFile.clear();
+                if (m_Content)
+                    m_Content->Reset();
+                m_BrowseDirectory = m_ExecutableDirectory / "Resources";
+                RefreshFiles();
+                Report("status.project_closed", "Project closed");
+            }
         } else if (action == Action::Reload)
             ReloadWorkspace();
         else if (action == Action::ResetLayout) {
@@ -300,7 +315,7 @@ namespace Catalpa::Editor {
             m_Dirty = true;
             Report("status.reset", "Default layout restored");
         } else if (action == Action::Save || m_CloseRequested) {
-            const bool saved = SaveWorkspace();
+            const bool saved = (!m_FrameSeen || m_SettingsPath.empty()) ? true : SaveWorkspace();
             if (m_CloseRequested && saved) {
                 m_SavedForExit = true;
                 Application::Get().RequestClose();
@@ -610,6 +625,11 @@ namespace Catalpa::Editor {
             ImGui::TextWrapped("%s", Text("setting.persistence", "Panel visibility, VSync and layout are saved automatically and on exit. A previous save is kept as Workspace.json.bak."));
             ImGui::TextWrapped("%s", DisplayPath(m_SettingsPath).c_str());
             ImGui::TextWrapped("%s", m_Status.c_str());
+            if (m_Project) {
+                const bool busy = (m_Build && m_Build->Busy()) ||
+                    (m_Editing && (m_Editing->HasDirtyDocuments() || m_Editing->HasPendingWork()));
+                m_ProjectSettings.Draw(*m_Project, busy, m_StatusError);
+            }
             if (!m_StatusError.empty()) ImGui::TextWrapped("%s", m_StatusError.c_str());
             if (!m_AutoSave) ImGui::TextWrapped("%s", Text("setting.retry", "Automatic saving is disabled. Save Workspace retries explicitly; Reload Workspace keeps current changes if loading fails."));
         }
@@ -619,12 +639,20 @@ namespace Catalpa::Editor {
     void EditorWorkspace::OnImGuiRender()
     {
         if (!m_Attached) return;
+        if (m_Editing) m_Editing->SetProject(m_Project ? &m_Project->GetSession()->config : nullptr);
         DrawMenu();
         const auto discardPopup=Label("document.unsaved","Discard unsaved edits?","Catalpa.DiscardEdits");
         if (m_DiscardAction!=Action::None || m_DiscardExit) ImGui::OpenPopup(discardPopup.c_str());
         if (ImGui::BeginPopupModal(discardPopup.c_str(),nullptr,ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::TextUnformatted(Text("document.unsaved_message","This workspace contains unsaved edits."));
+            if (ImGui::Button("Save all and continue") && m_Editing && m_Editing->SaveAll()) {
+                m_AllowDiscard = true;
+                m_Action = std::exchange(m_DiscardAction, Action::None);
+                m_CloseRequested = std::exchange(m_DiscardExit, false);
+                ImGui::CloseCurrentPopup();
+            }
             if (ImGui::Button(Label("document.discard_changes","Discard and continue","DiscardEdits").c_str())) {
+                if (m_Editing) m_Editing->DiscardRecoveryCopies();
                 m_AllowDiscard=true;
                 m_Action=std::exchange(m_DiscardAction,Action::None);
                 m_CloseRequested=std::exchange(m_DiscardExit,false);

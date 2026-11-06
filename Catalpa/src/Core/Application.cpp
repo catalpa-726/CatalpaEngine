@@ -40,12 +40,28 @@ namespace Catalpa {
         // 原始事件先进入收集器；玩法是否消费由本帧 UI 捕获与焦点统一决定。
         if (m_Runtime) m_Runtime->OnInputEvent(e);
         EventDispatcher dispatcher(e);
-        dispatcher.Dispatch<WindowCloseEvent>(CAT_BIND_EVENT_FN(Application::OnWindowClose));
+        if (e.GetEventType() == EventType::WindowClose) {
+            // 正常关闭先交给宿主层完成文档确认；运行时错误仍可用非零退出码终止。
+            for (auto it = m_LayerStack.rbegin(); it != m_LayerStack.rend() && !e.Handled; ++it) (*it)->OnEvent(e);
+            if (!e.Handled) dispatcher.Dispatch<WindowCloseEvent>(CAT_BIND_EVENT_FN(Application::OnWindowClose));
+            return;
+        }
         dispatcher.Dispatch<WindowFramebufferResizeEvent>(CAT_BIND_EVENT_FN(Application::OnWindowSurfaceChanged));
         dispatcher.Dispatch<WindowMinimizeEvent>(CAT_BIND_EVENT_FN(Application::OnWindowSurfaceChanged));
 
         if (m_ImGuiLayer) m_ImGuiLayer->OnEvent(e);
         for (auto it = m_LayerStack.rbegin(); it != m_LayerStack.rend() && !e.Handled; ++it) (*it)->OnEvent(e);
+    }
+
+    void Application::RequestClose(int exitCode)
+    {
+        if (exitCode != 0) {
+            m_ExitCode = exitCode;
+            m_Running = false;
+            return;
+        }
+        WindowCloseEvent request;
+        OnEvent(request);
     }
 
     void Application::PushLayer(std::unique_ptr<Layer> layer) { m_PendingLayers.push_back({ .layer = std::move(layer), .overlay = false }); }
@@ -69,7 +85,24 @@ namespace Catalpa {
     void Application::SetEditorViewportActive(bool active)
     {
         m_Runtime->SetEditorViewportActive(active);
+        m_EditorViewportActive = active;
         m_AllowEditorSystemKeys = false;
+        m_AllowEditorPlayInput = false;
+    }
+
+    bool Application::SetEditorPlayScene(SceneHandle scene, bool paused, std::string& error)
+    {
+        return m_Runtime->SetPlayScene(scene, paused, error);
+    }
+
+    bool Application::StepEditorPlay(std::string& error) { return m_Runtime->StepPlay(error); }
+
+    std::vector<BehaviorDebugSnapshot> Application::GetBehaviorDebug() const
+    {
+        return m_Runtime->GetBehaviorDebug();
+    }
+    bool Application::EmitBehaviorEvent(PersistentEntityId entity, std::string event, std::string& error) {
+        return m_Runtime->EmitBehaviorEvent(entity, std::move(event), error);
     }
 
     bool Application::GetEditorPreview(uint64_t viewId, RenderSurfaceSnapshot& surface) const
@@ -172,12 +205,15 @@ namespace Catalpa {
 
             // 当前帧平台事件已收集，先 NewFrame 取得本帧捕获，再运行玩法。
             m_AllowEditorSystemKeys = false;
+            m_AllowEditorPlayInput = false;
             m_ImGuiLayer->Begin();
             for (Layer* layer : m_LayerStack) layer->OnUpdate(timestep);
             for (Layer* layer : m_LayerStack) layer->OnImGuiRender();
             auto capture = m_ImGuiLayer->GetInputCapture();
             if (m_AllowEditorSystemKeys) capture.keyboardCaptured = false;
-            capture.gameplayActive = !m_Window->IsMinimized();
+            if (m_AllowEditorPlayInput) capture.keyboardCaptured = capture.mouseCaptured = false;
+            capture.gameplayActive = !m_Window->IsMinimized() &&
+                (!m_EditorViewportActive || m_AllowEditorPlayInput);
             if (m_Running) {
                 const auto [width, height] = m_Window->GetFramebufferSize();
                 if (const auto status = m_Runtime->UpdateSimulation(realSeconds, capture, width, height); !status.IsSuccess()) {

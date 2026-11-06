@@ -1,4 +1,4 @@
-#include "catpch.h"
+﻿#include "catpch.h"
 #include "VulkanPipelineCache.h"
 #include "Log/Log.h"
 #include "VulkanDevice.h"

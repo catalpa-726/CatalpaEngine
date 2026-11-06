@@ -3,6 +3,7 @@
 #include "RHI/RHITextureDesc.h"
 #include "Camera/CameraProjection.h"
 #include "Renderer/Passes/DepthPrepass.h"
+#include <cmath>
 #include <cstring>
 #include <limits>
 
@@ -116,6 +117,24 @@ namespace Catalpa::Tests {
         if (wrapped.data.size() >= sizeof(wrappedTime)) std::memcpy(&wrappedTime, wrapped.data.data(), sizeof(wrappedTime));
         test.Check(wrappedTime.time[0] == 0.25f && wrappedTime.options[2] == 1048576,
             "Time ABI records an exact bounded phase plus separate 4096-second epoch");
+        float reconstructed[2]{};
+        bool crossingPacked = true;
+        for (size_t i = 0; i < 2; ++i) {
+            auto crossing = packet;
+            crossing.time.simulationSeconds = i ? 4096.25 : 4095.75;
+            PackedFrameUniforms values;
+            crossingPacked &= BuildFrameUniformData(crossing, profile, 256, 256, values).IsSuccess();
+            FrameGpuParameters frame{};
+            if (values.data.size() >= sizeof(frame)) std::memcpy(&frame, values.data.data(), sizeof(frame));
+            reconstructed[i] = frame.options[2] * 4096.0f + frame.time[0];
+        }
+        test.Check(crossingPacked && reconstructed[1] - reconstructed[0] == 0.5f,
+            "Graph Time remains continuous across the first epoch boundary");
+        auto maximumTime = packet;
+        maximumTime.time.simulationSeconds = std::numeric_limits<float>::max();
+        PackedFrameUniforms maximumPacking;
+        test.Check(BuildFrameUniformData(maximumTime, profile, 256, 256, maximumPacking).IsSuccess(),
+            "The largest finite float time does not overflow when epoch and phase are reconstructed");
         const auto accepted = packed;
         const auto rejectsPacking = [&](const RenderFramePacket& input, uint64_t alignment, uint64_t range, std::string_view requirement) {
             test.Check(!BuildFrameUniformData(input, profile, alignment, range, packed).IsSuccess(), requirement);
@@ -129,6 +148,9 @@ namespace Catalpa::Tests {
         rejectsPacking(packet, uint64_t{1} << 63, 256, "Alignment/offset arithmetic cannot wrap into a small accepted allocation");
         auto bad = packet; bad.views.clear();
         rejectsPacking(bad, 256, 256, "Packing requires the selected view rather than substituting an identity camera");
+        bad = packet;
+        bad.time.simulationSeconds = std::nextafter(double(std::numeric_limits<float>::max()), std::numeric_limits<double>::infinity());
+        rejectsPacking(bad, 256, 256, "Time beyond the graph float domain is rejected even when its separate epoch is finite");
         bad = packet; bad.views.push_back(view);
         rejectsPacking(bad, 256, 256, "Multiple views cannot share a duplicate output identity");
         bad = packet; bad.views[0].viewport.width = 0;

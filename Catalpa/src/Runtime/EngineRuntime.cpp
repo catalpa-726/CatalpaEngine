@@ -19,6 +19,7 @@
 #include "Runtime/RuntimeServices.h"
 #include "Runtime/Systems/TransformSystem.h"
 #include "Runtime/Systems/RenderExtractSystem.h"
+#include "Runtime/Systems/ScriptSystem.h"
 
 namespace Catalpa {
 
@@ -34,6 +35,38 @@ namespace Catalpa {
     }
 
     EngineRuntime::EngineRuntime() = default;
+
+    bool EngineRuntime::SetPlayScene(SceneHandle scene, bool paused, std::string& error)
+    {
+        if (scene.HasValue() && !m_Scenes.GetScene(scene)) {
+            error = "Play scene is no longer available";
+            return false;
+        }
+        if (m_PlayScene != scene) {
+            m_Scripts.Stop(m_Scenes.GetScene(m_PlayScene));
+            m_Behaviors.Stop();
+            m_LastScriptDiagnostic.clear();
+            m_BehaviorDiagnostics.clear();
+            m_PlayScene = scene;
+            m_Clock.Reset();
+            m_Input.ResetGameplayContext();
+        }
+        m_PlayPaused = paused;
+        m_Clock.SetPaused(m_EditorViewportActive && (!scene.HasValue() || paused));
+        error.clear();
+        return true;
+    }
+
+    bool EngineRuntime::StepPlay(std::string& error)
+    {
+        if (!m_PlayScene.HasValue() || !m_PlayPaused) {
+            error = "Single step requires a paused Play session";
+            return false;
+        }
+        const auto status = m_Clock.RequestSingleStep();
+        error = status.IsSuccess() ? "" : status.message;
+        return status.IsSuccess();
+    }
 
     EngineRuntime::~EngineRuntime() { Shutdown(); }
 
@@ -71,6 +104,7 @@ namespace Catalpa {
             m_Renderer->SetMainScenePresentation(MainScenePresentation::OffscreenOnly);
         m_SimulationStopped = false;
         m_FrameSequence = 0;
+        m_EditorPreviewSeconds = 0;
         m_InputSceneIdentity = 0;
         m_Clock.Reset();
         m_LastSwapchainDesc = desc;
@@ -216,6 +250,8 @@ namespace Catalpa {
     void EngineRuntime::SetEditorViewportActive(bool active)
     {
         if (active == m_EditorViewportActive) return;
+        if (active) m_StandalonePaused = m_Clock.IsPaused();
+        else m_Clock.SetPaused(m_StandalonePaused);
         m_EditorViewportActive = active;
         m_Input.ResetGameplayContext();
         if (m_Renderer)
@@ -361,6 +397,10 @@ namespace Catalpa {
             } else {
                 if (independent) packet.views.push_back(*independent);
                 packet.time = m_FrameTime;
+                // 编辑/资产预览可播放材质 Time，而作者 World 仍不执行玩法。
+                // Play 视口继续使用权威模拟时间，暂停和单步不能被墙钟绕过。
+                if (m_EditorViewportActive && (!m_PlayScene.HasValue() || it->second.scene != m_PlayScene))
+                    packet.time.simulationSeconds = m_EditorPreviewSeconds;
                 RequestFrameAssets(packet);
                 std::string currentError;
                 if (!m_Renderer->SetPreviewFrame(it->first, std::move(packet), currentError) && error.empty())
@@ -373,6 +413,9 @@ namespace Catalpa {
 
     void EngineRuntime::StopSimulation() noexcept
     {
+        m_Scripts.Stop(m_PlayScene.HasValue() ? m_Scenes.GetScene(m_PlayScene) : m_Scenes.GetActive());
+        m_Behaviors.Stop();
+        m_PlayScene = {};
         m_SimulationStopped = true;
         m_Input.ResetGameplayContext();
         if (m_Renderer) m_Renderer->ClearSceneFrame();
@@ -419,20 +462,36 @@ namespace Catalpa {
         if (m_FrameSequence == std::numeric_limits<uint64_t>::max()) return { WorldError::CapacityExceeded, "Presentation frame sequence exhausted" };
         if (!std::isfinite(realSeconds) || realSeconds < 0.0) return { WorldError::InvalidArgument, "Real frame duration must be finite and nonnegative" };
         try {
+            if (m_EditorViewportActive) {
+                const double nextPreviewSeconds = m_EditorPreviewSeconds + realSeconds;
+                if (!std::isfinite(nextPreviewSeconds) || nextPreviewSeconds > std::numeric_limits<float>::max())
+                    return { WorldError::InvalidArgument, "Editor preview time exceeds the shader time range" };
+                // 保留累计秒数，由统一帧打包拆成 epoch/phase，图 Time 不在 4096 秒处归零。
+                m_EditorPreviewSeconds = nextPreviewSeconds;
+            }
             const Scene* active = m_Scenes.GetActive();
             const uint64_t activeIdentity = active ? active->GetWorld().GetIdentity() : 0;
+            if (m_PlayScene.HasValue() && m_Scenes.GetActiveHandle() != m_PlayScene) {
+                std::string ignored;
+                (void)SetPlayScene({}, false, ignored);
+            }
+            if (m_EditorViewportActive)
+                m_Clock.SetPaused(!m_PlayScene.HasValue() || m_PlayPaused);
             if (activeIdentity != m_InputSceneIdentity) {
                 m_Input.ResetGameplayContext();
                 m_LastSceneCameraError.clear();
+                m_LastScriptDiagnostic.clear();
+                m_BehaviorDiagnostics.clear();
                 m_InputSceneIdentity = activeIdentity;
             }
-            capture.gameplayActive = capture.gameplayActive && activeIdentity != 0 && !m_EditorViewportActive;
+            capture.gameplayActive = capture.gameplayActive && activeIdentity != 0 &&
+                (!m_EditorViewportActive || m_PlayScene.HasValue());
             const auto& actions = m_Input.BeginFrame(capture);
-            if (const auto* pause = actions.Find("simulation.pause"); pause && pause->pressed) {
+            if (const auto* pause = actions.Find("simulation.pause"); pause && pause->pressed && !m_EditorViewportActive) {
                 m_Clock.SetPaused(!m_Clock.IsPaused());
                 CAT_CORE_INFO("[S03.2] Simulation paused = {0}", m_Clock.IsPaused());
             }
-            if (const auto* step = actions.Find("simulation.step"); step && step->pressed) {
+            if (const auto* step = actions.Find("simulation.step"); step && step->pressed && !m_EditorViewportActive) {
                 if (const auto status = m_Clock.RequestSingleStep(); !status.IsSuccess()) CAT_CORE_WARN("[S03.2] Single step rejected: {0}", status.message);
             }
             if (const auto status = m_Clock.Advance(realSeconds, m_FrameTime); !status.IsSuccess()) return { WorldError::InvalidArgument, status.message };
@@ -454,6 +513,22 @@ namespace Catalpa {
                     const ActionSnapshot tickInput = m_Input.ConsumeTick();
                     RuntimeServices tickServices{ &tickInput, width, height, &packet, !m_EditorViewportActive };
                     SystemContext context{ scene, tick, tickServices };
+                    if ((!m_EditorViewportActive || m_PlayScene.HasValue()) && m_Assets) {
+                        ScriptSystem::Update(m_Scripts, *m_Assets, context);
+                        m_Behaviors.Tick(scene, *m_Assets, tick.fixedDeltaSeconds);
+                        std::string diagnostics;
+                        for (const auto& diagnostic : m_Scripts.Diagnostics()) {
+                            if (!diagnostics.empty()) diagnostics += '\n';
+                            diagnostics += diagnostic;
+                        }
+                        if (!diagnostics.empty() && diagnostics != m_LastScriptDiagnostic)
+                            CAT_CORE_ERROR("Lua instances: {0}", diagnostics);
+                        m_LastScriptDiagnostic = std::move(diagnostics);
+                        for(const auto& snapshot:m_Behaviors.Snapshot(false)) if(!snapshot.error.empty() && m_BehaviorDiagnostics[snapshot.entity]!=snapshot.error) {
+                            CAT_CORE_ERROR("Behavior entity {0}, node {1}: {2}",snapshot.entity.ToString(),snapshot.node.ToString(),snapshot.error);
+                            m_BehaviorDiagnostics[snapshot.entity]=snapshot.error;
+                        }
+                    }
                     if (const auto executed = systems.RunPhase(SystemPhase::Gameplay, context); !executed.IsSuccess()) return executed;
                     if (const auto updated = systems.RunPhase(SystemPhase::Transform, context); !updated.IsSuccess()) return updated;
                 }

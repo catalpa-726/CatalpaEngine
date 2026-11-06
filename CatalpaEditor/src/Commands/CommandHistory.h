@@ -18,13 +18,16 @@ namespace Catalpa::Editor {
         }
 
         bool Dirty() const noexcept {
-            return m_Dropped || m_Position != 0;
+            return !m_SavedPosition || m_Position != *m_SavedPosition;
         }
+        void MarkSaved() noexcept { m_SavedPosition = m_Position; }
+        void MarkUnsaved() noexcept { m_SavedPosition.reset(); }
+        void Reset() noexcept { m_Entries.clear(); m_Position = 0; m_SavedPosition = 0; }
 
       private:
         static constexpr size_t Limit = 128;
         std::vector<std::unique_ptr<EditorCommand>> m_Entries;
         size_t m_Position = 0;
-        bool m_Dropped = false;
+        std::optional<size_t> m_SavedPosition{0};
     };
 }

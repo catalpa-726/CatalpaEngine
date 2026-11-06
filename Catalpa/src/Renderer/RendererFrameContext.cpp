@@ -233,7 +233,8 @@ namespace Catalpa {
             candidate.viewOffsets.reserve(packet.views.size());
             FrameGpuParameters frame;
             const auto& time = packet.time;
-            if (time.simulationSeconds < 0.0 || time.realDeltaSeconds < 0.0 || time.fixedDeltaSeconds <= 0.0
+            if (time.simulationSeconds < 0.0 || time.simulationSeconds > std::numeric_limits<float>::max()
+                || time.realDeltaSeconds < 0.0 || time.fixedDeltaSeconds <= 0.0
                 || time.interpolationAlpha < 0.0 || time.interpolationAlpha > 1.0
                 || !FloatValue(std::fmod(time.simulationSeconds, 4096.0), frame.time[0]) || !FloatValue(time.realDeltaSeconds, frame.time[1])
                 || !FloatValue(time.fixedDeltaSeconds, frame.time[2]) || !FloatValue(time.interpolationAlpha, frame.time[3]))
@@ -241,6 +242,9 @@ namespace Catalpa {
             frame.options[0] = profile.normalDebug ? 1.0f : 0.0f;
             frame.options[1] = 0.1f;
             if (!FloatValue(std::floor(time.simulationSeconds / 4096.0), frame.options[2]))
+                return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
+            // 普通周期仍只取精确 phase；图 Time 会重建总秒，额外检查实际 float 运算的有限性。
+            if (!std::isfinite(frame.options[2] * 4096.0f + frame.time[0]))
                 return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
             std::memcpy(candidate.data.data(), &frame, sizeof(frame));
             std::set<uint64_t> viewIds;

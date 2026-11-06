@@ -9,6 +9,7 @@
 #include "Core/PlatformServices.h"
 #include "AssetCompiler/AssetCompilerOptions.h"
 #include "AssetPipeline/AssetCooker.h"
+#include "MaterialGraph/MaterialGraphCompiler.h"
 namespace Catalpa::Tools {
     ToolCommandResult ToolCommandRunner::Run(std::span<const std::string> args,CancellationToken cancellation){
         ToolCommandResult result;
@@ -108,6 +109,7 @@ namespace Catalpa::Tools {
                 if(!AtomicFileWriter::Write(target,item.bytes,error))return fail(error);result.outputs.push_back(target);
             }
             if(cancellation.IsCancellationRequested())return fail("shader cook cancelled before manifest publication");
+            if (!MaterialGraphCompiler::DeployTemplates(source, output.parent_path()/L"ShaderSources", error)) return fail(error);
             const auto manifestPath=output/L"BuiltinShaders.manifest";std::vector<std::byte> oldManifest;std::string ignored;
             const bool manifestUnchanged=std::filesystem::is_regular_file(manifestPath)&&ShaderToolDetail::ReadFile(manifestPath,4*1024*1024,oldManifest,ignored)&&oldManifest==manifest;
             if(!manifestUnchanged&&!AtomicFileWriter::Write(manifestPath,manifest,error))return fail(error);result.outputs.push_back(manifestPath);

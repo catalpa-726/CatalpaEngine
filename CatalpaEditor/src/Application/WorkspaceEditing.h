@@ -6,6 +6,7 @@
 #include "Viewport/PickingController.h"
 #include "Viewport/TransformGizmo.h"
 #include "Viewport/EditorCameraController.h"
+#include "Scene/SceneAsset.h"
 
 namespace Catalpa::Editor {
     class BuildPanel;
@@ -16,19 +17,67 @@ namespace Catalpa::Editor {
         explicit WorkspaceEditing(Application& app);
 
         ~WorkspaceEditing();
-        void Reset();
+        bool Reset(std::string& error);
         void SceneTree(const PanelText&);
         bool Inspect(const PanelText&);
         void Draw(const PanelText&, BuildPanel*, uint32_t centerDockId);
         void OpenAsset(AssetId, const BuildPanel&);
         void Menu(const PanelText&);
         bool HasDirtyDocuments() const;
+        bool HasPendingWork() const noexcept {
+            return m_PlayDocument.HasValue() || m_PendingScene.has_value() || m_PendingAuthor.has_value();
+        }
+        void SetProject(const Tools::ProjectConfig*);
+        bool SaveAll();
+        void DiscardRecoveryCopies();
 
       private:
         SceneDocument* ActiveScene();
         void ActivateAsset(AssetDocument&);
         void DrawViewport(SceneDocument*, const PanelText&, uint32_t centerDockId);
         EditorCameraInput ViewportInput(bool hovered, bool gizmoBusy);
+        bool SaveDocument(Document&, bool saveAs = false);
+        bool LoadProjectCatalog();
+        bool OpenAuthor(const std::filesystem::path&, std::string text = {}, std::string type = {},
+                        const std::filesystem::path& recovery = {});
+        bool InstallAuthorScene(const SceneAsset&, const std::filesystem::path&,
+                                const std::filesystem::path& recovery = {});
+        void RemoveRecovery(StableId);
+        void RetainRecovery(const std::filesystem::path&);
+        void CancelPendingOpen();
+        void DocumentMenu();
+        void UpdateDocuments();
+        void CloseDocument(StableId);
+        void PlayToolbar(SceneDocument&);
+        bool StopPlay();
+        void AuthorComponentControls(SceneDocument&);
+        void PrefabMenu();
+        std::array<char,64> m_ScriptAsset{},m_BehaviorAsset{};
+        std::array<char,129> m_PropertyName{};
+        int m_PropertyType = 2;
+        PersistentEntityId m_OverrideRoot;
+        std::vector<std::string> m_OverridePaths;
+        std::optional<Tools::ProjectConfig> m_Project;
+        std::filesystem::path m_RecoveryRoot;
+        std::vector<std::filesystem::path> m_Recovery;
+        std::map<StableId, std::filesystem::path> m_RestoredRecovery;
+        std::chrono::steady_clock::time_point m_LastRecovery{};
+        StableId m_Closing, m_PlayDocument;
+        bool m_PlayPaused = false;
+        struct PendingScene {
+            SceneAsset scene;
+            std::filesystem::path path, recovery;
+            std::vector<AssetId> dependencies;
+        };
+        std::optional<PendingScene> m_PendingScene;
+        struct PendingAuthor {
+            std::filesystem::path path, recovery;
+            std::string source, type;
+            std::vector<AssetId> dependencies;
+        };
+        std::optional<PendingAuthor> m_PendingAuthor;
+        SceneHandle m_HostScene;
+        std::vector<SceneHandle> m_AuthorScenes;
         Application& m_App;
         DocumentManager m_Documents;
         EditorSelection m_Selection;

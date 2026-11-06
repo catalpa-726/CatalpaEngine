@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "scene": {
+    "schemaVersion": 1,
+    "name": "Example object hierarchy",
+    "entities": [
+      {
+        "id": "8136007f-b1b7-59f4-b654-91774fbc208c",
+        "parent": null,
+        "name": "Example root",
+        "translation": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      {
+        "id": "d48507c4-7a47-5846-aefd-0b3ac92d04ad",
+        "parent": "8136007f-b1b7-59f4-b654-91774fbc208c",
+        "name": "Editable child",
+        "translation": [
+          0,
+          1,
+          0
+        ],
+        "rotation": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      }
+    ]
+  },
+  "nested": []
+}

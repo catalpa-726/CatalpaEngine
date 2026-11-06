@@ -6,11 +6,13 @@
 #include "Window.h"
 #include "Events/ApplicationEvent.h"
 #include "Scene/SceneHandle.h"
+#include "Scene/PersistentEntityId.h"
 #include "Renderer/RenderSurface.h"
 #include "Renderer/Readback/Picking.h"
 #include "Images/ImageAsset.h"
 #include "Assets/AssetHandle.h"
 #include "Geometry/Bounds.h"
+#include "Scripting/BehaviorDebugSnapshot.h"
 
 namespace Catalpa {
 
@@ -31,7 +33,7 @@ namespace Catalpa {
 		void Run();
 
 		// 请求主循环有序退出，仍由 Application 完成 Layer 与运行时清理。
-        void RequestClose(int exitCode = 0) { if (exitCode != 0) m_ExitCode = exitCode; m_Running = false; }
+        void RequestClose(int exitCode = 0);
         [[nodiscard]] int GetExitCode() const noexcept { return m_ExitCode; }
 
 		void OnEvent(Event& e);
@@ -55,8 +57,13 @@ namespace Catalpa {
             const Math::TransformTRS& cameraPose, const CameraLens& lens, uint64_t historyRevision, std::string& error);
         // 挂载工作区时由视口呈现场景，卸载后恢复宿主主窗口的场景呈现。
         void SetEditorViewportActive(bool active);
+        [[nodiscard]] bool SetEditorPlayScene(SceneHandle scene, bool paused, std::string& error);
+        [[nodiscard]] bool StepEditorPlay(std::string& error);
+        [[nodiscard]] std::vector<BehaviorDebugSnapshot> GetBehaviorDebug() const;
+        [[nodiscard]] bool EmitBehaviorEvent(PersistentEntityId entity, std::string event, std::string& error);
         // 工作区仅在当前帧的视口接收导航时放行系统按键；玩法输入另由 Runtime 隔离。
         void AllowEditorViewportSystemKeys() noexcept { m_AllowEditorSystemKeys = true; }
+        void AllowEditorPlayInput() noexcept { m_AllowEditorPlayInput = true; }
         [[nodiscard]] bool GetEditorPreview(uint64_t viewId, RenderSurfaceSnapshot& surface) const;
         void CloseEditorPreview(uint64_t viewId);
         [[nodiscard]] bool SetEditorPreviewImage(uint64_t viewId, const AssetVersionRef<ImageAsset>& image,
@@ -98,6 +105,8 @@ namespace Catalpa {
 		bool m_Running = true;
         int m_ExitCode = 0;
         bool m_AllowEditorSystemKeys = false;
+        bool m_AllowEditorPlayInput = false;
+        bool m_EditorViewportActive = false;
 	};
 
 	Application* CreateApplication();

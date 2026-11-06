@@ -11,6 +11,7 @@ namespace Catalpa {
         static bool RegisterAssetLoader(AssetManager&, std::string& error);
         static bool EncodePayload(const ShaderAsset&, std::vector<std::byte>& output, std::string& error);
         static bool DecodePayload(std::span<const std::byte>, std::shared_ptr<const ShaderAsset>& output, std::string& error);
+        static size_t EstimateResidentBytes(const ShaderAsset&) noexcept;
         // 仅名称决定身份；内容与工具链决定版本。路径使用源根相对的规范 UTF-8 '/' 表示。
         static bool BuiltinId(std::string_view relativeSource, AssetId& output, std::string& error);
         // 读取部署容器头建立同一资产注册表，不在 Runtime 编译或反射 Shader。

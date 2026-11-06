@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "name": "Authoring example (hierarchy and camera)",
+  "entities": [
+    {
+      "id": "8136007f-b1b7-59f4-b654-91774fbc208c",
+      "parent": null,
+      "name": "Example root",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "id": "d48507c4-7a47-5846-aefd-0b3ac92d04ad",
+      "parent": "8136007f-b1b7-59f4-b654-91774fbc208c",
+      "name": "Editable child",
+      "translation": [
+        0,
+        1,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "id": "02017117-b284-5438-a052-b83fd4cf5f1e",
+      "parent": null,
+      "name": "Author camera",
+      "translation": [
+        0,
+        2,
+        8
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "camera": {
+        "projection": 0,
+        "fov": 1.0471975512,
+        "near": 0.1,
+        "far": 1000,
+        "height": 10,
+        "infinite": false,
+        "reversed": false,
+        "enabled": true,
+        "priority": 0,
+        "view": 1,
+        "history": 1
+      }
+    },
+    {
+      "id": "2487afaa-e6aa-54cd-bfa7-2673954f1822",
+      "parent": null,
+      "name": "Sun",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "light": {
+        "type": 0,
+        "color": [
+          1,
+          1,
+          1
+        ],
+        "intensity": 3,
+        "range": 10,
+        "inner": 0.3,
+        "outer": 0.5,
+        "shadows": false,
+        "bias": 0.002,
+        "enabled": true
+      }
+    }
+  ]
+}

@@ -76,6 +76,8 @@ namespace Catalpa {
         }
         std::string PathText(const std::filesystem::path& p) { auto s=p.generic_u8string(); return {reinterpret_cast<const char*>(s.data()),s.size()}; }
     }
+    size_t ShaderLibrary::EstimateResidentBytes(const ShaderAsset& value) noexcept { return ResidentBytes(value); }
+
     const ShaderEntryPointMetadata* FindShaderEntry(const ShaderMetadata& m,std::string_view name,ShaderStage stage) noexcept {
         for(const auto& e:m.entries) if(e.stage==stage&&e.name==name)return &e; return nullptr;
     }

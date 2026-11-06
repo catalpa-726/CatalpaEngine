@@ -21,6 +21,7 @@ namespace Catalpa {
         [[nodiscard]] WorldStatus Clear() noexcept;
         [[nodiscard]] WorldStatus Compile();
         [[nodiscard]] WorldStatus RunPhase(SystemPhase phase, SystemContext& context);
+        [[nodiscard]] WorldStatus CloneGameplayTo(Scene& target) const;
         [[nodiscard]] bool HasSystem(std::string_view id) const noexcept;
         [[nodiscard]] bool IsRunning() const noexcept { return m_Running; }
         // 借用到下一次调度操作；包含失败的系统/资源名，不把诊断保存为长期引用。

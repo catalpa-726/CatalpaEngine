@@ -50,7 +50,7 @@ namespace Catalpa::Editor {
             bool Run(Document& doc, const Step& step, std::string& error) {
                 auto* sceneDoc = dynamic_cast<SceneDocument*>(&doc);
                 auto* scene = sceneDoc && doc.Id() == Owner() ? sceneDoc->Resolve() : nullptr;
-                if (!scene || !scene->CanEditNow()) {
+                if (!scene || sceneDoc->Playing() || !scene->CanEditNow()) {
                     error = "Scene is unavailable or has pending work";
                     return false;
                 }
@@ -81,6 +81,35 @@ namespace Catalpa::Editor {
             parent = identity.persistent;
             return {};
         }
+    }
+
+    template<class T>
+    static bool EditAuthorComponent(SceneDocument& doc,PersistentEntityId id,std::optional<T> next,std::string& error) {
+        auto* scene=doc.Resolve();
+        if(!scene || doc.Playing()) {error="Author scene is unavailable during Play";return false;}
+        const auto entity=scene->Resolve(id);
+        std::optional<T> before;
+        if(scene->GetWorld().Has<T>(entity)) {
+            if(const auto status=scene->GetWorld().Get(entity,before.emplace());!status.IsSuccess()) {error=status.message;return false;}
+        }
+        const auto step=[id](std::optional<T> expected,std::optional<T> value) {
+            return [id,expected=std::move(expected),value=std::move(value)](Scene& scene)->WorldStatus {
+                const auto target=scene.Resolve(id);
+                if(scene.GetWorld().Has<T>(target)!=expected.has_value()) return {WorldError::Busy,"Author component presence changed"};
+                if(expected) {T actual;const auto status=scene.GetWorld().Get(target,actual);if(!status.IsSuccess())return status;
+                    if(actual!=*expected) return {WorldError::Busy,"Author component changed outside this command"};}
+                if constexpr(std::is_same_v<T,ScriptComponent>) return Commit(scene,value?scene.QueueSetScript(target,*value):scene.QueueRemoveScript(target));
+                else return Commit(scene,value?scene.QueueSetBehaviorGraph(target,*value):scene.QueueRemoveBehaviorGraph(target));
+            };
+        };
+        return doc.History().Execute(doc,std::make_unique<SceneCommand>(doc.Id(),step(before,next),step(next,before),std::vector{id}),error);
+    }
+
+    bool EditScript(SceneDocument& doc,PersistentEntityId id,std::optional<ScriptComponent> next,std::string& error) {
+        return EditAuthorComponent(doc,id,std::move(next),error);
+    }
+    bool EditBehaviorGraph(SceneDocument& doc,PersistentEntityId id,std::optional<BehaviorGraphComponent> next,std::string& error) {
+        return EditAuthorComponent(doc,id,std::move(next),error);
     }
 
     bool CreateAuthorEntity(SceneDocument& doc, std::string name, PersistentEntityId parent,

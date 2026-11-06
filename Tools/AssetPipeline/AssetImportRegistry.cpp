@@ -3,6 +3,7 @@
 #include "AssetPipeline/Importers/GltfImporter.h"
 #include "AssetPipeline/Importers/AssimpImporter.h"
 #include "AssetPipeline/Importers/TextureImporter.h"
+#include "AssetPipeline/Importers/AuthorImporter.h"
 
 namespace Catalpa::Tools {
     namespace {
@@ -13,6 +14,10 @@ namespace Catalpa::Tools {
     }
 
     std::string AssetSourceExtension(const std::filesystem::path& source) {
+        auto name = AssetPathText(source.filename());
+        LowercaseExtension(name);
+        for (const auto suffix : {".scene.json", ".prefab.json", ".matgraph.json", ".behavior.json", ".script.json", ".material.json"})
+            if (name.ends_with(suffix)) return std::string(suffix).substr(0, std::string(suffix).size() - 5);
         auto extension = AssetPathText(source.extension());
         LowercaseExtension(extension);
         return extension;
@@ -41,6 +46,10 @@ namespace Catalpa::Tools {
         auto gltf = std::make_shared<GltfImporter>();
         auto assimp = std::make_shared<AssimpImporter>();
         auto texture = std::make_shared<TextureImporter>();
+        for (const auto& [extension, type] : std::initializer_list<std::pair<const char*, const char*>>{
+            {".scene","scene"}, {".prefab","prefab"}, {".lua","script"}, {".script","script"},
+            {".behavior","behavior_graph"}, {".matgraph","material_graph"}, {".material","material"}})
+            if (!r.Register(extension, std::make_shared<AuthorImporter>(type), e)) throw std::logic_error(e);
         for (auto ext : {".gltf", ".glb"})
             if (!r.Register(ext, gltf, e))
                 throw std::logic_error(e);

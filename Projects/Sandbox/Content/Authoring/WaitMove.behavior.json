@@ -1,0 +1,157 @@
+{
+  "schemaVersion": 1,
+  "variables": {
+    "moves": 0
+  },
+  "nodes": [
+    {
+      "id": "4b6725fa-f7ec-5b31-8726-33bd1fb3f1c6",
+      "type": "Start",
+      "variable": "",
+      "event": "",
+      "number": 0,
+      "vector": [
+        0,
+        0,
+        0
+      ],
+      "flow": {
+        "next": "9c4bdb6d-94e4-5316-9ad6-c7a459b293a2"
+      },
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "id": "9c4bdb6d-94e4-5316-9ad6-c7a459b293a2",
+      "type": "Wait",
+      "variable": "",
+      "event": "",
+      "number": 1,
+      "vector": [
+        0,
+        0,
+        0
+      ],
+      "flow": {
+        "next": "7e0b4f45-4bb7-57d5-b884-e6d48f8f4933"
+      },
+      "position": [
+        210,
+        0
+      ]
+    },
+    {
+      "id": "7e0b4f45-4bb7-57d5-b884-e6d48f8f4933",
+      "type": "Condition",
+      "variable": "moves",
+      "event": "",
+      "number": 2,
+      "vector": [
+        0,
+        0,
+        0
+      ],
+      "flow": {
+        "false": "87523ce8-8941-5ae0-b7d9-d2f06f561040",
+        "true": "633129c7-54b1-56a7-8901-3907df7198f1"
+      },
+      "position": [
+        420,
+        0
+      ]
+    },
+    {
+      "id": "87523ce8-8941-5ae0-b7d9-d2f06f561040",
+      "type": "Translate",
+      "variable": "",
+      "event": "",
+      "number": 0,
+      "vector": [
+        0,
+        0.25,
+        0
+      ],
+      "flow": {
+        "next": "410b6897-73e1-5595-8088-f37acb12e817"
+      },
+      "position": [
+        630,
+        0
+      ]
+    },
+    {
+      "id": "410b6897-73e1-5595-8088-f37acb12e817",
+      "type": "AddNumber",
+      "variable": "moves",
+      "event": "",
+      "number": 1,
+      "vector": [
+        0,
+        0,
+        0
+      ],
+      "flow": {
+        "next": "9c4bdb6d-94e4-5316-9ad6-c7a459b293a2"
+      },
+      "position": [
+        840,
+        0
+      ]
+    },
+    {
+      "id": "633129c7-54b1-56a7-8901-3907df7198f1",
+      "type": "Stop",
+      "variable": "",
+      "event": "",
+      "number": 0,
+      "vector": [
+        0,
+        0,
+        0
+      ],
+      "flow": {},
+      "position": [
+        1050,
+        0
+      ]
+    },
+    {
+      "id": "632f2d75-cd89-5f22-ac1e-a12325fd5591",
+      "type": "Event",
+      "variable": "",
+      "event": "Nudge",
+      "number": 0,
+      "vector": [
+        0,
+        0,
+        0
+      ],
+      "flow": {
+        "next": "9c1c48fb-896c-5a01-8c91-966de023970c"
+      },
+      "position": [
+        1260,
+        0
+      ]
+    },
+    {
+      "id": "9c1c48fb-896c-5a01-8c91-966de023970c",
+      "type": "Translate",
+      "variable": "",
+      "event": "",
+      "number": 0,
+      "vector": [
+        0.25,
+        0,
+        0
+      ],
+      "flow": {},
+      "position": [
+        1470,
+        0
+      ]
+    }
+  ]
+}

@@ -12,7 +12,8 @@ namespace Catalpa::Tests {
         ComponentRegistry registry;std::string error;
         const bool registered = RegisterRuntimeComponentSchemas(registry, error);
         constexpr std::array required{ "catalpa.identity", "catalpa.transform", "catalpa.relationship",
-            "catalpa.mesh_renderer", "catalpa.light", "catalpa.environment", "catalpa.camera" };
+            "catalpa.mesh_renderer", "catalpa.light", "catalpa.environment", "catalpa.camera",
+            "catalpa.script", "catalpa.behavior_graph", "catalpa.prefab_instance" };
         test.Check(registered && registry.GetSchemas().size() == required.size()
             && std::all_of(required.begin(), required.end(), [&](const auto* id) { return registry.Find(id) != nullptr; }),
             "Runtime registers each supported author component schema");

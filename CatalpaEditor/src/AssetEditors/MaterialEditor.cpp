@@ -191,6 +191,10 @@ namespace Catalpa::Editor {
             states.depthWrite = depthWrite;
         if (states.cull || states.blend || states.depthTest || states.depthWrite)
             ChangeMaterial(doc, {}, states, error);
+        DrawPreview(app, doc, error);
+    }
+
+    void MaterialEditor::DrawPreview(Application& app, AssetDocument& doc, std::string& error) {
         std::string previewError;
         if (!UpdateScene(app, doc, previewError)) {
             error = std::move(previewError);

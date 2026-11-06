@@ -59,7 +59,12 @@ namespace Catalpa::Tools {
         std::map<std::string, uint32_t, std::less<>> samplers;
     };
 
-    using ImportedValue = std::variant<MeshAsset, ImageAsset, ImportedMaterial, ModelAsset, EnvironmentAsset>;
+    struct ImportedAuthorProduct {
+        std::string type;
+        std::vector<std::byte> payload;
+        std::vector<AssetId> dependencies;
+    };
+    using ImportedValue = std::variant<MeshAsset, ImageAsset, ImportedMaterial, ModelAsset, EnvironmentAsset, ImportedAuthorProduct>;
 
     struct ImportedAsset {
         AssetId id;
@@ -76,6 +81,7 @@ namespace Catalpa::Tools {
     struct AssetBuildProduct {
         AssetRecord record;
         std::vector<std::byte> bytes;
+        bool external = false; // 已发布依赖保留原 locator 与来源，不被当前作者文件认领。
     };
 
     struct AssetBuildResult {

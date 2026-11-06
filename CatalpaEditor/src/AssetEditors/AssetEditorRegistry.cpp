@@ -1,6 +1,10 @@
 #include "AssetEditors/AssetEditorRegistry.h"
 #include "AssetEditors/MaterialEditor.h"
 #include "AssetEditors/TexturePreviewEditor.h"
+#include "AssetEditors/MaterialGraphEditor.h"
+#include "AssetEditors/BehaviorGraphEditor.h"
+#include "AssetEditors/ScriptEditor.h"
+#include "imgui.h"
 
 namespace Catalpa::Editor {
     namespace {
@@ -21,13 +25,22 @@ namespace Catalpa::Editor {
             }
             return docs.Open(std::move(fixed), error);
         }
+        AssetDocument* AuthorOnly(AssetId, const AssetManager&, DocumentManager&, std::string& error) {
+            error = "Open the source document from Documents or its successful author build";
+            return nullptr;
+        }
     }
 
     AssetEditorRegistry::AssetEditorRegistry() {
         std::string error;
         if (!Register("material_instance", &CreateEditor<MaterialEditor>, &OpenVersion<MaterialInstance>,
                       error) ||
-            !Register("image", &CreateEditor<TexturePreviewEditor>, &OpenVersion<ImageAsset>, error))
+            !Register("image", &CreateEditor<TexturePreviewEditor>, &OpenVersion<ImageAsset>, error) ||
+            !Register("script", &CreateEditor<ScriptEditor>, &AuthorOnly, error) ||
+            !Register("prefab", &CreateEditor<ScriptEditor>, &AuthorOnly, error) ||
+            !Register("material_definition", &CreateEditor<ScriptEditor>, &AuthorOnly, error) ||
+            !Register("material_graph", &CreateEditor<MaterialGraphEditor>, &AuthorOnly, error) ||
+            !Register("behavior_graph", &CreateEditor<BehaviorGraphEditor>, &AuthorOnly, error))
             throw std::logic_error(error);
     }
 
@@ -95,6 +108,8 @@ namespace Catalpa::Editor {
             m_Active = std::move(editor);
             m_ActiveType = found->first;
         }
+        ImGui::PushID(doc.Id().ToString().c_str());
+        struct Scope { ~Scope() { ImGui::PopID(); } } scope;
         m_Active->Draw(app, doc, text, error);
     }
 }

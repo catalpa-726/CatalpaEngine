@@ -369,6 +369,8 @@ project "Tests"
         "CatalpaEditor/src",
         "Catalpa/src",
         "Catalpa/third_party/spdlog/include",
+        -- 作者文档/图语义回归直接消费有界 JSON 适配；静态库不继承 Tools 的 include 路径。
+        "%{IncludeDir.JSON}",
         "%{IncludeDir.GLM}"
     }
 

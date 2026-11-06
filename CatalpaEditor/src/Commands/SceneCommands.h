@@ -5,6 +5,8 @@
 #include "Scene/Components/EnvironmentComponent.h"
 #include "Scene/Components/MeshRendererComponent.h"
 #include "Scene/Components/CameraComponent.h"
+#include "Scene/Components/ScriptComponent.h"
+#include "Scene/Components/BehaviorGraphComponent.h"
 
 namespace Catalpa::Editor {
     // UI 只提交意图；变更和历史记录在同一安全点完成。
@@ -21,4 +23,6 @@ namespace Catalpa::Editor {
     bool EditLight(SceneDocument&, PersistentEntityId, const LightComponent&, std::string&);
     bool EditEnvironment(SceneDocument&, PersistentEntityId, const EnvironmentComponent&, std::string&);
     bool EditMeshDisplay(SceneDocument&, PersistentEntityId, Math::Vec4 color, bool visible, std::string&);
+    bool EditScript(SceneDocument&,PersistentEntityId,std::optional<ScriptComponent>,std::string&);
+    bool EditBehaviorGraph(SceneDocument&,PersistentEntityId,std::optional<BehaviorGraphComponent>,std::string&);
 }

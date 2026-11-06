@@ -146,6 +146,22 @@ namespace Catalpa::Tests {
         return context.GetFailureCount() == 0 ? 0 : 1;
     }
 
+    int RunS10S13Tests()
+    {
+        CAT_INFO("[S10-S13 CPU/IO] Author scenes/prefabs, graph semantics/source generation, real Lua, behavior execution and Play isolation. No window/GPU initialization.");
+        TestContext context("S10-S13 CPU/IO");
+        try {
+            context.Check(RunS07S09Tests()==0,"Existing CPU/IO regression remains valid");
+            RunSceneAuthoringTests(context);
+            RunAuthorPipelineTests(context);
+            RunMaterialGraphTests(context);
+            RunScriptingTests(context);
+        } catch(const std::exception& exception) {context.Check(false,exception.what());}
+        catch(...) {context.Check(false,"Unexpected non-standard exception");}
+        CAT_INFO("[S10-S13 CPU/IO] {0} checks, {1} failures.",context.GetCheckCount(),context.GetFailureCount());
+        return context.GetFailureCount()==0?0:1;
+    }
+
     int RunS04Tests()
     {
         CAT_INFO("[S04 CPU/IO] Unified identity, schemas, cooked shader ABI, owned GPU-cache contracts, jobs and async versions. No window/GPU initialization.");

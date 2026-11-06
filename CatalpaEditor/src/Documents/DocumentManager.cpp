@@ -1,6 +1,58 @@
 #include "Documents/DocumentManager.h"
+#include "Core/PlatformServices.h"
 
 namespace Catalpa::Editor {
+    namespace {
+        struct AuthorFileIdentity {
+            std::filesystem::path path;
+            bool exists = false;
+        };
+
+        AuthorFileIdentity IdentifyAuthorFile(const std::filesystem::path& path) {
+            if (!path.is_absolute()) throw std::invalid_argument("Author path must be absolute");
+            const auto resolved = std::filesystem::weakly_canonical(path);
+            return {resolved, std::filesystem::exists(resolved)};
+        }
+
+        bool SameAuthorFile(const AuthorFileIdentity& file, const std::filesystem::path& other) {
+            const auto occupied = IdentifyAuthorFile(other);
+            // 相互包含只可能是同一路径；平台比较同时处理 Windows 的文件名大小写。
+            // 现有文件另查文件身份，使硬链接别名也复用同一作者会话。
+            return (IsPathWithinRoot(file.path, occupied.path) && IsPathWithinRoot(occupied.path, file.path)) ||
+                (file.exists && occupied.exists && std::filesystem::equivalent(file.path, occupied.path));
+        }
+    }
+
+    AssetDocument* DocumentManager::OpenSource(AssetId asset, std::string type, std::string source,
+        const std::filesystem::path& path, std::string& error) {
+        if (auto* existing = FindByPath(path, error)) {
+            auto* document = dynamic_cast<AssetDocument*>(existing);
+            if (!document || document->TypeKey() != type) {
+                error = "Author file is already open with another document type";
+                return nullptr;
+            }
+            m_Active = document->Id();
+            return document;
+        }
+        if (!error.empty()) return nullptr;
+        StableId id;
+        if (m_Open.size() >= 128 || !GenerateStableId(id, error)) {
+            if (error.empty()) error = "Too many open documents";
+            return nullptr;
+        }
+        auto document = std::make_unique<AssetDocument>(id, asset, std::move(type), std::move(source));
+        document->SetAuthorPath(path);
+        auto* result = document.get();
+        m_Open.emplace(id, std::move(document));
+        m_Active = id;
+        return result;
+    }
+
+    std::vector<Document*> DocumentManager::All() const {
+        std::vector<Document*> result;
+        for (const auto& [id, document] : m_Open) result.push_back(document.get());
+        return result;
+    }
     SceneDocument* DocumentManager::SceneFor(SceneManager& scenes, SceneHandle scene, std::string& error) {
         if (!scenes.GetScene(scene)) {
             error = "Scene was unloaded";
@@ -70,10 +122,34 @@ namespace Catalpa::Editor {
         return it == m_Open.end() ? nullptr : it->second.get();
     }
 
+    Document* DocumentManager::FindByPath(const std::filesystem::path& path, std::string& error) const try {
+        error.clear();
+        if (path.empty()) return nullptr; // 未保存文档没有文件身份，不能相互合并。
+        const auto identity = IdentifyAuthorFile(path);
+        for (const auto& [id, document] : m_Open)
+            if (!document->AuthorPath().empty() && SameAuthorFile(identity, document->AuthorPath()))
+                return document.get();
+        return nullptr;
+    } catch (const std::exception& exception) { error = exception.what(); return nullptr; }
+
     bool DocumentManager::HasDirtyDocuments() const {
         return std::any_of(m_Open.begin(), m_Open.end(),
                            [](const auto& item) { return item.second->History().Dirty(); });
     }
+
+    bool DocumentManager::CanSaveTo(const Document& document, const std::filesystem::path& target,
+        std::string& error) const try {
+        const auto identity = IdentifyAuthorFile(target);
+        for (const auto& [id, other] : m_Open) {
+            if (other.get() == &document || other->AuthorPath().empty()) continue;
+            if (SameAuthorFile(identity, other->AuthorPath())) {
+                error = "Save target belongs to another open document; activate or close that document first";
+                return false;
+            }
+        }
+        error.clear();
+        return true;
+    } catch (const std::exception& exception) { error = exception.what(); return false; }
 
     std::vector<AssetDocument*> DocumentManager::Assets() const {
         std::vector<AssetDocument*> assets;

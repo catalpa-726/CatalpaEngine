@@ -1,0 +1,295 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://catalpa.engine/schemas/material-graph.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "shadingModel": {
+      "enum": [
+        "pbr",
+        "unlit"
+      ]
+    },
+    "alphaMode": {
+      "enum": [
+        "opaque",
+        "mask",
+        "blend"
+      ]
+    },
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base_color": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": -3.4028234663852886e+38,
+            "maximum": 3.4028234663852886e+38
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "emissive": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": -3.4028234663852886e+38,
+            "maximum": 3.4028234663852886e+38
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "metallic": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": -3.4028234663852886e+38,
+            "maximum": 3.4028234663852886e+38
+          },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "roughness": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": -3.4028234663852886e+38,
+            "maximum": 3.4028234663852886e+38
+          },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "normal_scale": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": -3.4028234663852886e+38,
+            "maximum": 3.4028234663852886e+38
+          },
+          "minItems": 1,
+          "maxItems": 1
+        },
+        "alpha_cutoff": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "minimum": -3.4028234663852886e+38,
+            "maximum": 3.4028234663852886e+38
+          },
+          "minItems": 1,
+          "maxItems": 1
+        }
+      },
+      "required": [
+        "base_color",
+        "emissive",
+        "metallic",
+        "roughness",
+        "normal_scale",
+        "alpha_cutoff"
+      ]
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 512,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+            "not": {
+              "const": "00000000-0000-0000-0000-000000000000"
+            }
+          },
+          "type": {
+            "enum": [
+              "Constant",
+              "Parameter",
+              "UV",
+              "Time",
+              "TextureSample",
+              "Add",
+              "Multiply",
+              "Lerp",
+              "OneMinus",
+              "Sine",
+              "Normal",
+              "Alpha",
+              "Split",
+              "SurfaceOutput"
+            ]
+          },
+          "width": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4
+          },
+          "parameter": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "semantic": {
+            "type": "string",
+            "maxLength": 128,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "texture": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                "not": {
+                  "const": "00000000-0000-0000-0000-000000000000"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "minimum": -3.4028234663852886e+38,
+              "maximum": 3.4028234663852886e+38
+            },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "ports": {
+            "type": "object",
+            "maxProperties": 8,
+            "additionalProperties": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+              "not": {
+                "const": "00000000-0000-0000-0000-000000000000"
+              }
+            }
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "width",
+          "parameter",
+          "semantic",
+          "texture",
+          "value",
+          "ports"
+        ]
+      }
+    },
+    "links": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+            "not": {
+              "const": "00000000-0000-0000-0000-000000000000"
+            }
+          },
+          "from": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "node": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                "not": {
+                  "const": "00000000-0000-0000-0000-000000000000"
+                }
+              },
+              "port": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                "not": {
+                  "const": "00000000-0000-0000-0000-000000000000"
+                }
+              }
+            },
+            "required": [
+              "node",
+              "port"
+            ]
+          },
+          "to": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "node": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                "not": {
+                  "const": "00000000-0000-0000-0000-000000000000"
+                }
+              },
+              "port": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+                "not": {
+                  "const": "00000000-0000-0000-0000-000000000000"
+                }
+              }
+            },
+            "required": [
+              "node",
+              "port"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "from",
+          "to"
+        ]
+      }
+    },
+    "layout": {
+      "type": "object",
+      "maxProperties": 512,
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "not": {
+          "const": "00000000-0000-0000-0000-000000000000"
+        }
+      },
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "number",
+          "minimum": -3.4028234663852886e+38,
+          "maximum": 3.4028234663852886e+38
+        },
+        "minItems": 2,
+        "maxItems": 2
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "shadingModel",
+    "alphaMode",
+    "parameters",
+    "nodes",
+    "links",
+    "layout"
+  ],
+  "$comment": "Runtime validation enforces exact node port sets/types, one output, DAG, parameter ranges and one image per texture semantic; layout is excluded from the shader structural key."
+}

@@ -10,9 +10,14 @@ namespace Catalpa::Editor {
         SceneDocument* SceneFor(SceneManager&, SceneHandle, std::string& error);
         AssetDocument* Open(AssetVersionRef<MaterialInstance>, std::string& error);
         AssetDocument* Open(AssetVersionRef<ImageAsset>, std::string& error);
+        AssetDocument* OpenSource(AssetId, std::string type, std::string source,
+                                  const std::filesystem::path& path, std::string& error);
+        std::vector<Document*> All() const;
         Document* Active() const noexcept;
         Document* Find(StableId id) const noexcept;
+        Document* FindByPath(const std::filesystem::path&, std::string& error) const;
         bool HasDirtyDocuments() const;
+        bool CanSaveTo(const Document&, const std::filesystem::path& target, std::string& error) const;
         std::vector<AssetDocument*> Assets() const;
         void Activate(StableId);
         void Close(StableId);

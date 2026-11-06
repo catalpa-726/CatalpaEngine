@@ -44,6 +44,48 @@ namespace Catalpa {
         double pitch = 0.0;
     };
 
+    SystemDesc BoxGameplay::CameraSystem(std::shared_ptr<State> state)
+    {
+        SystemDesc gameplay;
+        gameplay.id = "sandbox.camera-movement";
+        gameplay.phase = SystemPhase::Gameplay;
+        gameplay.accesses = { { "input.actions", SystemAccessMode::Read }, { "scene.commands", SystemAccessMode::Write } };
+        gameplay.execute = [state](SystemContext& context) -> WorldStatus {
+            const auto* input = context.services.input;
+            // 编辑导航不拥有游戏相机。没有玩法输入时也不回写缓存的旧 Transform。
+            if (!input || !input->gameplayActive) return {};
+            const double dx = Action(input, "look.yaw"), dy = Action(input, "look.pitch");
+            state->yaw = std::remainder(state->yaw - dx * 0.0025, 2.0 * std::numbers::pi);
+            // 样例相机的明确俯仰范围，避免在极点翻转；鼠标位移不乘 dt 或 DPI。
+            state->pitch = std::clamp(state->pitch - dy * 0.0025, -std::numbers::pi / 2.0 + 0.01, std::numbers::pi / 2.0 - 0.01);
+            const Math::Quat yaw{ static_cast<float>(std::cos(state->yaw / 2.0)), 0.0f, static_cast<float>(std::sin(state->yaw / 2.0)), 0.0f };
+            const Math::Quat pitch{ static_cast<float>(std::cos(state->pitch / 2.0)), static_cast<float>(std::sin(state->pitch / 2.0)), 0.0f, 0.0f };
+            state->camera.rotation = yaw * pitch;
+            Math::Vec3 direction = (state->camera.rotation * Math::Vec3{ 1.0f, 0.0f, 0.0f }) * static_cast<float>(Action(input, "move.right"))
+                + Math::Vec3{ 0.0f, 1.0f, 0.0f } * static_cast<float>(Action(input, "move.up"))
+                + (state->camera.rotation * Math::Vec3{ 0.0f, 0.0f, -1.0f }) * static_cast<float>(Action(input, "move.forward"));
+            const float distance = glm::length(direction);
+            // 限制样例的合成移动方向，避免同时按多轴时超过 3 m/s；不改原始输入快照。
+            if (distance > 1.0f) direction /= distance;
+            state->camera.translation += direction * static_cast<float>(3.0 * context.time.fixedDeltaSeconds);
+            const EntityId camera = context.scene.Resolve(CameraId);
+            if (!camera.HasValue()) return { WorldError::InvalidEntity, "Sandbox camera no longer exists" };
+            return context.scene.QueueSetLocal(camera, state->camera);
+        };
+        gameplay.cloneForPlay = [seed = *state](Scene& target) {
+            auto independent = std::make_shared<State>(seed);
+            TransformComponent pose;
+            if (target.GetTransform(target.Resolve(CameraId), pose).IsSuccess()) {
+                independent->camera = pose.local;
+                const auto forward = pose.local.rotation * Math::Vec3{0, 0, -1};
+                independent->yaw = std::atan2(-forward.x, -forward.z);
+                independent->pitch = std::asin(std::clamp(double(forward.y), -1.0, 1.0));
+            }
+            return CameraSystem(std::move(independent));
+        };
+        return gameplay;
+    }
+
     bool BoxGameplay::Attach(SceneManager& scenes, AssetManager& assets, bool reversedZ, bool errorMaterial)
     {
         try {
@@ -140,35 +182,10 @@ namespace Catalpa {
         if (status.IsSuccess()) status = scene.CommitPending();
         if (!status.IsSuccess()) { CAT_ERROR("Cannot create sandbox content: {0}", status.message); Detach(); return false; }
 
-        SystemDesc gameplay;
-        gameplay.id = "sandbox.camera-movement";
-        gameplay.phase = SystemPhase::Gameplay;
-        gameplay.accesses = { { "input.actions", SystemAccessMode::Read }, { "scene.commands", SystemAccessMode::Write } };
-        gameplay.execute = [state = m_State](SystemContext& context) -> WorldStatus {
-            const auto* input = context.services.input;
-            // 编辑导航不拥有游戏相机。没有玩法输入时也不回写缓存的旧 Transform。
-            if (!input || !input->gameplayActive) return {};
-            const double dx = Action(input, "look.yaw"), dy = Action(input, "look.pitch");
-            state->yaw = std::remainder(state->yaw - dx * 0.0025, 2.0 * std::numbers::pi);
-            // 样例相机的明确俯仰范围，避免在极点翻转；鼠标位移不乘 dt 或 DPI。
-            state->pitch = std::clamp(state->pitch - dy * 0.0025, -std::numbers::pi / 2.0 + 0.01, std::numbers::pi / 2.0 - 0.01);
-            const Math::Quat yaw{ static_cast<float>(std::cos(state->yaw / 2.0)), 0.0f, static_cast<float>(std::sin(state->yaw / 2.0)), 0.0f };
-            const Math::Quat pitch{ static_cast<float>(std::cos(state->pitch / 2.0)), static_cast<float>(std::sin(state->pitch / 2.0)), 0.0f, 0.0f };
-            state->camera.rotation = yaw * pitch;
-            Math::Vec3 direction = (state->camera.rotation * Math::Vec3{ 1.0f, 0.0f, 0.0f }) * static_cast<float>(Action(input, "move.right"))
-                + Math::Vec3{ 0.0f, 1.0f, 0.0f } * static_cast<float>(Action(input, "move.up"))
-                + (state->camera.rotation * Math::Vec3{ 0.0f, 0.0f, -1.0f }) * static_cast<float>(Action(input, "move.forward"));
-            const float distance = glm::length(direction);
-            // 限制样例的合成移动方向，避免同时按多轴时超过 3 m/s；不改原始输入快照。
-            if (distance > 1.0f) direction /= distance;
-            state->camera.translation += direction * static_cast<float>(3.0 * context.time.fixedDeltaSeconds);
-            const EntityId camera = context.scene.Resolve(CameraId);
-            if (!camera.HasValue()) return { WorldError::InvalidEntity, "Sandbox camera no longer exists" };
-            return context.scene.QueueSetLocal(camera, state->camera);
-        };
+        auto gameplay = CameraSystem(m_State);
         status = m_Module.Install(scene, std::move(gameplay));
         if (!status.IsSuccess()) { CAT_ERROR("Cannot install sandbox gameplay: {0}", status.message); Detach(); return false; }
-        CAT_INFO("F6 pauses simulation; F7 advances one paused tick. In the editor, navigate in Scene Viewport.");
+        CAT_INFO("Navigate with the independent Scene Viewport camera. Use Play/Pause/Step/Stop for game simulation; F6/F7 remain standalone-runtime controls.");
         CAT_INFO("Scene sample: 4 instances share 2 meshes; near=0.1m, far=30m, reversed-Z={0}.", reversedZ);
         return true;
         } catch (const std::bad_alloc&) {

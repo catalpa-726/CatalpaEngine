@@ -53,6 +53,10 @@ namespace Catalpa {
                 }
                 return true;
             }
+            case ComponentFieldKind::Object: {
+                const auto* object=std::get_if<ArchiveValue::Object>(&value.data);
+                return object && object->size()<=65536;
+            }
             case ComponentFieldKind::Float2:
             case ComponentFieldKind::Float3:
             case ComponentFieldKind::Float4: {
@@ -95,13 +99,13 @@ namespace Catalpa {
                 for (const auto& field : schema.fields) {
                     if (!ValidKey(field.id) || field.id == "schemaVersion" || !fields.insert(field.id).second
                         || field.displayName.size() > 1024 || field.displayName.find('\0') != std::string::npos
-                        || static_cast<unsigned>(field.kind) > static_cast<unsigned>(ComponentFieldKind::StableIdArray)
+                        || static_cast<unsigned>(field.kind) > static_cast<unsigned>(ComponentFieldKind::Object)
                         || (field.minimum && !std::isfinite(*field.minimum)) || (field.maximum && !std::isfinite(*field.maximum))
                         || (field.minimum && field.maximum && *field.minimum > *field.maximum)) {
                         error = "Component field schema is invalid: " + field.id; return false;
                     }
                     if ((field.minimum || field.maximum) && (field.kind == ComponentFieldKind::Bool || field.kind == ComponentFieldKind::String
-                        || field.kind == ComponentFieldKind::StableId || field.kind == ComponentFieldKind::StableIdArray)) {
+                        || field.kind == ComponentFieldKind::StableId || field.kind == ComponentFieldKind::StableIdArray || field.kind == ComponentFieldKind::Object)) {
                         error = "Nonnumeric component fields cannot declare numeric ranges"; return false;
                     }
                 }

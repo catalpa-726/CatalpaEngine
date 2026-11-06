@@ -95,7 +95,8 @@ namespace Catalpa {
             parent != b.parent || local.translation != b.local.translation ||
             local.rotation != b.local.rotation || local.scale != b.local.scale ||
             camera.has_value() != b.camera.has_value() || mesh.has_value() != b.mesh.has_value() ||
-            light.has_value() != b.light.has_value() || environment.has_value() != b.environment.has_value())
+            light.has_value() != b.light.has_value() || environment.has_value() != b.environment.has_value() ||
+            script != b.script || behavior != b.behavior || prefab != b.prefab)
             return false;
         if (camera && (camera->lens != b.camera->lens || camera->enabled != b.camera->enabled ||
                        camera->priority != b.camera->priority || camera->viewId != b.camera->viewId ||
@@ -132,8 +133,7 @@ namespace Catalpa {
         return true;
     }
 
-    WorldStatus Scene::RemoveForUndo(EntityId root, SceneSubtreeSnapshot& output,
-                                     const SceneSubtreeSnapshot* expected) try {
+    WorldStatus Scene::CaptureForUndo(EntityId root, SceneSubtreeSnapshot& output) const try {
         if (!CanEditNow())
             return {WorldError::Busy, "Scene is not at an edit boundary"};
         if (auto status = ValidateEntity(root); !status.IsSuccess())
@@ -190,6 +190,12 @@ namespace Catalpa {
                 return s;
             if (auto s = capture(node.environment); !s.IsSuccess())
                 return s;
+            if (auto s = capture(node.script); !s.IsSuccess())
+                return s;
+            if (auto s = capture(node.behavior); !s.IsSuccess())
+                return s;
+            if (auto s = capture(node.prefab); !s.IsSuccess())
+                return s;
             size_t count = 0;
             if (auto s = m_World.CountComponents(id, count); !s.IsSuccess())
                 return s;
@@ -198,6 +204,16 @@ namespace Catalpa {
             if (auto it = children.find(id.index); it != children.end())
                 order.insert(order.end(), it->second.begin(), it->second.end());
         }
+        output = std::move(snapshot);
+        return {};
+    } catch (const std::bad_alloc&) {
+        return {WorldError::AllocationFailed, "Cannot snapshot subtree"};
+    }
+
+    WorldStatus Scene::RemoveForUndo(EntityId root, SceneSubtreeSnapshot& output,
+                                     const SceneSubtreeSnapshot* expected) try {
+        SceneSubtreeSnapshot snapshot;
+        if (auto status = CaptureForUndo(root, snapshot); !status.IsSuccess()) return status;
         if (expected) {
             if (expected->m_World != snapshot.m_World || expected->m_Nodes.size() != snapshot.m_Nodes.size())
                 return {WorldError::Busy, "Subtree changed outside this command"};
@@ -210,13 +226,11 @@ namespace Catalpa {
                     return {WorldError::Busy, "Subtree author data changed"};
             }
         }
-        if (auto s = DestroySubtree(root); !s.IsSuccess())
-            return s;
+        if (auto status = DestroySubtree(root); !status.IsSuccess()) return status;
         output = std::move(snapshot);
         return {};
     } catch (const std::bad_alloc&) {
-
-        return {WorldError::AllocationFailed, "Cannot snapshot subtree"};
+        return {WorldError::AllocationFailed, "Cannot compare subtree snapshot"};
     }
 
     WorldStatus Scene::RestoreForUndo(const SceneSubtreeSnapshot& snapshot, EntityId reboundParent) try {
@@ -267,6 +281,15 @@ namespace Catalpa {
                         return rollback(s);
                 if (node.environment)
                     if (auto s = m_World.Add(id, *node.environment); !s.IsSuccess())
+                        return rollback(s);
+                if (node.script)
+                    if (auto s = m_World.Add(id, *node.script); !s.IsSuccess())
+                        return rollback(s);
+                if (node.behavior)
+                    if (auto s = m_World.Add(id, *node.behavior); !s.IsSuccess())
+                        return rollback(s);
+                if (node.prefab)
+                    if (auto s = m_World.Add(id, *node.prefab); !s.IsSuccess())
                         return rollback(s);
             }
         } catch (...) {

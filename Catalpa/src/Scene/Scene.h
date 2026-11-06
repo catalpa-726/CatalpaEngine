@@ -19,6 +19,9 @@ namespace Catalpa {
     class SceneSubtreeSnapshot;
     struct LightComponent;
     struct EnvironmentComponent;
+    struct ScriptComponent;
+    struct BehaviorGraphComponent;
+    struct PrefabInstanceComponent;
 
     // 独占World及其结构命令；本步主线程同步操作，不承担资产加载或GPU资源。
     class CATALPA_API Scene {
@@ -54,7 +57,14 @@ namespace Catalpa {
         [[nodiscard]] WorldStatus QueueSetEnvironment(EntityId entity, const EnvironmentComponent&);
         [[nodiscard]] WorldStatus QueueRemoveLight(EntityId);
         [[nodiscard]] WorldStatus QueueRemoveEnvironment(EntityId);
+        [[nodiscard]] WorldStatus QueueSetScript(EntityId, const ScriptComponent&);
+        [[nodiscard]] WorldStatus QueueSetBehaviorGraph(EntityId, const BehaviorGraphComponent&);
+        [[nodiscard]] WorldStatus QueueSetPrefabInstance(EntityId, const PrefabInstanceComponent&);
+        [[nodiscard]] WorldStatus QueueRemoveScript(EntityId);
+        [[nodiscard]] WorldStatus QueueRemoveBehaviorGraph(EntityId);
+        [[nodiscard]] WorldStatus QueueRemovePrefabInstance(EntityId);
         // 文档命令在主线程安全点独占执行；无损捕获失败时保留原实体。
+        [[nodiscard]] WorldStatus CaptureForUndo(EntityId root,SceneSubtreeSnapshot& output) const;
         [[nodiscard]] WorldStatus RemoveForUndo(EntityId root, SceneSubtreeSnapshot& output,
                                                 const SceneSubtreeSnapshot* expected = nullptr);
         // 仅文档自己恢复过父实体时可显式传入已校验的代次；默认要求捕获时的父实体仍有效。
@@ -78,6 +88,8 @@ namespace Catalpa {
     private:
         friend class TransformSystem;
         friend class ModelInstantiation;
+        friend class ScriptCommands;
+        friend class PrefabReconciler;
         [[nodiscard]] WorldStatus ValidateEntity(EntityId entity) const noexcept;
         [[nodiscard]] WorldStatus InitializeEntity(EntityId entity, PersistentEntityId persistent, const std::string& name, const Math::TransformTRS& local, EntityId parent);
         [[nodiscard]] WorldStatus DestroySubtree(EntityId entity);

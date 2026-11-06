@@ -4,7 +4,7 @@
 
 namespace Catalpa {
     // 组件持久字段schema，不持C++字节offset，不将RTTI当稳定名称。
-    enum class ComponentFieldKind { Bool, Int, UInt, Number, String, Float2, Float3, Float4, StableId, StableIdArray };
+    enum class ComponentFieldKind { Bool, Int, UInt, Number, String, Float2, Float3, Float4, StableId, StableIdArray, Object };
     struct ComponentFieldSchema {
         std::string id, displayName;
         ComponentFieldKind kind = ComponentFieldKind::Number;

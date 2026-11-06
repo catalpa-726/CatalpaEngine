@@ -11,6 +11,11 @@
 #include "Lighting/LightValidation.h"
 #include "Lighting/EnvironmentSettings.h"
 #include "Camera/CameraProjection.h"
+#include "Scene/SceneAssetLoader.h"
+#include "Scene/PrefabAsset.h"
+#include "Scripting/ScriptAsset.h"
+#include "Scripting/BehaviorGraphAsset.h"
+#include "Scripting/ScriptValueArchive.h"
 
 namespace Catalpa {
     namespace {
@@ -95,6 +100,37 @@ namespace Catalpa {
     {
         try {
             std::vector<ComponentSchema> schemas;
+            const auto properties=[](const ArchiveValue& data,std::string& error) {
+                ScriptValues values;
+                const auto* fields=data.Find("properties");
+                return fields && DecodeScriptValues(*fields,values,error);
+            };
+            schemas.push_back({"catalpa.script",1,{{"asset","Script asset",ComponentFieldKind::StableId,true},
+                {"enabled","Enabled",ComponentFieldKind::Bool,true},{"properties","Properties",ComponentFieldKind::Object,true}},properties});
+            schemas.push_back({"catalpa.behavior_graph",1,{{"asset","Behavior graph",ComponentFieldKind::StableId,true},
+                {"enabled","Enabled",ComponentFieldKind::Bool,true},{"variables","Initial variables",ComponentFieldKind::Object,true}},
+                [](const ArchiveValue& data,std::string& error) {
+                    ScriptValues values;
+                    const auto* fields=data.Find("variables");
+                    if(!fields || !DecodeScriptValues(*fields,values,error)) return false;
+                    return ValidateBehaviorVariables(values,error);
+                }});
+            schemas.push_back({"catalpa.prefab_instance",1,{{"asset","Prefab source",ComponentFieldKind::StableId,true},
+                {"version","Source version",ComponentFieldKind::UInt,true,1.0},
+                {"entities","Local to instance map",ComponentFieldKind::Object,true},
+                {"overrides","Baseline and overrides",ComponentFieldKind::Object,true}},
+                [](const ArchiveValue& data,std::string& error) {
+                    const auto* field=data.Find("entities");const auto* map=field?std::get_if<ArchiveValue::Object>(&field->data):nullptr;
+                    std::set<StableId> instances;
+                    if(!map || map->empty()) {error="Prefab entity mapping is empty";return false;}
+                    for(const auto& [local,value]:*map) {
+                        const auto* text=std::get_if<std::string>(&value.data);StableId a,b;
+                        if(!StableId::TryParse(local,a) || !text || !StableId::TryParse(*text,b) || !instances.insert(b).second) {
+                            error="Prefab entity mapping is invalid or aliases another local entity";return false;
+                        }
+                    }
+                    return true;
+                }});
             schemas.push_back({"catalpa.identity",1,{{"persistent_id","Persistent ID",ComponentFieldKind::StableId,true},{"name","Name",ComponentFieldKind::String,true}}, {}});
             schemas.push_back({"catalpa.transform",1,{{"translation","Translation (m)",ComponentFieldKind::Float3,true},
                 {"rotation","Rotation (w/x/y/z)",ComponentFieldKind::Float4,true},{"scale","Scale",ComponentFieldKind::Float3,true}},TransformSchema});
@@ -145,7 +181,11 @@ namespace Catalpa {
             && RegisterGeometryAssetLoaders(manager,error)
             && RegisterImageAssetLoader(manager,error)
             && RegisterMaterialAssetLoaders(manager,error)
-            && RegisterEnvironmentAssetLoader(manager,error);
+            && RegisterEnvironmentAssetLoader(manager,error)
+            && RegisterSceneAssetLoader(manager,error)
+            && RegisterPrefabAssetLoader(manager,error)
+            && RegisterScriptAssetLoader(manager,error)
+            && RegisterBehaviorGraphAssetLoader(manager,error);
     }
     AssetId BuiltinMaterialId(BuiltinMaterialKind kind,bool definition) noexcept
     {

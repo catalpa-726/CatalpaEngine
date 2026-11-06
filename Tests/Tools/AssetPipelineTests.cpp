@@ -20,6 +20,7 @@
 #include "Runtime/RuntimeRegistration.h"
 #include "Scene/ModelInstantiation.h"
 #include "Scene/Components/MeshRendererComponent.h"
+#include "Scripting/ScriptAsset.h"
 #include "Panels/BuildPanel.h"
 #include "Log/LogSubscription.h"
 #include "Log/Log.h"
@@ -772,6 +773,79 @@ Connections: {
             context.Check(cached.success && cached.cacheHit && cached.key == built.key,
                           "A detached source file no longer affects the build fingerprint");
         }
+    }
+
+    void RunAuthorPipelineTests(TestContext& context) {
+        // 覆盖作者生产链的真实边界，而不只用内存对象绕过 Importer/Cook/Loader。
+        Fixture fixture;
+        std::filesystem::path executable;
+        std::string error;
+        if (!CheckOperation(context, fixture.Create(error) && GetExecutableDirectory(executable, error), error))
+            return;
+        const auto shaders = executable / "Resources" / "Shaders";
+        if (!CheckOperation(context, fixture.Store("Raw/motion.lua", "return { speed = 2 }", error), error))
+            return;
+        const auto module = AssetCooker::Build(fixture.Request("motion.lua", shaders));
+        if (!CheckOperation(context, module.success, module.error)) return;
+
+        ScriptAsset source;
+        source.source = "return { update = function(dt) local m = require('motion'); scene.translate(m.speed * dt, 0, 0) end }";
+        source.modules.emplace("motion", module.primary);
+        std::string author;
+        if (!CheckOperation(context, WriteScriptAsset(source, author, error) &&
+            fixture.Store("Raw/move.script", author, error), error)) return;
+        const auto request = fixture.Request("move.script", shaders);
+        const auto built = AssetCooker::Build(request);
+        if (!CheckOperation(context, built.success, built.error)) return;
+
+        JobSystem jobs;
+        if (!CheckOperation(context, jobs.Start({2, 64}, error), error)) return;
+        AssetManager manager(jobs);
+        if (!CheckOperation(context, RegisterRuntimeAssetLoaders(manager, error), error)) return;
+        const auto install = [&](const AssetBuildResult& result) {
+            AssetRegistry catalog;
+            return catalog.Replace(result.publishedCatalog, error) &&
+                manager.InstallCookedCatalog(result.cookedRoot, catalog, error, true) &&
+                LoadAll(manager, result.records, error);
+        };
+        if (!CheckOperation(context, install(built), error)) return;
+        AssetVersionRef<ScriptAsset> first;
+        bool fallback = false;
+        if (!CheckOperation(context, manager.Acquire(built.primary, first, fallback, error) && !fallback, error)) return;
+        const auto oldModule = first.Get()->moduleVersions.find("motion");
+        if (!CheckOperation(context, oldModule != first.Get()->moduleVersions.end(), "Cooked script pins its declared module")) return;
+        context.Check(oldModule->second.Get()->source == "return { speed = 2 }",
+            "Author import, container dependencies and runtime module decode preserve source bytes");
+
+        if (!CheckOperation(context, fixture.Store("Raw/motion.lua", "return { speed = 3 }", error), error)) return;
+        const auto nextModule = AssetCooker::Build(fixture.Request("motion.lua", shaders));
+        if (!CheckOperation(context, nextModule.success, nextModule.error)) return;
+        const auto rebuilt = AssetCooker::Build(request);
+        if (!CheckOperation(context, rebuilt.success, rebuilt.error)) return;
+        context.Check(rebuilt.primary == built.primary && rebuilt.key != built.key,
+            "Unchanged author text is recooked when its fixed module dependency changes");
+        if (!CheckOperation(context, install(rebuilt), error)) return;
+        AssetVersionRef<ScriptAsset> second;
+        if (!CheckOperation(context, manager.Acquire(rebuilt.primary, second, fallback, error) && !fallback, error)) return;
+        const auto newModule = second.Get()->moduleVersions.find("motion");
+        context.Check(newModule != second.Get()->moduleVersions.end() &&
+            second.GetVersion() != first.GetVersion() &&
+            newModule->second.GetVersion() != oldModule->second.GetVersion() &&
+            newModule->second.Get()->source == "return { speed = 3 }" &&
+            oldModule->second.Get()->source == "return { speed = 2 }",
+            "Republished script and module versions do not mutate the retained old closure");
+
+        std::vector<std::byte> before, after, preservedSource;
+        if (!CheckOperation(context, Read(rebuilt.manifest, before, error) &&
+            fixture.Store("Raw/move.script", "{bad author JSON", error), error)) return;
+        const auto invalid = AssetCooker::Build(request);
+        context.Check(!invalid.success && Read(rebuilt.manifest, after, error) && before == after,
+            "Invalid author source leaves the published catalog unchanged");
+        context.Check(Read(request.source, preservedSource, error) &&
+            std::string(reinterpret_cast<const char*>(preservedSource.data()), preservedSource.size()) == "{bad author JSON",
+            "Failed author Cook never repairs or overwrites source data");
+        manager.Shutdown();
+        jobs.Shutdown();
     }
 
     void RunAssetPipelineTests(TestContext& context) {

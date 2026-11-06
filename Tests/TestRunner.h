@@ -73,4 +73,9 @@ namespace Catalpa::Tests {
     void RunEditorCommandTests(TestContext&);
     void RunSimulationLifecycleTests(TestContext&);
     int RunS07S09Tests(); // 联合 CPU/IO 契约；实际 GPU 画面和读回由窗口验收。
+    void RunSceneAuthoringTests(TestContext&);
+    void RunAuthorPipelineTests(TestContext&);
+    void RunMaterialGraphTests(TestContext&);
+    void RunScriptingTests(TestContext&);
+    int RunS10S13Tests();
 }

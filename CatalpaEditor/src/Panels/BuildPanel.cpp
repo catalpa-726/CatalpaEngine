@@ -575,7 +575,9 @@ namespace Catalpa::Editor {
                 if (found != m_RecordIndices.end()) {
                     const auto* selected = &m_Result.records[found->second];
                     const bool environment = selected->type.ToString() == "environment";
-                    if (selected->type.ToString() == "material_instance" || selected->type.ToString() == "image" || environment) {
+                    if (selected->type.ToString() == "material_instance" || selected->type.ToString() == "image" || environment ||
+                        selected->type.ToString() == "scene" || selected->type.ToString() == "prefab" ||
+                        selected->type.ToString() == "script" || selected->type.ToString() == "behavior_graph" || selected->type.ToString()=="material_definition") {
                         ImGui::BeginDisabled(Busy() || !m_AssetsReady);
                         const auto action = environment ? text("build.apply_environment","Apply to selected entity","ApplyEnvironment")
                                                         : text("build.edit_asset","Open asset editor","EditAsset");

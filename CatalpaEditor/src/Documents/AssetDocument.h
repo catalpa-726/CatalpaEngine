@@ -10,14 +10,20 @@ namespace Catalpa::Editor {
       public:
         AssetDocument(StableId id, AssetVersionRef<MaterialInstance> source);
         AssetDocument(StableId id, AssetVersionRef<ImageAsset> source);
+        AssetDocument(StableId id, AssetId asset, std::string type, std::string source);
+        bool Serialize(std::string&, std::string& error) const override;
+        const std::shared_ptr<const std::string>& Source() const noexcept { return m_Source; }
+        bool ReplaceSource(const std::shared_ptr<const std::string>& expected,
+                           std::shared_ptr<const std::string> next, std::string& error);
 
         AssetId Asset() const noexcept {
             return m_Asset;
         }
+        void SetSourceIdentity(AssetId id) { if (m_Source && id.HasValue()) m_Asset = id; }
 
         // 与 Cook 记录共用稳定类型键；文档固定版本与显示用编辑器分别管理。
-        std::string_view TypeKey() const noexcept {
-            return m_Material ? "material_instance" : (m_Image.HasValue() ? "image" : "");
+        std::string_view TypeKey() const noexcept override {
+            return m_Material ? "material_instance" : (m_Image.HasValue() ? "image" : std::string_view(m_Type));
         }
 
         uint64_t SourceVersion() const noexcept {
@@ -71,5 +77,7 @@ namespace Catalpa::Editor {
         std::shared_ptr<const Tools::AssetBuildRequest> m_Recipe;
         std::filesystem::path m_Report;
         std::vector<Tools::AssetBuildDiagnostic> m_Diagnostics;
+        std::string m_Type;
+        std::shared_ptr<const std::string> m_Source;
     };
 }

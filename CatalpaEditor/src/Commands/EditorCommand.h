@@ -17,6 +17,7 @@ namespace Catalpa::Editor {
 
         virtual bool Apply(Document&, std::string& error) = 0;
         virtual bool Revert(Document&, std::string& error) = 0;
+        virtual bool TryMerge(const EditorCommand&) noexcept { return false; }
 
       private:
         StableId m_Document;

@@ -16,6 +16,7 @@
 #include "Core/IO/AtomicFileWriter.h"
 #include "Core/PlatformServices.h"
 #include "Shaders/ShaderLibrary.h"
+#include "Materials/MaterialValidation.h"
 #include <assimp/version.h>
 #include <fastgltf/types.hpp>
 #include <nlohmann/json.hpp>
@@ -150,6 +151,12 @@ namespace Catalpa::Tools {
             }
             for (auto& image : packedImages) imported.assets.push_back(std::move(image));
             std::map<AssetId, AssetRecord> ready;
+            AssetRegistry existing;
+            if (std::filesystem::exists(context.request.project.cookedRoot / "Assets.manifest")) {
+                std::vector<std::byte> catalog;
+                if (!Read(context.request.project.cookedRoot / "Assets.manifest", 64*1024*1024, catalog, error) ||
+                    !AssetManifest::Read(catalog, existing, error)) return false;
+            }
             size_t encodedBytes = 0;
             for (const auto& product : products) {
                 ready.emplace(product.record.id, product.record);
@@ -239,6 +246,97 @@ namespace Catalpa::Tools {
                         !append(std::move(product)))
                         return false;
                 }
+            std::set<AssetId> visiting;
+            std::function<bool(AssetId)> external = [&](AssetId id) {
+                if (!context.CheckCancelled(error)) return false;
+                if (ready.contains(id)) return true;
+                if (visiting.size() >= 256) {
+                    error = "Author dependency nesting exceeds 256 assets at " + id.ToString();
+                    return false;
+                }
+                if (!visiting.insert(id).second) { error = "Author dependency cycle at " + id.ToString(); return false; }
+                const auto* record = existing.Find(id);
+                if (!record) { error = "Cook the referenced asset first: " + id.ToString(); return false; }
+                for (auto dep : record->dependencies) if (!external(dep)) return false;
+                AssetBuildProduct product; product.record = *record; product.external = true;
+                const auto file = context.request.project.cookedRoot / std::filesystem::u8path(record->locator.path.RelativePath());
+                AssetContainer checked;
+                if (!IsPathWithinRoot(std::filesystem::weakly_canonical(file), context.request.project.cookedRoot) ||
+                    !Read(file, 96*1024*1024, product.bytes, error) || AssetBuildDigest(product.bytes) != record->contentHash ||
+                    !AssetContainerReader::Read(product.bytes, checked, error, 96*1024*1024) || checked.id != id ||
+                    checked.version != record->version || checked.type != record->type) {
+                    if (error.empty()) error = "Cooked author dependency changed";
+                    return false;
+                }
+                if (checked.dependencies.size() != record->dependencies.size()) {
+                    error = "Cooked author dependency list differs from its catalog: " + id.ToString();
+                    return false;
+                }
+                for(const auto& dependency:checked.dependencies) {
+                    if (std::find(record->dependencies.begin(), record->dependencies.end(), dependency.id) == record->dependencies.end()) {
+                        error = "Cooked author dependency is absent from its catalog: " + id.ToString();
+                        return false;
+                    }
+                    const auto resolved=ready.find(dependency.id);
+                    if(resolved==ready.end() || resolved->second.version!=dependency.version || resolved->second.contentHash!=dependency.contentHash) {
+                        error="A referenced cooked dependency is stale; rebuild its source: "+id.ToString();return false;
+                    }
+                }
+                visiting.erase(id);
+                return append(std::move(product));
+            };
+            std::map<AssetId, const ImportedAuthorProduct*> authors;
+            for (const auto& value : imported.assets)
+                if (const auto* author = std::get_if<ImportedAuthorProduct>(&value.value)) authors.emplace(value.id, author);
+            while (!authors.empty()) {
+                bool progressed = false;
+                for (auto it = authors.begin(); it != authors.end();) {
+                    if (!context.CheckCancelled(error)) return false;
+                    const auto& value = *it->second;
+                    if (std::any_of(value.dependencies.begin(), value.dependencies.end(), [&](AssetId id) { return authors.contains(id); })) { ++it; continue; }
+                    std::vector<AssetRecord> dependencies;
+                    for (auto id : value.dependencies) {
+                        if (!external(id)) return false;
+                        dependencies.push_back(ready.at(id));
+                    }
+                    auto payload = value.payload;
+                    if (value.type == "material_instance") {
+                        auto doc = Json::parse(reinterpret_cast<const char*>(payload.data()), reinterpret_cast<const char*>(payload.data() + payload.size()));
+                        AssetId definition;
+                        if (!AssetId::TryParse(doc.at("definitionId").get<std::string>(), definition) || !ready.contains(definition)) {
+                            error = "Graph instance definition was not cooked"; return false;
+                        }
+                        const auto authorVersion=doc.at("definitionVersion").get<uint64_t>();
+                        if(authorVersion && authorVersion!=ready.at(definition).version) {
+                            error="Material definition version changed; update the author material explicitly";return false;
+                        }
+                        doc["definitionVersion"] = ready.at(definition).version;
+                        const auto text = doc.dump();
+                        const auto product=std::find_if(products.begin(),products.end(),[&](const auto& p){return p.record.id==definition;});
+                        AssetContainer encoded;
+                        std::shared_ptr<const MaterialDefinition> schema;
+                        if(product==products.end() || !AssetContainerReader::Read(product->bytes,encoded,error,96*1024*1024) ||
+                            !ParseMaterialDefinition({reinterpret_cast<const char*>(encoded.payload.data()),encoded.payload.size()},schema,error)) return false;
+                        AssetVersionRef<MaterialDefinition> fixed;
+                        std::shared_ptr<const MaterialInstance> valid;
+                        if(!AssetVersionRef<MaterialDefinition>::TryCreate(definition,ready.at(definition).version,schema,fixed,error) ||
+                            !ParseMaterialInstance(text,fixed,valid,error)) return false;
+                        std::set<AssetId> direct;
+                        for(const auto& dependency:dependencies) direct.insert(dependency.id);
+                        for(const auto& parameter:valid->parameters) if(const auto* image=std::get_if<AssetHandle<ImageAsset>>(&parameter.value);image && image->HasValue()) {
+                            if(!external(image->id)) return false;
+                            if(direct.insert(image->id).second) dependencies.push_back(ready.at(image->id));
+                        }
+                        const auto bytes = std::as_bytes(std::span(text.data(), text.size()));
+                        payload.assign(bytes.begin(), bytes.end());
+                    }
+                    AssetBuildProduct product;
+                    if (!AssetArchiveWriter::Encode(it->first, value.type, payload, dependencies, product, error) || !append(std::move(product))) return false;
+                    it = authors.erase(it);
+                    progressed = true;
+                }
+                if (!progressed) { error = "Author asset dependency cycle"; return false; }
+            }
             return true;
         }
 
@@ -496,7 +594,9 @@ namespace Catalpa::Tools {
                 }
                 return context.CheckCancelled(error);
             };
-            if (AssetBuildCache::Load(context, signature, result, error)) {
+            // 作者引用还取决于当前 cooked 目录；其 shader 使用独立、完整指纹缓存。
+            // 不以仅包含源文件的旧导入索引跳过领域依赖版本检查。
+            if (!importer->Name().starts_with("author-") && AssetBuildCache::Load(context, signature, result, error)) {
                 size_t invalidated = 0;
                 if (!inputsStable() || !PublishManifest(context, result, invalidated, error))
                     return fail(error);
@@ -524,20 +624,27 @@ namespace Catalpa::Tools {
             result.key = AssetDependencyScanner::Key(context, signature);
             result.cookedRoot = current.cookedRoot;
             result.manifest = current.cookedRoot / "Assets.manifest";
-            const auto versionRoot = std::filesystem::path("versions") / result.key;
-            result.report = current.cookedRoot / versionRoot / "SourceMap.json";
             std::vector<AssetBuildProduct> products;
             products.push_back(std::move(shaderProduct));
             products.push_back(std::move(pbrProduct));
             progress("Cooking geometry, images, materials and models", 0, imported.assets.size());
             if (!CookDomainProducts(context, imported, *shader, products, result.mappings, error))
                 return fail(error);
+            if (importer->Name().starts_with("author-")) {
+                Json versions=Json::array({result.key});
+                for(const auto& product:products) versions.push_back({product.record.id.ToString(),product.record.version,product.record.contentHash});
+                const auto text=versions.dump();
+                result.key=AssetBuildDigest(std::as_bytes(std::span(text.data(),text.size())));
+            }
+            const auto versionRoot = std::filesystem::path("versions") / result.key;
+            result.report = current.cookedRoot / versionRoot / "SourceMap.json";
 
             const auto mount =
                 "assets-" +
                 AssetBuildIdentity(current.id.ToString() + AssetPathText(current.cookedRoot)).ToString();
             const auto sourceOwner = context.Identity("request").ToString();
             for (auto& product : products) {
+                if (product.external) { result.records.push_back(product.record); continue; }
                 // 容器哈希已包含资产身份。相同对象复用已有字节；源目录标明重导入时应替换的记录。
                 const auto relative = std::filesystem::path("objects") /
                                       (product.record.id == unlit || product.record.id == pbr ? "shared" : sourceOwner) /

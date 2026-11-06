@@ -43,4 +43,6 @@ namespace Catalpa::Tools {
     // 显式保存作者项目描述；目标必须为 Load 返回的已 canonical 路径，别名目标直接拒绝。
     // 调用者保证作者目录拓扑稳定；不承诺抵御并发恶意替换，不写原素材/元数据、不自动建目录。
     bool SaveProjectConfig(const ProjectConfig& config, std::string& error);
+    // 设置面板先构造完整会话，再保存并无分配地交换；不在磁盘提交后重新执行可能失败的加载。
+    bool PrepareProjectSession(const ProjectConfig&,std::unique_ptr<ProjectSession>&,std::string& error);
 }

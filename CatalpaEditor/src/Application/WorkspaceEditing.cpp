@@ -1,4 +1,5 @@
 #include "Application/WorkspaceEditing.h"
+#include "AssetPipeline/AssetImportRegistry.h"
 #include "Core/Application.h"
 #include "Core/Window.h"
 #include "Commands/AssetCommands.h"
@@ -25,7 +26,9 @@ namespace Catalpa::Editor {
                     text("edit.import_settings", "Source import settings", "ImportSettings").c_str()))
                 return;
             const auto& recipe = *doc.Recipe();
-            ImGui::TextWrapped("%s", Tools::AssetPathText(recipe.source).c_str());
+            const bool authorSource = bool(doc.Source());
+            const auto& source = authorSource ? doc.AuthorPath() : recipe.source;
+            ImGui::TextWrapped("%s", Tools::AssetPathText(source).c_str());
             const auto& settings = recipe.settings;
             double scale = settings.unitScale;
             bool normals = settings.generateNormals, tangents = settings.generateTangents;
@@ -38,9 +41,15 @@ namespace Catalpa::Editor {
                 text("edit.tangents", "Generate missing tangents", "DraftTangents").c_str(), &tangents);
             if (changed)
                 ChangeImportSettings(doc, scale, normals, tangents, error);
-            ImGui::BeginDisabled(build->Busy());
-            if (ImGui::Button(text("edit.reimport", "Rebuild from this draft", "Reimport").c_str()))
-                build->Start(*doc.Recipe(), error);
+            const bool needsSave = authorSource && (source.empty() || doc.History().Dirty());
+            if (needsSave) ImGui::TextUnformatted("Save the author document before rebuilding.");
+            ImGui::BeginDisabled(build->Busy() || needsSave);
+            if (ImGui::Button(text("edit.reimport", "Rebuild from this draft", "Reimport").c_str())) {
+                auto request = *doc.Recipe();
+                // 作者文件另存后使用新路径；模型导出的材质仍从原模型重新导入。
+                if (authorSource) request.source = source;
+                build->Start(request, error);
+            }
             ImGui::EndDisabled();
         }
 
@@ -70,26 +79,44 @@ namespace Catalpa::Editor {
     }
 
     WorkspaceEditing::WorkspaceEditing(Application& app) : m_App(app) {
+        m_HostScene=m_App.GetScenes().GetActiveHandle();
         m_App.SetEditorViewportActive(true);
     }
 
     WorkspaceEditing::~WorkspaceEditing() {
-        Reset();
+        std::string ignored;
+        (void)Reset(ignored);
         m_App.SetEditorViewportActive(false);
     }
 
-    void WorkspaceEditing::Reset() {
+    bool WorkspaceEditing::Reset(std::string& error) {
+        if (!StopPlay()) { error = m_Error; return false; }
         m_Picking.Cancel(m_App);
         m_Gizmo.Cancel(m_Error);
         m_Selection.Clear();
         m_App.CloseEditorPreview(SceneSurface);
         m_AssetEditors.Close(m_App);
+        m_PendingScene.reset();
+        m_PendingAuthor.reset();
+        for (auto* doc : m_Documents.All()) if (!doc->History().Dirty()) RemoveRecovery(doc->Id());
+        m_RestoredRecovery.clear();
+        for(auto handle:m_AuthorScenes) if(m_App.GetScenes().GetScene(handle)) {
+            const auto status=m_App.GetScenes().Unload(handle);
+            if(!status.IsSuccess()) {m_Error=status.message;error=m_Error;return false;}
+        }
+        m_AuthorScenes.clear();
+        if(m_App.GetScenes().GetScene(m_HostScene)) (void)m_App.GetScenes().SetActive(m_HostScene);
         m_Documents.Clear();
         m_OpenAsset = {};
         m_LastScene = {};
         m_Error.clear();
         m_AskDiscard = false;
         m_RightLook = false;
+        m_Project.reset();
+        m_Recovery.clear();
+        m_RecoveryRoot.clear();
+        error.clear();
+        return true;
     }
 
     bool WorkspaceEditing::HasDirtyDocuments() const {
@@ -97,6 +124,11 @@ namespace Catalpa::Editor {
     }
 
     SceneDocument* WorkspaceEditing::ActiveScene() {
+        if (auto* play = dynamic_cast<SceneDocument*>(m_Documents.Find(m_PlayDocument))) {
+            if (play->Resolve() && m_App.GetScenes().GetScene(play->PlayHandle()) &&
+                m_App.GetScenes().GetActiveHandle() == play->PlayHandle()) return play;
+            if (!StopPlay()) return nullptr;
+        }
         auto& scenes = m_App.GetScenes();
         const auto handle = scenes.GetActiveHandle();
         if (!handle.HasValue())
@@ -105,13 +137,14 @@ namespace Catalpa::Editor {
     }
 
     void WorkspaceEditing::Menu(const PanelText& text) {
+        DocumentMenu();
         if (ImGui::BeginMenu(text("menu.edit", "Edit", nullptr).c_str())) {
             auto* doc = m_Documents.Active();
             if (ImGui::MenuItem(text("edit.undo", "Undo", nullptr).c_str(), nullptr, false,
-                                doc && doc->History().CanUndo()))
+                                doc && !m_PlayDocument.HasValue() && doc->History().CanUndo()))
                 doc->History().Undo(*doc, m_Error);
             if (ImGui::MenuItem(text("edit.redo", "Redo", nullptr).c_str(), nullptr, false,
-                                doc && doc->History().CanRedo()))
+                                doc && !m_PlayDocument.HasValue() && doc->History().CanRedo()))
                 doc->History().Redo(*doc, m_Error);
             ImGui::EndMenu();
         }
@@ -119,21 +152,26 @@ namespace Catalpa::Editor {
 
     void WorkspaceEditing::SceneTree(const PanelText& text) {
         if (auto* doc = ActiveScene()) {
+            ImGui::BeginDisabled(doc->Playing());
             const bool edited = m_Hierarchy.Draw(*doc, m_Selection, text, m_Error);
             // 层级中的点击/创建/删除比上一帧的像素读回更新，迟到结果不可覆盖它。
             if (edited)
                 m_Picking.Cancel(m_App);
             if (ImGui::IsWindowFocused() || edited)
                 m_Documents.Activate(doc->Id());
+            ImGui::EndDisabled();
         }
     }
 
     bool WorkspaceEditing::Inspect(const PanelText& text) {
         auto* doc = ActiveScene();
         if (doc && m_Selection.Resolve(*doc).HasValue()) {
+            if (doc->Playing()) { ImGui::TextUnformatted("Stop Play to edit author components."); return true; }
             if (ImGui::IsWindowFocused())
                 m_Documents.Activate(doc->Id());
-            return m_Inspector.Draw(*doc, m_Selection, text, m_Error);
+            const bool inspected=m_Inspector.Draw(*doc, m_Selection, text, m_Error);
+            AuthorComponentControls(*doc);
+            return inspected;
         }
         return false;
     }
@@ -146,6 +184,11 @@ namespace Catalpa::Editor {
     }
 
     void WorkspaceEditing::OpenAsset(AssetId id, const BuildPanel& build) {
+        if (m_PlayDocument.HasValue()) {
+            m_Error = "Stop Play before opening an author asset";
+            return;
+        }
+        CancelPendingOpen();
         auto& assets = m_App.GetAssets();
         bool fallback = false;
         AssetVersionRef<EnvironmentAsset> environment;
@@ -157,6 +200,31 @@ namespace Catalpa::Editor {
             return;
         }
         const auto type = found->type.ToString();
+        if (build.Recipe()) {
+            const auto ext = Tools::AssetSourceExtension(build.Recipe()->source);
+            if (type == "scene") {
+                const auto path = std::filesystem::canonical(build.Recipe()->source);
+                if (m_Documents.FindByPath(path, m_Error)) {
+                    (void)OpenAuthor(path);
+                    return;
+                }
+                if (!m_Error.empty()) return;
+                AssetVersionRef<SceneAsset> fixed;
+                if (!assets.Acquire(id, fixed, fallback, m_Error) || fallback) return;
+                (void)InstallAuthorScene(*fixed.Get(), path);
+                return;
+            }
+            if (type == "prefab" || type == "script" || type == "behavior_graph" || type=="material_definition" || ext == ".matgraph") {
+                if (OpenAuthor(build.Recipe()->source)) {
+                    if (auto* doc = dynamic_cast<AssetDocument*>(m_Documents.Active()); doc && type!="scene") {
+                        doc->SetSourceIdentity(ext == ".matgraph" ? build.Result().primary : id);
+                        doc->AttachRecipe(build.Recipe());
+                        doc->SetCookReport(build.Result());
+                    }
+                }
+                return;
+            }
+        }
         if (type == "environment") {
             if (!assets.Acquire(id, environment, fallback, m_Error) || fallback) {
                 m_Error = "The selected environment is not loaded";
@@ -256,7 +324,8 @@ namespace Catalpa::Editor {
         }
         if (ImGui::IsWindowFocused())
             m_Documents.Activate(doc->Id());
-        m_Gizmo.Toolbar(text);
+        PlayToolbar(*doc);
+        if (!doc->Playing()) m_Gizmo.Toolbar(text);
         if (ImGui::Button(text("viewport.reset_camera", "Reset view", "ResetEditorCamera").c_str())) {
             m_Gizmo.Cancel(m_Error);
             m_RightLook = false;
@@ -276,7 +345,7 @@ namespace Catalpa::Editor {
             ImGui::Text("%s: %.2f", label.c_str(), gpuMs);
         else
             ImGui::TextDisabled("%s: N/A", label.c_str());
-        DrawSelectedBounds(m_App, *doc, m_Selection, m_Error);
+        if (!doc->Playing()) DrawSelectedBounds(m_App, *doc, m_Selection, m_Error);
 
         const auto available = ImGui::GetContentRegionAvail(), origin = ImGui::GetCursorScreenPos();
         const auto density = ImGui::GetWindowViewport()->FramebufferScale;
@@ -291,15 +360,25 @@ namespace Catalpa::Editor {
         const Extent2D extent{uint32_t(std::clamp(available.x * density.x, 1.f, 4096.f)),
                               uint32_t(std::clamp(available.y * density.y, 1.f, 4096.f))};
         RenderSurfaceSnapshot frame;
-        const bool ready = !m_ResetCamera && m_App.GetEditorPreview(SceneSurface, frame) && frame.textureToken &&
-                           frame.extent == extent && frame.view.independentCamera &&
-                           frame.sceneIdentity == doc->Resolve()->GetWorld().GetIdentity();
-        m_Picking.Update(m_App, doc, ready ? &frame : nullptr, m_Selection, m_Error);
+        const auto* renderedScene = m_App.GetScenes().GetScene(doc->Playing() ? doc->PlayHandle() : doc->Handle());
+        const bool ready = renderedScene && (doc->Playing() || !m_ResetCamera) &&
+                           m_App.GetEditorPreview(SceneSurface, frame) && frame.textureToken &&
+                           frame.extent == extent && frame.view.independentCamera != doc->Playing() &&
+                           frame.sceneIdentity == renderedScene->GetWorld().GetIdentity();
+        if (!doc->Playing()) m_Picking.Update(m_App, doc, ready ? &frame : nullptr, m_Selection, m_Error);
         EditorCameraInput input;
         if (ready) {
             ImGui::Image(ImTextureRef(static_cast<ImTextureID>(frame.textureToken)), available);
             const bool hovered = ImGui::IsItemHovered(),
                        clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+            if (doc->Playing()) {
+                if (clicked) ImGui::SetWindowFocus();
+                if (hovered && ImGui::IsWindowFocused() && !ImGui::GetIO().WantTextInput)
+                    m_App.AllowEditorPlayInput();
+                (void)m_App.SetEditorPreview(doc->PlayHandle(), SceneSurface, extent, m_Error);
+                ImGui::End();
+                return;
+            }
             const bool gizmo = m_Gizmo.Draw(*doc, m_Selection, frame.view, origin.x, origin.y, available.x,
                                             available.y, m_Error);
             input = ViewportInput(hovered, gizmo);
@@ -319,6 +398,11 @@ namespace Catalpa::Editor {
         }
 
         auto next = m_Camera;
+        if (doc->Playing()) {
+            (void)m_App.SetEditorPreview(doc->PlayHandle(), SceneSurface, extent, m_Error);
+            ImGui::End();
+            return;
+        }
         std::string viewError;
         if (m_ResetCamera) {
             // 用真实输出尺寸筛选可作为导航起点的相机，坏的场景镜头不能锁住编辑视口。
@@ -342,10 +426,13 @@ namespace Catalpa::Editor {
     }
 
     void WorkspaceEditing::Draw(const PanelText& text, BuildPanel* build, uint32_t centerDockId) {
+        UpdateDocuments();
         m_Documents.CloseStaleScenes();
         auto* scene = ActiveScene();
         const auto id = scene ? scene->Id() : StableId{};
         if (m_LastScene != id) {
+            m_OverrideRoot = {};
+            m_OverridePaths.clear();
             m_Selection.Clear();
             m_Picking.Cancel(m_App);
             m_Gizmo.Cancel(m_Error);
@@ -374,6 +461,7 @@ namespace Catalpa::Editor {
                         if (candidate->History().Dirty())
                             label += " *";
                         if (ImGui::Selectable(label.c_str(), candidate == asset)) {
+                            CancelPendingOpen();
                             m_OpenAsset = candidate->Id();
                             asset = candidate;
                             ActivateAsset(*asset);
@@ -385,6 +473,9 @@ namespace Catalpa::Editor {
                 m_AssetEditors.Draw(m_App, *asset, text, m_Error);
                 DrawImportSettings(*asset, build, text, m_Error);
                 if (m_AskDiscard) {
+                    if (ImGui::Button("Save and close") && SaveDocument(*asset))
+                        discard = true;
+                    ImGui::SameLine();
                     if (ImGui::Button(text("document.discard", "Discard draft and close", "Discard").c_str()))
                         discard = true;
                     ImGui::SameLine();
@@ -397,9 +488,7 @@ namespace Catalpa::Editor {
                 if (asset->History().Dirty() && !discard)
                     m_AskDiscard = true;
                 else {
-                    m_AssetEditors.Close(m_App);
-                    m_Documents.Close(m_OpenAsset);
-                    m_OpenAsset = {};
+                    CloseDocument(m_OpenAsset);
                     const auto remaining = m_Documents.Assets();
                     if (!remaining.empty()) {
                         m_OpenAsset = remaining.front()->Id();

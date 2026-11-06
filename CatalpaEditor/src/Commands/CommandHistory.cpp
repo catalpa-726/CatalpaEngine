@@ -16,10 +16,19 @@ namespace Catalpa::Editor {
         }
         if (!command->Apply(doc, error))
             return false;
+        if (m_Position == m_Entries.size() && m_Position > 0 && m_SavedPosition != std::optional(m_Position) &&
+            m_Entries.back()->TryMerge(*command)) {
+            if (m_SavedPosition && *m_SavedPosition == m_Position) m_SavedPosition.reset();
+            return true;
+        }
+        if (m_SavedPosition && *m_SavedPosition > m_Position) m_SavedPosition.reset();
         m_Entries.resize(m_Position);
         if (m_Entries.size() == Limit) {
             m_Entries.erase(m_Entries.begin());
-            m_Dropped = true;
+            if (m_SavedPosition) {
+                if (*m_SavedPosition == 0) m_SavedPosition.reset();
+                else --*m_SavedPosition;
+            }
         }
         m_Entries.push_back(std::move(command));
         m_Position = m_Entries.size();

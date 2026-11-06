@@ -1,7 +1,48 @@
 #include "Documents/SceneDocument.h"
 #include "Scene/SceneSubtree.h"
+#include "Scene/SceneSerializer.h"
 
 namespace Catalpa::Editor {
+    bool SceneDocument::StartPlay(AssetManager& assets, std::string& error) try {
+        if (Playing()) { error = "Document already has a Play session"; return false; }
+        auto* author = Resolve();
+        SceneAsset snapshot;
+        SceneHandle candidate;
+        if (!author || !SceneSerializer::Capture(*author, snapshot, error) ||
+            !SceneSerializer::Instantiate(snapshot, m_Scenes, &assets, candidate, error)) return false;
+        struct Candidate {
+            SceneManager& scenes;
+            SceneHandle handle;
+            bool committed = false;
+            ~Candidate() { if (!committed) (void)scenes.Unload(handle); }
+        } guard{m_Scenes, candidate};
+        auto status = author->GetSystems().CloneGameplayTo(*m_Scenes.GetScene(candidate));
+        if (status.IsSuccess()) status = m_Scenes.SetActive(candidate);
+        if (!status.IsSuccess()) {
+            error = status.message;
+            return false;
+        }
+        m_Play = candidate;
+        guard.committed = true;
+        error.clear();
+        return true;
+    } catch (const std::exception& exception) { error = exception.what(); return false; }
+
+    bool SceneDocument::StopPlay(std::string& error) {
+        if (!Playing()) { error.clear(); return true; }
+        auto status = m_Scenes.SetActive(m_Handle);
+        if (status.IsSuccess() && m_Scenes.GetScene(m_Play)) status = m_Scenes.Unload(m_Play);
+        if (!status.IsSuccess()) { error = status.message; return false; }
+        m_Play = {};
+        error.clear();
+        return true;
+    }
+    bool SceneDocument::Serialize(std::string& text, std::string& error) const {
+        const auto* scene = Resolve();
+        SceneAsset asset;
+        if (!scene) { error = "Scene was unloaded"; return false; }
+        return SceneSerializer::Capture(*scene, asset, error) && SceneSerializer::Write(asset, text, error);
+    }
     Scene* SceneDocument::Resolve() const noexcept {
         return m_Scenes.GetScene(m_Handle);
     }

@@ -17,6 +17,8 @@
 #include "Renderer/RenderSurface.h"
 #include "Renderer/Readback/Picking.h"
 #include "Images/ImageAsset.h"
+#include "Scripting/ScriptRuntime.h"
+#include "Scripting/BehaviorGraphRuntime.h"
 
 namespace Catalpa {
 
@@ -72,6 +74,12 @@ namespace Catalpa {
         [[nodiscard]] bool SetEditorCameraPreview(SceneHandle scene, uint64_t viewId, Extent2D extent,
             const Math::TransformTRS& cameraPose, const CameraLens& lens, uint64_t historyRevision, std::string& error);
         void SetEditorViewportActive(bool active);
+        [[nodiscard]] bool SetPlayScene(SceneHandle scene, bool paused, std::string& error);
+        [[nodiscard]] bool StepPlay(std::string& error);
+        [[nodiscard]] std::vector<BehaviorDebugSnapshot> GetBehaviorDebug() const { return m_Behaviors.Snapshot(); }
+        [[nodiscard]] bool EmitBehaviorEvent(PersistentEntityId entity, std::string event, std::string& error) {
+            return m_Behaviors.Emit(entity, std::move(event), error);
+        }
         [[nodiscard]] bool GetEditorPreview(uint64_t viewId, RenderSurfaceSnapshot& surface) const;
         void CloseEditorPreview(uint64_t viewId);
         [[nodiscard]] bool SetEditorPreviewImage(uint64_t viewId, const AssetVersionRef<ImageAsset>& image,
@@ -95,6 +103,12 @@ namespace Catalpa {
         [[nodiscard]] bool InitAssets(std::string& error);
 
         SimulationClock m_Clock;
+        ScriptRuntime m_Scripts;
+        BehaviorGraphRuntime m_Behaviors;
+        SceneHandle m_PlayScene;
+        bool m_PlayPaused = false;
+        std::string m_LastScriptDiagnostic;
+        std::map<PersistentEntityId,std::string> m_BehaviorDiagnostics;
         InputActions m_Input;
         RendererProfile m_RendererProfile;
         FrameTime m_FrameTime;
@@ -102,6 +116,8 @@ namespace Catalpa {
         uint64_t m_InputSceneIdentity = 0;
         bool m_SimulationStopped = false;
         bool m_EditorViewportActive = false;
+        bool m_StandalonePaused = false;
+        double m_EditorPreviewSeconds = 0;
         std::string m_LastSceneCameraError;
 
         // 由窗口表面变化事件标记重建请求。

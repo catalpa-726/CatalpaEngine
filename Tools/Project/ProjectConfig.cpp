@@ -354,6 +354,20 @@ namespace Catalpa::Tools {
         } catch (const std::exception& exception) { error = exception.what(); return false; }
     }
 
+    bool PrepareProjectSession(const ProjectConfig& config,std::unique_ptr<ProjectSession>& output,std::string& error) try {
+        auto candidate=std::make_unique<ProjectSession>();
+        if(!config.projectFile.is_absolute() || !ParseConfig(ConfigDocument(config),config.projectFile,candidate->config,error) ||
+            !BuildProfile(candidate->config,candidate->selectedBuildProfile,error) ||
+            !candidate->files.MountReadOnly("content",candidate->config.contentRoot,0,error)) return false;
+        for(const auto& [name,path]:candidate->config.externalSourceRoots)
+            if(!candidate->files.MountReadOnly(name,path,0,error)) return false;
+        std::error_code code;
+        if(std::filesystem::is_directory(candidate->config.cookedRoot,code) && !candidate->files.MountReadOnly("cooked",candidate->config.cookedRoot,0,error)) return false;
+        if(code && code!=std::errc::no_such_file_or_directory) {error=code.message();return false;}
+        if(!ReadMetadata(*candidate,error)) return false;
+        output.swap(candidate);return true;
+    } catch(const std::exception& exception) {error=exception.what();return false;}
+
     bool SaveProjectConfig(const ProjectConfig& config, std::string& error) {
         error.clear();
         try {
@@ -381,6 +395,8 @@ namespace Catalpa::Tools {
             const auto document = ConfigDocument(normalized);
             ProjectConfig checked;
             if (!ParseConfig(document, canonicalProjectFile, checked, error)) return false;
+            std::unique_ptr<ProjectSession> prepared;
+            if(!PrepareProjectSession(checked,prepared,error)) return false;
             // 显式配置保存也不能覆盖项目声明的原件根中的文件。
             if (ContainsPath(checked.contentRoot, checked.projectFile))
                 return Fail(error, "/projectFile", "project save target is within a read-only content root");

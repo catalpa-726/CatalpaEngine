@@ -12,6 +12,7 @@ namespace Catalpa::Editor {
         }
 
         void Draw(Application&, AssetDocument&, const PanelText&, std::string& error) override;
+        void DrawPreview(Application&, AssetDocument&, std::string& error);
         void Close(Application&) override;
 
       private:

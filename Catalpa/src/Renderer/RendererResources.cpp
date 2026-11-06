@@ -299,21 +299,24 @@ namespace Catalpa {
             AssetId id;
             AssetVersionRef<ShaderAsset> auxiliary;
             bool fallback = false;
-            if (!ShaderLibrary::BuiltinId(file, id, error) || !m_Assets.Acquire(id, auxiliary, fallback, error) || fallback)
+            const bool graphSurface = definition.family == "catalpa.graph";
+            if (graphSurface) auxiliary = shader;
+            else if (!ShaderLibrary::BuiltinId(file, id, error) || !m_Assets.Acquire(id, auxiliary, fallback, error) || fallback)
                 return { .code = RHIErrorCode::InvalidState, .operation = operation };
             // Equal预通道精确复用forward的VS版本/入口/输入，不能靠不同模块的Invariant
             // 声明来推定其算术相同。阴影与Picking独立使用LessEqual/GreaterEqual，无此替换。
             const bool prepass = file == "Depth.slang";
             const auto& vertexAsset = prepass ? resources.forward->vertex : auxiliary;
-            const char* vertexEntry = prepass ? definition.vertexEntry.c_str() : "vertexMain";
+            const char* vertexEntry = prepass ? definition.vertexEntry.c_str() : graphSurface && file == "Shadow.slang" ? "graphShadowVertex" : "vertexMain";
+            const char* fragmentEntry = graphSurface ? file == "Picking.slang" ? "graphPickingMain" : "graphDepthMain" : "fragmentMain";
             const auto auxiliaryAttributes = prepass ? attributes : FilterVertexLayout(*vertexAsset.Get(), vertexEntry, canonical);
             std::vector<RHIBindingLayoutEntry> auxiliaryBindings;
             RHIPushConstantDesc auxiliaryPush;
-            if (!BuildPipelineLayout(*vertexAsset.Get(), vertexEntry, *auxiliary.Get(), "fragmentMain", auxiliaryBindings, auxiliaryPush))
+            if (!BuildPipelineLayout(*vertexAsset.Get(), vertexEntry, *auxiliary.Get(), fragmentEntry, auxiliaryBindings, auxiliaryPush))
                 return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
             RHIGraphicsPipelineDesc auxiliaryDesc;
             auxiliaryDesc.vertex = { .asset = vertexAsset, .stage = RHIShaderStage::Vertex, .entryPoint = vertexEntry };
-            auxiliaryDesc.fragment = { .asset = auxiliary, .stage = RHIShaderStage::Fragment, .entryPoint = "fragmentMain" };
+            auxiliaryDesc.fragment = { .asset = auxiliary, .stage = RHIShaderStage::Fragment, .entryPoint = fragmentEntry };
             auxiliaryDesc.colorFormat = color;
             auxiliaryDesc.depthFormat = m_Profile.depthFormat;
             auxiliaryDesc.depthState = { true, true, comparison };

@@ -5,7 +5,12 @@
 namespace Catalpa {
     // 多实例共用受检CPU几何及稳定材质槽名；不保存实体Transform或GPU所有权。
     // LOD与skin binding仍由对应后续阶段扩展，当前cooked loader必须拒绝不支持的版本/字段。
-    struct MeshAsset { MeshResourceRef mesh; std::vector<std::string> materialSlots; };
+    struct MeshAsset {
+        MeshResourceRef mesh;
+        std::vector<std::string> materialSlots;
+        // 场景文件内嵌的作者几何，后续保存仍内嵌，不能误写成不存在的 cooked locator。
+        bool authorInline = false;
+    };
 
     // 核对实际mesh与submesh槽映射，不修复顶点/索引或静默补齐材质槽。
     [[nodiscard]] inline bool ValidateMeshAsset(const MeshAsset& asset, std::string& error) {

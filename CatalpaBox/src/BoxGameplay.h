@@ -19,6 +19,7 @@ namespace Catalpa {
 
     private:
         struct State;
+        static SystemDesc CameraSystem(std::shared_ptr<State>);
         SceneManager* m_Scenes = nullptr;
         SceneHandle m_Scene{};
         GameplayModule m_Module;

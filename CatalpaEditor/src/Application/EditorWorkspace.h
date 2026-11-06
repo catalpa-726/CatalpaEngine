@@ -3,6 +3,7 @@
 #include "catpch.h"
 #include "Layer/Layer.h"
 #include "WorkspaceSettings.h"
+#include "Panels/ProjectSettingsPanel.h"
 
 namespace Catalpa::Editor {
     class EditorProject;
@@ -21,6 +22,7 @@ namespace Catalpa::Editor {
         void OnAttach() override;
         void OnDetach() override;
         void OnUpdate(Deltatime timestep) override;
+        void OnEvent(Event&) override;
         void OnImGuiRender() override;
 
     private:
@@ -58,6 +60,7 @@ namespace Catalpa::Editor {
         std::unique_ptr<ConsolePanel> m_Console;
         std::unique_ptr<DependencyPanel> m_Dependencies;
         std::unique_ptr<WorkspaceEditing> m_Editing;
+        ProjectSettingsPanel m_ProjectSettings;
         std::array<char, 2048> m_ProjectPathInput{};
         bool m_OpenProjectPopup = false;
         std::filesystem::path m_ExecutableDirectory;

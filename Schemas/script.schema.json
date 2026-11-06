@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://catalpa.engine/schemas/script.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "language": {
+      "const": "lua"
+    },
+    "source": {
+      "type": "string",
+      "maxLength": 1048576,
+      "pattern": "^[^\\u0000]*$"
+    },
+    "modules": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": {
+        "type": "string",
+        "maxLength": 128,
+        "pattern": "^[^\\u0000]*$",
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+        "not": {
+          "const": "00000000-0000-0000-0000-000000000000"
+        }
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "language",
+    "source",
+    "modules"
+  ]
+}
