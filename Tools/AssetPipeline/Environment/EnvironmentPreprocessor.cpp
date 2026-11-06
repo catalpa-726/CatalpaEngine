@@ -101,6 +101,10 @@ namespace Catalpa::Tools {
 
     bool EnvironmentPreprocessor::Build(const ImageAsset& source, const EnvironmentPreprocessSettings& settings,
         CancellationToken cancellation, EnvironmentAsset& output, std::string& error) {
+        if (cancellation.IsCancellationRequested()) {
+            error = "Environment preprocessing cancelled";
+            return false;
+        }
         if (!ValidateImageAsset(source, error))
             return false;
         const auto& input = source.image;
@@ -122,10 +126,22 @@ namespace Catalpa::Tools {
             error = "Environment source and derived buffers exceed CPU working budget";
             return false;
         }
-        for (size_t offset = 0; offset + 4 <= input.pixels.size(); offset += 4) {
-            float value;
-            std::memcpy(&value, input.pixels.data() + offset, 4);
-            if (!std::isfinite(value) || value < 0 || value > 1e12f) { error = "HDR radiance must be finite and in the explicit [0,1e12] integration budget"; return false; }
+        // 大 HDR 的辐亮度检查也分段响应取消，关闭窗口不必等待整张 512 MiB 扫描。
+        constexpr size_t ValidationChunkBytes = 1024 * 1024;
+        for (size_t begin = 0; begin < input.pixels.size(); begin += ValidationChunkBytes) {
+            if (cancellation.IsCancellationRequested()) {
+                error = "Environment preprocessing cancelled";
+                return false;
+            }
+            const size_t end = std::min(input.pixels.size(), begin + ValidationChunkBytes);
+            for (size_t offset = begin; offset + 4 <= end; offset += 4) {
+                float value;
+                std::memcpy(&value, input.pixels.data() + offset, 4);
+                if (!std::isfinite(value) || value < 0 || value > 1e12f) {
+                    error = "HDR radiance must be finite and in the explicit [0,1e12] integration budget";
+                    return false;
+                }
+            }
         }
         try {
             EnvironmentAsset candidate;

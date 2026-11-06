@@ -128,7 +128,7 @@ namespace Catalpa::Editor {
     }
 
     bool PropertyEditorRegistry::DrawTransform(SceneDocument& doc, EntityReference reference,
-                                               std::string& error) const {
+                                               const PanelText& text, std::string& error) const {
         Scene* scene = doc.Resolve();
         if (!scene)
             return false;
@@ -152,14 +152,25 @@ namespace Catalpa::Editor {
             else if (field.id == "scale" && field.kind == ComponentFieldKind::Float3)
                 submit = ImGui::InputFloat3(field.displayName.c_str(), &candidate.scale.x, "%.5g", flags);
             else if (field.id == "rotation" && field.kind == ComponentFieldKind::Float4) {
-                float wxyz[]{candidate.rotation.w, candidate.rotation.x, candidate.rotation.y,
-                             candidate.rotation.z};
-                submit = ImGui::InputFloat4(field.displayName.c_str(), wxyz, "%.6g", flags);
-                candidate.rotation = {wxyz[0], wxyz[1], wxyz[2], wxyz[3]};
+                if (m_Rotation.Synchronize(doc.Id(), reference, candidate.rotation, error)) {
+                    ImGui::PushID(std::to_string(m_Rotation.Revision()).c_str());
+                    submit = ImGui::InputScalarN(
+                        text("edit.rotation_degrees", "Rotation XYZ (deg)", "RotationDegrees").c_str(),
+                        ImGuiDataType_Double, m_Rotation.Degrees().data(), 3, nullptr, nullptr, "%.4f", flags);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Local rotation in degrees; X, then Y, then Z (Rz * Ry * Rx).\n"
+                                          "Press Enter to apply. Euler angles are not unique at Y = +/-90 degrees.");
+                    ImGui::PopID();
+                    if (submit)
+                        submit = m_Rotation.ToQuaternion(candidate.rotation, error) &&
+                                 candidate.rotation != value.local.rotation;
+                }
             }
             ImGui::PopID();
             if (submit && ChangeLocal(doc, reference.persistent, value.local, candidate, error)) {
                 value.local = candidate;
+                if (field.id == "rotation")
+                    m_Rotation.Accept(candidate.rotation);
                 changed = true;
             }
         }
@@ -174,7 +185,7 @@ namespace Catalpa::Editor {
             return;
         // 适配器使用稳定 schema 类型选择对应值控件，缺失 schema 或未知组件继续只读。
         if (schemas->Find("catalpa.transform"))
-            DrawTransform(doc, ref, error);
+            DrawTransform(doc, ref, text, error);
         if (schemas->Find("catalpa.mesh_renderer")) {
             MeshRendererComponent mesh;
             if (doc.Resolve()->GetWorld().Get(ref.resolved, mesh).IsSuccess()) {

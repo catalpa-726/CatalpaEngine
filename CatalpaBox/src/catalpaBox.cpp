@@ -1,8 +1,10 @@
 #include <Catalpa.h>
 
 #include "Application/EditorWorkspace.h"
+#include "BoxDefaultEnvironment.h"
 #include "BoxGameplay.h"
 #include "Core/PlatformServices.h"
+#include "Scene/SceneManager.h"
 #include "BoxCommandLine.h"
 #include <string_view>
 
@@ -16,13 +18,25 @@ public:
 
     void OnAttach() override {
         CAT_INFO("Box layer attached.");
-        if (!m_Gameplay.Attach(Catalpa::Application::Get().GetScenes(), Catalpa::Application::Get().GetAssets(), m_ReversedZ, m_ErrorMaterial)) Catalpa::Application::Get().RequestClose(1);
+        auto& application = Catalpa::Application::Get();
+        if (!m_Gameplay.Attach(application.GetScenes(), application.GetAssets(), m_ReversedZ, m_ErrorMaterial)) {
+            application.RequestClose(1);
+            return;
+        }
+
+        // 默认天空只属于刚创建的样例场景，后台处理不会覆盖随后打开的作者场景。
+        std::string error;
+        if (!m_Environment.Start(application.GetScenes(), application.GetAssets(), application.GetJobs(),
+                                 application.GetScenes().GetActiveHandle(), error))
+            CAT_WARN("Default sky unavailable: {0}", error);
     }
     void OnDetach() override {
+        m_Environment.Stop();
         m_Gameplay.Detach();
         CAT_INFO("Box layer detached.");
     }
     void OnUpdate(Catalpa::Deltatime) override {
+        m_Environment.Update();
         m_Gameplay.ReportHierarchyOnce();
     }
 
@@ -37,6 +51,7 @@ public:
 
 private:
     Catalpa::BoxGameplay m_Gameplay;
+    Catalpa::BoxDefaultEnvironment m_Environment;
     bool m_ReversedZ = false;
     bool m_ErrorMaterial = false;
 };

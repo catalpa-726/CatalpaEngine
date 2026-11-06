@@ -17,6 +17,19 @@ namespace Catalpa::Tools {
         return {ImageSemantic::Data, "data"};
     }
 
+    bool TextureImporter::HdrDecodedSize(uint32_t width, uint32_t height, size_t& bytes, std::string& error) {
+        constexpr uint64_t MaxDecodedBytes = 512ull * 1024 * 1024;
+        constexpr uint64_t BytesPerPixel = 4 * sizeof(float);
+        const uint64_t pixels = uint64_t(width) * height;
+        if (width == 0 || height == 0 || pixels > MaxDecodedBytes / BytesPerPixel) {
+            error = "HDR decoded RGBA32F image must be nonempty and at most 512 MiB; source is not resized";
+            return false;
+        }
+        bytes = size_t(pixels * BytesPerPixel);
+        error.clear();
+        return true;
+    }
+
     bool TextureImporter::Decode(AssetBuildContext& ctx, std::span<const std::byte> bytes, std::string source,
                                  ImageSemantic semantic, ImageAsset& out, std::string& e) {
         if (!ctx.CheckCancelled(e))
@@ -42,10 +55,11 @@ namespace Catalpa::Tools {
                 e = "HDR source is linear radiance, not a normal or packed data texture";
                 return false;
             }
-            const uint64_t size = uint64_t(w) * uint64_t(h) * 16;
-            if (size > 79 * 1024 * 1024 || !ctx.ReserveWorking(size_t(size), e) ||
-                !ctx.WorkspaceFits(size_t(size), e)) {
-                if (e.empty()) e = "HDR source exceeds bounded float image size; source is not resized";
+            size_t size = 0;
+            // 环境源不直接写入普通 Cooked Image，不能套用其 79 MiB 载荷上限。
+            // 单图上限与任务总预算分别检查；stb 临时像素和最终像素会同时存在。
+            if (!HdrDecodedSize(uint32_t(w), uint32_t(h), size, e) ||
+                !ctx.ReserveWorking(size, e) || !ctx.WorkspaceFits(size, e)) {
                 return false;
             }
             std::unique_ptr<float, void (*)(void*)> pixels(
@@ -61,14 +75,19 @@ namespace Catalpa::Tools {
             value.format = PixelFormat::RGBA32_Float;
             value.colorSpace = ImageColorSpace::Linear;
             value.semantic = ImageSemantic::Color;
-            value.pixels.resize(size_t(size));
-            for (size_t i = 0; i < size_t(size) / sizeof(float); ++i) {
-                if (!std::isfinite(pixels.get()[i]) || pixels.get()[i] < 0) {
-                    e = "HDR source contains negative or non-finite radiance";
-                    return false;
+            value.pixels.resize(size);
+            for (size_t row = 0; row < size_t(h); ++row) {
+                if (!ctx.CheckCancelled(e)) return false;
+                const size_t begin = row * size_t(w) * 4;
+                const size_t end = begin + size_t(w) * 4;
+                for (size_t i = begin; i < end; ++i) {
+                    if (!std::isfinite(pixels.get()[i]) || pixels.get()[i] < 0) {
+                        e = "HDR source contains negative or non-finite radiance";
+                        return false;
+                    }
                 }
             }
-            std::memcpy(value.pixels.data(), pixels.get(), size_t(size));
+            std::memcpy(value.pixels.data(), pixels.get(), size);
             value.subresources.push_back({0, 0, 0, value.width, value.height, 1, 0, uint64_t(w) * 16, size, size});
             if (!ValidateImageAsset(image, e) || !ctx.CheckCancelled(e))
                 return false;

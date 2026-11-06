@@ -14,7 +14,8 @@ namespace Catalpa::Tools {
         bool generateNormals = true, generateTangents = true;
         // 将源文件中的引用映射到指定文件路径，目标必须属于项目声明的源目录。
         std::map<std::string, std::string, std::less<>> dependencyRemaps;
-        size_t maxSourceBytes = 64 * 1024 * 1024, maxWorkingBytes = 1024 * 1024 * 1024;
+        // HDR 单图解码上限为 512 MiB；总工作区还需容纳源字节、stb 临时像素和积分结果。
+        size_t maxSourceBytes = 64 * 1024 * 1024, maxWorkingBytes = 1536 * 1024 * 1024;
         uint32_t maxVertices = 2000000, maxIndices = 6000000, maxNodes = 65536;
     };
 

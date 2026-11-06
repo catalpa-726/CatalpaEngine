@@ -4,6 +4,8 @@
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialValidation.h"
 #include "Materials/MaterialAssetLoader.h"
+#include "Materials/MaterialSurface.h"
+#include "Images/ImageValidation.h"
 
 #include "Scene/SceneManager.h"
 #include "Scene/Scene.h"
@@ -18,7 +20,9 @@
 #include "ECS/SystemContext.h"
 #include "Log/Log.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdlib>
 #include <numbers>
 
@@ -29,6 +33,101 @@ namespace Catalpa {
         const PersistentEntityId CameraId = PersistentEntityId::FromWords(0x5330333200000001ULL, 1);
         const PersistentEntityId ForegroundId = PersistentEntityId::FromWords(0x5330333300000001ULL, 1);
         const PersistentEntityId GroundId = PersistentEntityId::FromWords(0x5330333300000001ULL, 2);
+
+        bool PrepareCheckerGroundMaterial(AssetManager& assets, const MaterialInstance& unlit,
+            AssetVersionRef<MaterialInstance>& output, std::string& error)
+        {
+            if (!unlit.definition.HasValue() || unlit.definition.Get()->shadingModel != MaterialShadingModel::Unlit) {
+                error = "Checker ground requires a resolved Unlit material definition";
+                return false;
+            }
+            const auto imageId = AssetId::FromWords(0x434154414C504142ULL, 10);
+            const auto definitionId = AssetId::FromWords(0x434154414C504142ULL, 11);
+            const auto materialId = AssetId::FromWords(0x434154414C504142ULL, 12);
+
+            // 线性灰色的 2×2 棋盘；最后一个像素是平均色 mip，远处缩小时减少闪烁。
+            ImageAsset image;
+            image.sourceUri = "builtin:box-checker-ground";
+            image.image.format = PixelFormat::RGBA8_UNorm;
+            image.image.width = image.image.height = 2;
+            image.image.mipLevels = 2;
+            image.image.subresources = {
+                {0, 0, 0, 2, 2, 1, 0, 8, 16, 16},
+                {1, 0, 0, 1, 1, 1, 16, 4, 4, 4}
+            };
+            for (const auto shade : std::array<unsigned char, 5>{48, 96, 96, 48, 72}) {
+                image.image.pixels.insert(image.image.pixels.end(), {
+                    std::byte{shade}, std::byte{shade}, std::byte{shade}, std::byte{255}
+                });
+            }
+            if (!ValidateImageAsset(image, error)) return false;
+
+            const size_t imageBytes = sizeof(ImageAsset) + image.sourceUri.capacity() + 1
+                + image.image.subresources.capacity() * sizeof(ImageSubresource) + image.image.pixels.capacity();
+            if (!assets.PublishBuiltin<ImageAsset>(imageId, 1,
+                std::make_shared<const ImageAsset>(std::move(image)), imageBytes, error)) return false;
+
+            AssetVersionRef<ImageAsset> imageVersion;
+            bool fallback = false;
+            if (!assets.Acquire(imageId, imageVersion, fallback, error) || fallback) {
+                if (error.empty()) error = "Checker ground requires its exact image version";
+                return false;
+            }
+
+            // 保留内置 Unlit 的 shader 版本，只给样例地面增加纹理参数，不修改共享定义。
+            MaterialDefinition definition = *unlit.definition.Get();
+            MaterialParameter texture;
+            texture.id = "baseColor_texture";
+            texture.displayName = "Checker texture";
+            texture.type = MaterialParameterType::Texture2D;
+            texture.defaultValue = AssetHandle<ImageAsset>{imageId};
+            texture.textureSemantic = MaterialTextureSemantic::BaseColor;
+            if (!ValidateMaterialTexture(texture, *imageVersion.Get(), error)) return false;
+            definition.parameters.push_back(std::move(texture));
+
+            MaterialParameter uv;
+            uv.id = "uv_scale_offset";
+            uv.displayName = "UV scale / offset";
+            uv.type = MaterialParameterType::Float4;
+            // 12m 平面上重复六次，每次包含两个格子，因此每格边长为 1m。
+            uv.defaultValue = std::array<float, 4>{6, 6, 0, 0};
+            definition.parameters.push_back(std::move(uv));
+
+            MaterialParameter sampler;
+            sampler.id = "baseColor_sampler";
+            sampler.displayName = "Checker sampler";
+            sampler.type = MaterialParameterType::UInt;
+            // Repeat + 缩小线性/mip 过滤；仅关闭放大线性过滤，保持近处格子的清晰边缘。
+            sampler.defaultValue = DefaultMaterialSamplerFlags & ~(1u << 5);
+            sampler.allowOverride = false;
+            definition.parameters.push_back(std::move(sampler));
+            if (!ValidateMaterialDefinition(definition, error)) return false;
+
+            const size_t definitionBytes = MaterialDefinitionBytes(definition);
+            if (!assets.PublishBuiltin<MaterialDefinition>(definitionId, 1,
+                std::make_shared<const MaterialDefinition>(std::move(definition)), definitionBytes, error)) return false;
+
+            AssetVersionRef<MaterialDefinition> definitionVersion;
+            if (!assets.Acquire(definitionId, definitionVersion, fallback, error) || fallback) {
+                if (error.empty()) error = "Checker ground requires its exact material definition";
+                return false;
+            }
+            std::shared_ptr<const MaterialInstance> draft;
+            if (!CreateMaterialInstance(definitionVersion, {}, {}, 1, draft, error)) return false;
+
+            // 固定纹理版本，让材质、帧快照和 GPU 上传持有同一份像素，避免按逻辑 ID 追新。
+            MaterialInstance resolved = *draft;
+            resolved.textureVersions[0] = imageVersion;
+            if (!ValidateMaterialInstance(resolved, error)) return false;
+            const size_t materialBytes = MaterialInstanceBytes(resolved);
+            if (!assets.PublishBuiltin<MaterialInstance>(materialId, 1,
+                std::make_shared<const MaterialInstance>(std::move(resolved)), materialBytes, error)) return false;
+            if (!assets.Acquire(materialId, output, fallback, error) || fallback) {
+                if (error.empty()) error = "Checker ground requires its exact material version";
+                return false;
+            }
+            return true;
+        }
 
         // 从受捕获/焦点控制的动作快照读取样例轴，不直接轮询平台按键。
         double Action(const ActionSnapshot* input, std::string_view id)
@@ -174,9 +273,14 @@ namespace Catalpa {
             if (meshStatus.IsSuccess()) meshStatus = CreateMeshResource(plane, planeGeometry);
             if (!meshStatus.IsSuccess()) { CAT_ERROR("Cannot prepare ground geometry: {0}", meshStatus.message); Detach(); return false; }
             MeshRendererComponent planeRenderer;
-            if(!component(planeGeometry,AssetId::FromWords(0x434154414C504142ULL,2),Math::Vec4{0.18f,0.2f,0.22f,1.0f},planeRenderer)) {
+            if(!component(planeGeometry,AssetId::FromWords(0x434154414C504142ULL,2),Math::Vec4{1.0f,1.0f,1.0f,1.0f},planeRenderer)) {
                 CAT_ERROR("Cannot publish plane: {0}",assetError);Detach();return false;
             }
+            AssetVersionRef<MaterialInstance> groundMaterial;
+            if (!PrepareCheckerGroundMaterial(assets, *material.Get(), groundMaterial, assetError)) {
+                CAT_ERROR("Cannot prepare checker ground: {0}", assetError); Detach(); return false;
+            }
+            planeRenderer.materials = {groundMaterial};
             if(status.IsSuccess()) status=scene.QueueSetMeshRenderer(scene.Resolve(GroundId),planeRenderer);
         }
         if (status.IsSuccess()) status = scene.CommitPending();

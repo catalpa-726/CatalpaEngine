@@ -12,6 +12,7 @@
 #include "Camera/CameraProjection.h"
 #include "AssetEditors/AssetEditorRegistry.h"
 #include "Viewport/EditorCameraController.h"
+#include "Properties/RotationEditorState.h"
 
 namespace Catalpa::Tests {
     using namespace Editor;
@@ -196,6 +197,126 @@ namespace Catalpa::Tests {
             ++camera.priority;
             t.Check(exhausted && !EditCamera(doc, id, camera, error),
                     "Refuse a new camera edit without revision space for undo");
+        }
+
+        void CheckRotationEditor(TestContext& t) {
+            SceneManager scenes;
+            SceneHandle handle;
+            const PersistentEntityId id{StableId::FromWords(38, 21)};
+            const bool made = scenes.CreateScene("Euler properties", handle).IsSuccess();
+            t.Check(made, "Create a scene for rotation author edits");
+            if (!made)
+                return;
+            auto& scene = *scenes.GetScene(handle);
+            const bool created = scene.QueueCreate(id, "rotating", {}).IsSuccess() &&
+                                 scene.CommitPending().IsSuccess();
+            t.Check(created, "Create a stable rotation target");
+            if (!created)
+                return;
+            SceneDocument doc(StableId::FromWords(38, 22), scenes, handle);
+            const auto target = scene.MakeReference(scene.Resolve(id));
+            std::string error;
+
+            // 独立地按轴乘法构造期望值，避免仅测试一对可能同时错误的编解码函数。
+            const auto expected = [](const std::array<double, 3>& degrees) {
+                constexpr double factor = 3.14159265358979323846 / 180.0;
+                const auto x = glm::angleAxis(degrees[0] * factor, glm::dvec3{1, 0, 0});
+                const auto y = glm::angleAxis(degrees[1] * factor, glm::dvec3{0, 1, 0});
+                const auto z = glm::angleAxis(degrees[2] * factor, glm::dvec3{0, 0, 1});
+                const auto q = glm::normalize(z * y * x);
+                return Math::Quat{float(q.w), float(q.x), float(q.y), float(q.z)};
+            };
+            const auto sameRotation = [](const Math::Quat& a, const Math::Quat& b) {
+                for (const auto axis : {Math::Vec3{1, 0, 0}, Math::Vec3{0, 1, 0}, Math::Vec3{0, 0, 1}})
+                    if (glm::length(a * axis - b * axis) > 2.e-5f)
+                        return false;
+                return true;
+            };
+
+            const std::array<std::array<double, 3>, 9> examples{{
+                {90, 0, 0}, {0, 90, 0}, {0, 0, 90}, {20, 90, 30}, {20, -90, 30},
+                {20, 89.999, 30}, {20, -89.999, 30}, {120, 100, -200}, {720, -450, 540}}};
+            for (const auto& angles : examples) {
+                RotationEditorState state;
+                Math::Quat rotation{1, 0, 0, 0}, roundTrip{1, 0, 0, 0};
+                const auto source = expected(angles);
+                const bool synced = state.Synchronize(doc.Id(), target, source, error);
+                t.Check(synced && state.ToQuaternion(roundTrip, error) && sameRotation(source, roundTrip),
+                        "Euler decomposition preserves orientation at and near both gimbal singularities");
+                state.Degrees() = angles;
+                t.Check(state.ToQuaternion(rotation, error) && sameRotation(source, rotation),
+                        "XYZ degree input follows explicit Rz Ry Rx composition including whole turns");
+            }
+
+            RotationEditorState wrapped;
+            t.Check(wrapped.Synchronize(doc.Id(), target, expected({0, 0, 179}), error) &&
+                        wrapped.Synchronize(doc.Id(), target, expected({0, 0, -179}), error) &&
+                        std::abs(wrapped.Degrees()[2] - 181) < .001,
+                    "External rotations crossing 180 degrees keep a continuous display angle");
+
+            RotationEditorState state;
+            Math::Quat rotation{1, 0, 0, 0};
+            t.Check(state.Synchronize(doc.Id(), target, Math::Quat{1, 0, 0, 0}, error),
+                    "Initialize rotation UI draft");
+            state.Degrees() = {400, 89, 10};
+            const bool converted = state.ToQuaternion(rotation, error);
+            state.Accept(rotation);
+            const auto revision = state.Revision();
+            const auto authoredAngles = state.Degrees();
+            t.Check(converted && state.Synchronize(doc.Id(), target, rotation, error) &&
+                        state.Synchronize(doc.Id(), target, -rotation, error) &&
+                        state.Degrees() == authoredAngles && state.Revision() == revision,
+                    "Own commits and equivalent quaternion signs preserve whole-turn UI angles");
+
+            const auto external = expected({41, 91, 11});
+            t.Check(state.Synchronize(doc.Id(), target, external, error) && state.Revision() != revision &&
+                        std::abs(state.Degrees()[0] - 401) < .001 &&
+                        std::abs(state.Degrees()[1] - 91) < .001 &&
+                        std::abs(state.Degrees()[2] - 11) < .001,
+                    "External Gizmo changes cross 90 degrees without a 180-degree display branch jump");
+            const auto singular = expected({42, 90, 12});
+            t.Check(state.Synchronize(doc.Id(), target, singular, error) &&
+                        state.ToQuaternion(rotation, error) && sameRotation(rotation, singular),
+                    "Singular external rotations keep a nearby equivalent Euler representation");
+            const auto beforeDraft = state.Revision();
+            state.Degrees()[0] += 7;
+            const auto draft = state.Degrees();
+            t.Check(state.Synchronize(doc.Id(), target, singular, error) && state.Degrees() == draft &&
+                        state.Revision() == beforeDraft,
+                    "An unchanged scene does not discard a pending angle draft on the next frame");
+            t.Check(state.Synchronize(StableId::FromWords(38, 23), target, external, error) &&
+                        state.Revision() != beforeDraft && std::abs(state.Degrees()[0]) < 180,
+                    "Switching documents starts a fresh display rather than reusing another draft");
+            const auto previousTarget = state.Revision();
+            t.Check(scene.QueueDestroySubtree(target.resolved).IsSuccess() && scene.CommitPending().IsSuccess() &&
+                        scene.QueueCreate(id, "replacement", {}).IsSuccess() && scene.CommitPending().IsSuccess() &&
+                        state.Synchronize(doc.Id(), scene.MakeReference(scene.Resolve(id)),
+                                          Math::Quat{1, 0, 0, 0}, error) &&
+                        state.Revision() != previousTarget && state.Degrees() == std::array<double, 3>{},
+                    "Recreated entity generations cannot inherit the previous target's Euler draft");
+
+            state.Degrees() = {400, 91, -190};
+            Math::TransformTRS before, after;
+            TransformComponent observed;
+            const bool committed = state.ToQuaternion(after.rotation, error) &&
+                                   ChangeLocal(doc, id, before, after, error);
+            state.Accept(after.rotation);
+            const auto replacement = scene.MakeReference(scene.Resolve(id));
+            t.Check(committed && doc.History().Undo(doc, error) &&
+                        scene.GetTransform(replacement.resolved, observed).IsSuccess() &&
+                        state.Synchronize(doc.Id(), replacement, observed.local.rotation, error) &&
+                        state.ToQuaternion(rotation, error) && sameRotation(rotation, before.rotation) &&
+                        !doc.History().CanUndo(),
+                    "A rotation author commit remains one undo command and resynchronizes its degree display");
+            t.Check(doc.History().Redo(doc, error) &&
+                        scene.GetTransform(replacement.resolved, observed).IsSuccess() &&
+                        state.Synchronize(doc.Id(), replacement, observed.local.rotation, error) &&
+                        state.ToQuaternion(rotation, error) && sameRotation(rotation, after.rotation),
+                    "Redo restores the quaternion without storing Euler angles in the scene");
+            const auto untouched = rotation;
+            state.Degrees()[1] = std::numeric_limits<double>::quiet_NaN();
+            t.Check(!state.ToQuaternion(rotation, error) && rotation == untouched && !error.empty(),
+                    "Nonfinite degree input fails without replacing the valid quaternion");
         }
 
         void CheckEditorCamera(TestContext& t) {
@@ -403,6 +524,7 @@ namespace Catalpa::Tests {
     void RunEditorCommandTests(TestContext& t) {
         CheckScenes(t);
         CheckIdentityAndCamera(t);
+        CheckRotationEditor(t);
         CheckEditorCamera(t);
         CheckOrthographicWheel(t);
         CheckContinuousDrag(t);

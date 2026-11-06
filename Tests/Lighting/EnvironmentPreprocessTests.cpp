@@ -6,6 +6,7 @@
 #include "Materials/MaterialSurface.h"
 #include "Materials/MaterialValidation.h"
 #include "AssetPipeline/Importers/MaterialImporter.h"
+#include "AssetPipeline/Importers/TextureImporter.h"
 
 namespace Catalpa::Tests {
     namespace {
@@ -127,12 +128,24 @@ namespace Catalpa::Tests {
     }
 
     void RunEnvironmentPreprocessTests(TestContext& test) {
+        // 仅验证准入算术；不为边界测试分配 8K HDR 的大块像素。
+        std::string error;
+        size_t decodedBytes = 0;
+        test.Check(Tools::TextureImporter::HdrDecodedSize(8192, 4096, decodedBytes, error) &&
+            decodedBytes == 512ull * 1024 * 1024, "An 8K RGBA32F HDR fits the inclusive 512 MiB image limit");
+        const size_t acceptedBytes = decodedBytes;
+        test.Check(!Tools::TextureImporter::HdrDecodedSize(8192, 4097, decodedBytes, error) &&
+            decodedBytes == acceptedBytes, "HDR dimensions over 512 MiB fail without replacing the accepted size");
+        test.Check(!Tools::TextureImporter::HdrDecodedSize(UINT32_MAX, UINT32_MAX, decodedBytes, error) &&
+            decodedBytes == acceptedBytes, "Extreme HDR dimensions cannot overflow into an accepted byte size");
+        test.Check(!Tools::TextureImporter::HdrDecodedSize(0, 4096, decodedBytes, error),
+            "An empty HDR dimension is rejected before decoding");
+
         const auto source = ConstantEnvironment();
         const auto originalBytes = source.image.pixels;
         Tools::EnvironmentPreprocessSettings settings;
         settings.radianceFaceSize = 2; settings.irradianceFaceSize = 2; settings.specularFaceSize = 2;
         settings.brdfSize = 4; settings.sampleCount = 32;
-        std::string error;
         EnvironmentAsset environment;
         const bool built = Tools::EnvironmentPreprocessor::Build(source, settings, {}, environment, error);
         test.Check(built, "CPU environment preprocessor produces owned irradiance, specular mips and BRDF LUT");
