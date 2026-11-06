@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scope": "Verified GLM, EnTT, enkiTS and SPIRV-Reflect source archives, the compiled files and license of user-provided ImGuizmo, plus an observed external Vulkan SDK toolchain; the full existing dependency inventory remains incomplete (B01).",
+  "scope": "Verified GLM, EnTT, enkiTS and SPIRV-Reflect source archives, the compiled files and license of user-provided ImGuizmo, plus an observed external Vulkan SDK toolchain; the full existing dependency inventory remains incomplete (B01). User-provided Lua, imgui-node-editor and nativefiledialog-extended have local version/build-input records only.",
   "acquiredOn": "2026-11-04",
   "sourceTreeHashAlgorithm": "sha256 of sorted UTF-8 records: relative POSIX path + NUL + lowercase file sha256 + LF; includes every extracted archive file.",
   "dependencies": [
@@ -200,15 +200,139 @@
         "project": "Catalpa",
         "buildHelper": "Script/Build/ImGui.lua",
         "includeRoot": "Catalpa/third_party/ImGuizmo/src",
-        "compiledSources": [ "src/ImGuizmo.cpp" ],
-        "consumers": [ "CatalpaEditor TransformGizmo; preview, commit-on-release and cancel through TransformDrag/CommandHistory" ],
+        "compiledSources": [
+          "src/ImGuizmo.cpp"
+        ],
+        "consumers": [
+          "CatalpaEditor TransformGizmo; preview, commit-on-release and cancel through TransformDrag/CommandHistory"
+        ],
         "submoduleMetadataDeclared": true,
         "gitlinkRegistration": "not performed or inspected by assistant",
         "upstreamSourceModifiedByAssistant": false,
-        "additionalLinkedDependencies": [ "existing imgui implementation in Catalpa.dll" ],
+        "additionalLinkedDependencies": [
+          "existing imgui implementation in Catalpa.dll"
+        ],
         "runtimeLibrary": "dynamic; inherits workspace configuration",
         "validation": "Build integration and the implemented Gizmo matrix/command lifecycle were statically reviewed. VS2022/v143 Debug/x64 generation, compilation and runtime regression await user verification; static review does not establish native runtime success."
       }
+    },
+    {
+      "name": "imgui-node-editor",
+      "version": "0.9.4",
+      "repository": "https://github.com/thedmd/imgui-node-editor",
+      "path": "Catalpa/third_party/imgui-node-editor",
+      "acquisition": {
+        "method": "user-provided-directory",
+        "observedOn": "2026-11-06",
+        "archiveOrCommitVerified": false
+      },
+      "versionEvidence": "imgui_node_editor.h",
+      "buildInputFiles": 14,
+      "buildInputsSha256": "c0be239c643479f40c1711df88f6ab20fb1d56ea04eef665ed408b6b180f7f7b",
+      "hashScope": "Selected library sources, headers and evidence files using sourceTreeHashAlgorithm; not the complete upstream archive.",
+      "evidenceFiles": [
+        {
+          "path": "imgui_node_editor.h",
+          "sha256": "1ad859359909f6a2a0e57f07dd97d18a66115bee0a1e0d9a0bc3cff0e698dcd1"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "2939ecda6500914aa2385ab46906c9d0317af13faee6c1feb21f3a29f8e52578"
+        }
+      ],
+      "license": {
+        "selected": "MIT",
+        "file": "LICENSE"
+      },
+      "integration": {
+        "buildHelper": "Script/Build/Authoring.lua",
+        "consumers": [
+          "CatalpaEditor"
+        ],
+        "description": "Compile the four root implementation files as a static library; import ImGui from Catalpa.dll. No examples, tests or second ImGui implementation.",
+        "submoduleRegistered": false,
+        "upstreamSourceModified": false
+      },
+      "validation": "Static local file reads and hashes only; project generation, compilation and runtime behavior remain unverified."
+    },
+    {
+      "name": "nativefiledialog-extended",
+      "version": "1.4.1",
+      "repository": "https://github.com/btzy/nativefiledialog-extended",
+      "path": "Catalpa/third_party/nativefiledialog-extended",
+      "acquisition": {
+        "method": "user-provided-directory",
+        "observedOn": "2026-11-06",
+        "archiveOrCommitVerified": false
+      },
+      "versionEvidence": "CMakeLists.txt",
+      "buildInputFiles": 8,
+      "buildInputsSha256": "bdfb33e1a8448ad09d711ad58fe279d5c07fb47fc1ec30fe10fbbc0d3998bd23",
+      "hashScope": "Selected library sources, headers and evidence files using sourceTreeHashAlgorithm; not the complete upstream archive.",
+      "evidenceFiles": [
+        {
+          "path": "CMakeLists.txt",
+          "sha256": "3490674096dfe5cedb5d2c32d9c4806d42e86c6852965a960efa16b7bdc0a712"
+        },
+        {
+          "path": "LICENSE",
+          "sha256": "cc8f6d4f2e9a7e966d049555edb8180e67549fb13d9119d96cdcce62c314e43c"
+        }
+      ],
+      "license": {
+        "selected": "Zlib",
+        "file": "LICENSE"
+      },
+      "integration": {
+        "buildHelper": "Script/Build/Authoring.lua",
+        "consumers": [
+          "CatalpaEditor"
+        ],
+        "description": "Compile src/nfd_win.cpp as a static library with ole32, uuid and shell32. Version is the local CMake declaration; an upstream release tag was not verified.",
+        "submoduleRegistered": false,
+        "upstreamSourceModified": false
+      },
+      "validation": "Static local file reads and hashes only; project generation, compilation and runtime behavior remain unverified."
+    },
+    {
+      "name": "lua",
+      "version": "5.5.1",
+      "repository": "https://github.com/lua/lua",
+      "path": "Catalpa/third_party/lua",
+      "acquisition": {
+        "method": "user-provided-directory",
+        "observedOn": "2026-11-06",
+        "archiveOrCommitVerified": false
+      },
+      "versionEvidence": "src/lua.h",
+      "buildInputFiles": 61,
+      "buildInputsSha256": "18b5c1a090f61df7f829e317b37714477cd1e20953523ecae0916bf3de302fbd",
+      "hashScope": "Selected library sources, headers and evidence files using sourceTreeHashAlgorithm; not the complete upstream archive.",
+      "evidenceFiles": [
+        {
+          "path": "src/lua.h",
+          "sha256": "5e00319e803893f4310b1206394c80b82f03f42609b40ceb306d92a6740d828e"
+        },
+        {
+          "path": "doc/readme.html",
+          "sha256": "f6cb9082089df5bc843e7cf6cf55fac1a100b4d8a46c5272b6cac8f69856cdd6"
+        }
+      ],
+      "license": {
+        "selected": "MIT",
+        "file": "doc/readme.html"
+      },
+      "integration": {
+        "buildHelper": "Script/Build/Authoring.lua",
+        "consumers": [
+          "Catalpa",
+          "Tools"
+        ],
+        "description": "Compile the library C files with dynamic CRT; omit lua.c, luac.c, onelua.c and ltests.c. Accept official archive src/ layout and official Git mirror root layout. Runtime and Tools keep their own Lua states private.",
+        "submoduleRegistered": false,
+        "upstreamSourceModified": false
+      },
+      "validation": "Static local file reads and hashes only; project generation, compilation and runtime behavior remain unverified."
     }
   ],
   "externalToolchains": [

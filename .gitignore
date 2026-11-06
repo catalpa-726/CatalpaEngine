@@ -73,3 +73,7 @@ Desktop.ini
 /Catalpa/third_party/MikkTSpace/
 
 /Catalpa/third_party/assimp/
+
+/Catalpa/third_party/nativefiledialog-extended/
+/Catalpa/third_party/imgui-node-editor/
+/Catalpa/third_party/lua/

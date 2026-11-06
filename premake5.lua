@@ -27,6 +27,13 @@ IncludeDir["assimp"] = "Catalpa/third_party/assimp/include"
 IncludeDir["AssimpConfig"] = "out/generated/Assimp/include"
 IncludeDir["AssimpZlib"] = "Catalpa/third_party/assimp/contrib/zlib"
 IncludeDir["AssimpZlibConfig"] = "out/generated/Assimp/zlib"
+IncludeDir["NodeEditor"] = "Catalpa/third_party/imgui-node-editor"
+IncludeDir["NativeFileDialog"] = "Catalpa/third_party/nativefiledialog-extended/src/include"
+-- Lua 官方发行包使用 src/，官方 Git 镜像把源码放在根目录。
+IncludeDir["Lua"] = "Catalpa/third_party/lua/src"
+if not os.isfile(path.join(_MAIN_SCRIPT_DIR, IncludeDir.Lua, "lua.h")) then
+    IncludeDir["Lua"] = "Catalpa/third_party/lua"
+end
 
 -- 工程生成前检查外部源码依赖和生成的 GLAD；获取版本见 Dependencies.lock.json。
 local requiredDependencies = {
@@ -63,7 +70,19 @@ local requiredDependencies = {
     "Catalpa/third_party/assimp/CMakeLists.txt",
     "Catalpa/third_party/assimp/include/assimp/config.h.in",
     "Catalpa/third_party/assimp/include/assimp/revision.h.in",
-    "Catalpa/third_party/assimp/contrib/zlib/zconf.h.cmakein"
+    "Catalpa/third_party/assimp/contrib/zlib/zconf.h.cmakein",
+    "Catalpa/third_party/imgui-node-editor/imgui_node_editor.h",
+    "Catalpa/third_party/imgui-node-editor/imgui_node_editor.cpp",
+    "Catalpa/third_party/imgui-node-editor/imgui_node_editor_api.cpp",
+    "Catalpa/third_party/imgui-node-editor/imgui_canvas.cpp",
+    "Catalpa/third_party/imgui-node-editor/crude_json.cpp",
+    "Catalpa/third_party/nativefiledialog-extended/src/include/nfd.h",
+    "Catalpa/third_party/nativefiledialog-extended/src/nfd_win.cpp",
+    path.join(IncludeDir.Lua, "lua.h"),
+    path.join(IncludeDir.Lua, "luaconf.h"),
+    path.join(IncludeDir.Lua, "lapi.c"),
+    path.join(IncludeDir.Lua, "lauxlib.c"),
+    path.join(IncludeDir.Lua, "linit.c")
 }
 for _, dependency in ipairs(requiredDependencies) do
     if not os.isfile(path.join(_MAIN_SCRIPT_DIR, dependency)) then
@@ -123,6 +142,7 @@ include "Script/Build/SPIRVReflect.lua"
 -- 工具依赖均由Premake直接编译；Assimp的派生头也由Lua生成。
 include "Script/Build/AssetImport.lua"
 include "Script/Build/Assimp.lua"
+include "Script/Build/Authoring.lua"
 filter {}
 
 
@@ -151,6 +171,7 @@ project "Catalpa"
         "%{IncludeDir.GLM}",
         "%{IncludeDir.EnTT}",
         "%{IncludeDir.EnkiTS}",
+        "%{IncludeDir.Lua}"
     }
 
     links { 
@@ -158,6 +179,7 @@ project "Catalpa"
         "GLAD",
         "imgui",
         "enkiTS",
+        "Lua"
     }
 
     -- 第三方 Gizmo 实现与 ImGui 同属此 DLL；编辑器继续使用导入接口。
@@ -211,7 +233,8 @@ project "CatalpaBox"
         "CatalpaEditor",
         "Tools",
         -- 最终宿主显式链接工具静态闭包，避免依赖StaticLib传递链接的差异。
-        "fastgltf", "simdjson", "simdutf", "MikkTSpace", "assimp", "AssimpZlib"
+        "fastgltf", "simdjson", "simdutf", "MikkTSpace", "assimp", "AssimpZlib",
+        "imgui-node-editor", "nativefiledialog-extended", "Lua"
     }
 
     -- 开发配置调用验证库；Dist 的入口由现有 CATALPA_DIST 分支禁用。
@@ -221,6 +244,7 @@ project "CatalpaBox"
     filter {}
 
     filter "system:windows"
+        links { "ole32", "uuid", "shell32" }
         defines {
             "CATALPA_PLATFORM_WINDOW"
         }
@@ -280,11 +304,11 @@ project "Tools"
         "%{IncludeDir.JSON}", "%{IncludeDir.GLM}",
         "%{IncludeDir.fastgltf}", "%{IncludeDir.simdjson}", "%{IncludeDir.stb}",
         "%{IncludeDir.MikkTSpace}", "%{IncludeDir.assimp}", "%{IncludeDir.AssimpConfig}",
-        "%{IncludeDir.AssimpZlib}", "%{IncludeDir.AssimpZlibConfig}" }
+        "%{IncludeDir.AssimpZlib}", "%{IncludeDir.AssimpZlibConfig}", "%{IncludeDir.Lua}" }
     -- 与fastgltf静态实现的公开数值ABI保持一致；stb实现由后续唯一TextureImporter提供。
     defines { "FASTGLTF_USE_64BIT_FLOAT=0" }
     -- 反射是Tools的私有实现依赖；最终宿主通过项目引用链接所需静态实现。
-    links { "Catalpa", "SPIRV-Reflect", "fastgltf", "MikkTSpace", "assimp", "AssimpZlib" }
+    links { "Catalpa", "SPIRV-Reflect", "fastgltf", "MikkTSpace", "assimp", "AssimpZlib", "Lua" }
 
     filter "system:windows"
         defines { "CATALPA_PLATFORM_WINDOW" }
@@ -307,13 +331,17 @@ project "CatalpaEditor"
         "Tools",
         "%{IncludeDir.imgui}",
         "%{IncludeDir.ImGuizmo}",
+        "%{IncludeDir.NodeEditor}",
+        "%{IncludeDir.NativeFileDialog}",
         "%{IncludeDir.JSON}",
         "%{IncludeDir.GLM}"
     }
 
     links {
         "Catalpa",
-        "Tools"
+        "Tools",
+        "imgui-node-editor",
+        "nativefiledialog-extended"
     }
 
     filter "system:windows"

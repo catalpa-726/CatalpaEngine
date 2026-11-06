@@ -63,3 +63,13 @@ S03.1-B 历史获取记录：当时优先尝试完整 Git 克隆，未完成后�
 - MIT 许可与原始版权保留在 [LICENSE](Catalpa/third_party/ImGuizmo/LICENSE)；源码头保留 Cedric Guillemet 及贡献者声明。分发时携带完整许可。
 - 复用 `Script/Build/ImGui.lua`，只将 `src/ImGuizmo.cpp` 编入现有 Catalpa.dll；该文件单独关闭 PCH 并设置 Windows 导出宏。CatalpaEditor 使用同一 DLL 的导入接口和现有 ImGui 上下文。上游示例、额外控件与 CMake 不参与构建，不引入第二份 ImGui。
 - `.gitignore` 忽略用户供包源码，`.gitmodules` 仅声明路径和官方仓库；助手未执行 Git，也未确认 gitlink、暂存、提交或推送状态。后续联合功能批已实现 TransformGizmo 的矩阵适配、连续预览、释放提交与取消恢复，复用 TransformDrag/CommandHistory；仅完成静态审阅，生成、编译与原生交互仍待用户验证。
+
+## 作者工具与脚本依赖接线（2026-11-06）
+
+用户提供的三个目录由 `Script/Build/Authoring.lua` 直接编译为静态库。实际版本从本地头文件或构建声明读取；构建输入和许可文件摘要记录在锁文件中，尚未核实下载归档或上游提交。
+
+- imgui-node-editor 0.9.4 使用包内 [MIT LICENSE](Catalpa/third_party/imgui-node-editor/LICENSE)。仅编译根目录四个实现文件，调用 Catalpa.dll 的现有 ImGui，后续由 Editor 承载画布与文档交互。
+- nativefiledialog-extended 的本地构建声明为 1.4.1，使用 [Zlib LICENSE](Catalpa/third_party/nativefiledialog-extended/LICENSE)。Windows 编译 `src/nfd_win.cpp` 并链接系统库 ole32、uuid、shell32，由 Editor 消费。
+- Lua 5.5.1 使用 [发行包 readme 中的 MIT 许可](Catalpa/third_party/lua/doc/readme.html#license)。静态库保留标准库实现，运行时的库开放策略由后续 ScriptRuntime 制定；不编译解释器和编译器入口。Catalpa 与 Tools 可私有调用 Lua，VM 和 Lua 对象不通过公共 API 传递。
+
+新目录沿用外部依赖的忽略规则。`.gitmodules` 声明仓库来源，尚未登记 gitlink。接线只经过静态核对，工程生成、编译、文件对话框和脚本/画布功能等待各阶段验证。
