@@ -76,10 +76,11 @@ namespace Catalpa::Editor {
             return true;
         }
 
-        // 目前静态字体只提供英文；拒绝未知语言，不静默改写已有设置。
+        // 语言键使用固定白名单，布局和作者命名保持独立。
         bool ValidateSettings(const WorkspaceSettings& settings, std::string& error)
         {
-            if (settings.language != "en-US") error = "Unsupported workspace language; only en-US is available.";
+            if (settings.language != "en-US" && settings.language != "zh-CN")
+                error = "Unsupported workspace language.";
             else if (settings.layout.size() > MaxWorkspaceBytes) error = "Workspace layout exceeds the 1 MiB limit.";
             else if (settings.layout.find('\0') != std::string::npos) error = "Workspace layout contains an embedded null byte.";
             else if (!IsValidUtf8(settings.layout)) error = "Workspace layout is not valid UTF-8.";

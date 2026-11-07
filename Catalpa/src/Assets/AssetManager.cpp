@@ -2,6 +2,7 @@
 #include "Assets/AssetManager.h"
 #include "Assets/AssetContainerReader.h"
 #include "Assets/AssetDependencyGraph.h"
+#include "Assets/PackageReader.h"
 #include "Log/Log.h"
 namespace Catalpa {
     namespace {
@@ -58,6 +59,17 @@ namespace Catalpa {
         JobSystem& jobs;
         VirtualFileSystem files;
         AssetRegistry registry;
+        struct PackageBackup {
+            VirtualFileSystem files;
+            AssetRegistry registry;
+            MemoryReservation bytes;
+        };
+        struct RetainedPackage {
+            std::shared_ptr<const PackageReader> package;
+            MemoryReservation bytes;
+        };
+        std::unique_ptr<PackageBackup> packageBackup;
+        bool restoringPackageRegistry = false;
         AssetManagerConfig config;
         MemoryBudget budget;
         std::thread::id owner = std::this_thread::get_id();
@@ -66,6 +78,16 @@ namespace Catalpa {
         std::map<std::pair<AssetId, uint64_t>, std::string> knownDigests;
         std::map<std::string, std::filesystem::path, std::less<>> installedRoots;
         std::vector<Pending> pending;
+        std::array<AssetChangeEvent, 1024> changes{};
+        uint64_t changeSequence = 0;
+        void Published(AssetId id, uint64_t previous, uint64_t version) noexcept {
+            if (previous == version)
+                return;
+            if (changeSequence == UINT64_MAX)
+                std::terminate();
+            ++changeSequence;
+            changes[(changeSequence - 1) % changes.size()] = {id, previous, version, changeSequence};
+        }
         bool closed = false;
         Impl(JobSystem& j, VirtualFileSystem f, AssetRegistry r, AssetManagerConfig c)
             : jobs(j), files(std::move(f)), registry(std::move(r)), config(c), budget(c.memoryBudgetBytes) {
@@ -89,6 +111,35 @@ namespace Catalpa {
             return result;
         }
         void Fail(Entry& entry, std::string message) { entry.status = AssetStatus::Failed; entry.diagnostic = std::move(message); }
+        bool ValidateDeferredClosure(AssetId root, std::string& error) const {
+            std::map<AssetId, uint8_t> states;
+            std::function<bool(AssetId, size_t)> visit = [&](AssetId id, size_t depth) {
+                if (depth >= 128 || states.size() > config.maxKnownVersions) {
+                    error = "Deferred dependency graph exceeds budget";
+                    return false;
+                }
+                const auto found = states.find(id);
+                if (found != states.end()) {
+                    if (found->second == 1) {
+                        error = "Deferred dependency cycle at " + id.ToString();
+                        return false;
+                    }
+                    return true;
+                }
+                const auto* record = registry.Find(id);
+                if (!record) {
+                    error = "Missing deferred dependency: " + id.ToString();
+                    return false;
+                }
+                states[id] = 1;
+                for (auto child : record->dependencies)
+                    if (!visit(child, depth + 1))
+                        return false;
+                states[id] = 2;
+                return true;
+            };
+            return visit(root, 0);
+        }
         bool Begin(AssetId id, std::set<AssetId>& stack, std::string& error, bool force) {
             const auto* record = registry.Find(id);
             if (!record) { error = "Asset is not registered"; return false; }
@@ -105,11 +156,22 @@ namespace Catalpa {
             size_t waiting = pending.size();
             for (const auto& [key, value] : entries) { (void)key; if (value.status == AssetStatus::WaitingForDependencies) ++waiting; }
             if (waiting >= config.maxPending) { error = "Asset pending capacity is exhausted"; Fail(entry, error); stack.erase(id); return false; }
-            entry.status = AssetStatus::WaitingForDependencies;
-            for (auto dependency : record->dependencies) {
-                // 环和深度限制统一由递归入口诊断，不能短路跳过error写入。
-                if (!Begin(dependency, stack, error, false)) { Fail(entry, "Dependency rejected: " + error); stack.erase(id); return false; }
+            if (loaders.at(record->type.ToString()).deferredDependencies &&
+                !ValidateDeferredClosure(id, error)) {
+                Fail(entry, error);
+                stack.erase(id);
+                return false;
             }
+            entry.status = AssetStatus::WaitingForDependencies;
+            if (!loaders.at(record->type.ToString()).deferredDependencies)
+                for (auto dependency : record->dependencies) {
+                    // 环和深度限制统一由递归入口诊断，不能短路跳过error写入。
+                    if (!Begin(dependency, stack, error, false)) {
+                        Fail(entry, "Dependency rejected: " + error);
+                        stack.erase(id);
+                        return false;
+                    }
+                }
             stack.erase(id);
             Schedule(id, entry);
             if (entry.status == AssetStatus::Failed) { error = entry.diagnostic; return false; }
@@ -124,6 +186,14 @@ namespace Catalpa {
             std::vector<AssetDependency> expectedDependencies;
             for (auto dependency : record->dependencies) {
                 const auto* metadata = registry.Find(dependency);
+                if (loaders.at(record->type.ToString()).deferredDependencies) {
+                    if (!metadata || metadata->contentHash.empty()) {
+                        Fail(entry, "Stream dependency lacks exact catalog metadata");
+                        return;
+                    }
+                    expectedDependencies.push_back({dependency, metadata->version, metadata->contentHash});
+                    continue;
+                }
                 const auto found = entries.find(dependency);
                 if (!metadata || found == entries.end()) { Fail(entry, "Dependency is missing"); return; }
                 const auto& loaded = found->second;
@@ -132,6 +202,71 @@ namespace Catalpa {
                 if (loaded.contentHash.empty()) { Fail(entry, "Cooked dependency has no verified container digest"); return; }
                 context.dependencies.push_back({dependency, loaded.current.version, loaded.current.asset.value, loaded.current.asset.cppType});
                 expectedDependencies.push_back({dependency, loaded.current.version, loaded.contentHash});
+            }
+            if (loaders.at(record->type.ToString()).deferredDependencies) {
+                std::map<AssetId, AssetRecord> fixedRecords;
+                std::vector<AssetId> closure(record->dependencies.begin(), record->dependencies.end());
+                for (size_t index = 0; index < closure.size(); ++index) {
+                    const auto* child = registry.Find(closure[index]);
+                    if (!child) {
+                        Fail(entry, "Missing deferred catalog dependency");
+                        return;
+                    }
+                    if (!fixedRecords.emplace(child->id, *child).second)
+                        continue;
+                    closure.insert(closure.end(), child->dependencies.begin(), child->dependencies.end());
+                    if (closure.size() > config.maxKnownVersions * 128) {
+                        Fail(entry, "Deferred closure edge budget");
+                        return;
+                    }
+                }
+                context.readDeferred =
+                    [snapshot = files, fixed = std::move(fixedRecords),
+                     limit = config.maxFileBytes](AssetId dependency, size_t requestedLimit,
+                                                  std::vector<std::byte>& output, std::string& error) {
+                        const auto found = fixed.find(dependency);
+                        if (found == fixed.end() || requestedLimit == 0) {
+                            error = "Undeclared deferred dependency";
+                            return false;
+                        }
+                        const auto& metadata = found->second;
+                        std::vector<std::byte> bytes;
+                        if (!snapshot.ReadFile(metadata.locator.path, std::min(limit, requestedLimit), bytes,
+                                               error))
+                            return false;
+                        std::string digest;
+                        if (!ComputeAssetContentHash(bytes, digest, error))
+                            return false;
+                        AssetContainer container;
+                        if (digest != metadata.contentHash ||
+                            !AssetContainerReader::Read(bytes, container, error, requestedLimit)) {
+                            if (error.empty())
+                                error = "Deferred container digest differs from fixed catalog";
+                            return false;
+                        }
+                        if (container.id != metadata.id || container.version != metadata.version ||
+                            container.type != metadata.type) {
+                            error = "Deferred container identity/type/version differs from fixed catalog";
+                            return false;
+                        }
+                        if (container.dependencies.size() != metadata.dependencies.size()) {
+                            error = "Deferred container dependency table differs from catalog";
+                            return false;
+                        }
+                        for (const auto& expected : container.dependencies) {
+                            const auto child = fixed.find(expected.id);
+                            if (std::find(metadata.dependencies.begin(), metadata.dependencies.end(),
+                                          expected.id) == metadata.dependencies.end() ||
+                                child == fixed.end() || child->second.version != expected.version ||
+                                child->second.contentHash != expected.contentHash) {
+                                error = "Deferred child dependency version/digest mismatch";
+                                return false;
+                            }
+                        }
+                        output = std::move(bytes);
+                        error.clear();
+                        return true;
+                    };
             }
             MemoryReservation reservation;
             if (!budget.TryReserve(config.maxFileBytes * 2 + config.maxResidentBytes, reservation)) { Fail(entry, "Asset memory budget is exhausted"); return; }
@@ -161,6 +296,7 @@ namespace Catalpa {
                     }
                 }
                 if (cancellation.IsCancellationRequested()) { result->cancelled = true; return; }
+                context.declaredDependencies = container.dependencies;
                 if (!loader.decode(container, context, result->result, result->error)) return;
                 if (!result->result.value || result->result.cppType != loader.cppType || result->result.residentBytes == 0 || result->result.residentBytes > context.maxResidentBytes) {
                     result->error = "Loader returned an invalid type, owner or resident byte count"; result->result = {}; return;
@@ -201,6 +337,10 @@ namespace Catalpa {
     bool AssetManager::ReplaceRegistry(AssetRegistry registry, std::string& error) {
         try {
             if (!m_Impl->Owner(error)) return false;
+            if (m_Impl->packageBackup && !m_Impl->restoringPackageRegistry) {
+                error = "Registry is frozen while a package session is installed";
+                return false;
+            }
             for (auto& [id, entry] : m_Impl->entries) {
                 if (entry.generation == std::numeric_limits<uint64_t>::max()) { error = "Asset request generation exhausted"; return false; }
                 if (const auto* next = registry.Find(id); next) {
@@ -237,6 +377,10 @@ namespace Catalpa {
                 return false;
             if (!absoluteRoot.is_absolute() || catalog.GetRecords().empty()) {
                 error = "Cooked catalog requires an absolute root and records";
+                return false;
+            }
+            if (m_Impl->packageBackup) {
+                error = "Cooked catalog cannot change during a package session";
                 return false;
             }
             const auto root = std::filesystem::canonical(absoluteRoot);
@@ -319,6 +463,86 @@ namespace Catalpa {
             return false;
         }
     }
+    bool AssetManager::InstallPackage(std::shared_ptr<const PackageReader> package, std::string& error) {
+        try {
+            if (!m_Impl->Owner(error))
+                return false;
+            if (!package || m_Impl->packageBackup || !m_Impl->pending.empty()) {
+                error = "Package installation requires an idle manager without another session";
+                return false;
+            }
+            auto backup =
+                std::make_unique<Impl::PackageBackup>(Impl::PackageBackup{m_Impl->files, m_Impl->registry});
+            if (!m_Impl->budget.TryReserve(package->StorageBytes(), backup->bytes)) {
+                error = "Package snapshot exceeds remaining CPU asset budget";
+                return false;
+            }
+            auto retention = std::make_shared<Impl::RetainedPackage>(
+                Impl::RetainedPackage{std::move(package), std::move(backup->bytes)});
+            package = std::shared_ptr<const PackageReader>(retention, retention->package.get());
+            auto files = m_Impl->files;
+            if (!files.MountPackage(package, error))
+                return false;
+            auto records = m_Impl->registry.GetRecords();
+            for (const auto& record : package->Catalog().GetRecords()) {
+                auto found = std::find_if(records.begin(), records.end(),
+                                          [&](const auto& r) { return r.id == record.id; });
+                if (found != records.end()) {
+                    if (found->type != record.type || found->version != record.version ||
+                        found->contentHash != record.contentHash) {
+                        error = "Package collides with a different existing asset version";
+                        return false;
+                    }
+                    *found = record; // 同版本仍切到包内locator，不能继续依赖开发目录。
+                    continue;
+                }
+                records.push_back(record);
+            }
+            AssetRegistry next;
+            if (!next.Replace(records, error) || !ReplaceRegistry(std::move(next), error))
+                return false;
+            m_Impl->files.Swap(files);
+            m_Impl->packageBackup.swap(backup);
+            error.clear();
+            return true;
+        } catch (const std::exception& e) {
+            error = e.what();
+            return false;
+        }
+    }
+
+    bool AssetManager::UninstallPackage(std::string& error) {
+        if (!m_Impl->Owner(error))
+            return false;
+        if (!m_Impl->packageBackup) {
+            error.clear();
+            return true;
+        }
+        if (!m_Impl->pending.empty()) {
+            error = "Busy: package reads must finish before unmount";
+            return false;
+        }
+        // 保留备份直到目录恢复成功；失败仍可诊断和重试。
+        struct RestoreGuard {
+            bool& flag;
+            ~RestoreGuard() {
+                flag = false;
+            }
+        } guard{m_Impl->restoringPackageRegistry};
+        m_Impl->restoringPackageRegistry = true;
+        try {
+            if (!ReplaceRegistry(m_Impl->packageBackup->registry, error))
+                return false;
+        } catch (const std::exception& e) {
+            error = e.what();
+            return false;
+        }
+        m_Impl->files.Swap(m_Impl->packageBackup->files);
+        m_Impl->packageBackup.reset();
+        error.clear();
+        return true;
+    }
+
     bool AssetManager::Request(AssetId id, std::string& error, bool forceReload) {
         try { if (!m_Impl->Owner(error)) return false; std::set<AssetId> stack; return m_Impl->Begin(id, stack, error, forceReload); }
         catch (const std::exception& exception) { error = exception.what(); return false; }
@@ -360,7 +584,9 @@ namespace Catalpa {
                             m_Impl->knownDigests.try_emplace(key, completed.contentHash);
                             it->reservation.Shrink(completed.result.residentBytes);
                             auto retained = m_Impl->Retain(std::move(completed.result), std::move(it->reservation), std::move(completed.dependencies));
+                            const auto previousVersion = entry.current.version;
                             entry.current = {it->id, record->version, std::move(retained), false};
+                            m_Impl->Published(it->id, previousVersion, record->version);
                             entry.contentHash = std::move(completed.contentHash); entry.diagnostic.clear(); entry.status = AssetStatus::Ready;
                         } catch (const std::exception& exception) { m_Impl->Fail(entry, exception.what()); }
                     }
@@ -397,6 +623,40 @@ namespace Catalpa {
     std::string AssetManager::GetDiagnostic(AssetId id) const { const auto it = m_Impl->entries.find(id); return it == m_Impl->entries.end() ? "Asset is not loaded" : it->second.diagnostic; }
     MemoryBudgetStats AssetManager::GetBudgetStats() const { return m_Impl->budget.GetStats(); }
     size_t AssetManager::GetPendingCount() const { return m_Impl->pending.size(); }
+    bool AssetManager::GetDependencySnapshot(AssetId id, AssetDependencyValue& output,
+                                             std::string& error) const {
+        if (!m_Impl->Owner(error))
+            return false;
+        const auto found = m_Impl->entries.find(id);
+        if (found == m_Impl->entries.end() || !found->second.current.asset.value ||
+            found->second.current.fallback) {
+            error = "Required domain dependency is not ready: " + id.ToString();
+            return false;
+        }
+        const auto& value = found->second.current;
+        output = {id, value.version, value.asset.value, value.asset.cppType};
+        error.clear();
+        return true;
+    }
+    bool AssetManager::ReadChanges(uint64_t& cursor, std::vector<AssetChangeEvent>& output, bool& reset,
+                                   std::string& error) const try {
+        if (!m_Impl->Owner(error))
+            return false;
+        std::vector<AssetChangeEvent> candidate;
+        const auto end = m_Impl->changeSequence;
+        reset = cursor > end || end - cursor > m_Impl->changes.size();
+        const uint64_t begin = reset ? end - std::min<uint64_t>(end, m_Impl->changes.size()) : cursor;
+        candidate.reserve(size_t(end - begin));
+        for (auto sequence = begin; sequence < end; ++sequence)
+            candidate.push_back(m_Impl->changes[sequence % m_Impl->changes.size()]);
+        output = std::move(candidate);
+        cursor = end;
+        error.clear();
+        return true;
+    } catch (const std::exception& exception) {
+        error = exception.what();
+        return false;
+    }
     bool AssetManager::GetAsset(AssetId id, std::type_index type, AssetSnapshot& output, std::string& error) const {
         if (!m_Impl->Owner(error)) return false;
         const auto* loader = m_Impl->Loader(type);
@@ -425,7 +685,9 @@ namespace Catalpa {
             if (!m_Impl->budget.TryReserve(value.residentBytes, reservation)) { error = "Builtin exceeds memory budget"; return false; }
             auto retained = m_Impl->Retain(std::move(value), std::move(reservation));
             auto& entry = m_Impl->entries[id]; entry.job.Cancel(); ++entry.generation; entry.type = loader->type; entry.builtin = true;
+            const auto previousVersion = entry.current.version;
             entry.current = {id, version, std::move(retained), false}; entry.status = AssetStatus::Ready; entry.diagnostic.clear(); entry.contentHash.clear();
+            m_Impl->Published(id, previousVersion, version);
             error.clear(); return true;
         } catch (const std::exception& exception) { error = exception.what(); return false; }
     }

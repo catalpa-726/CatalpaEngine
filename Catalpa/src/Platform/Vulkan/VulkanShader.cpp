@@ -17,6 +17,9 @@ namespace Catalpa {
         VkShaderStageFlagBits stage{};
 
         switch (desc.stage) {
+        case RHIShaderStage::Compute:
+            stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            break;
         case RHIShaderStage::Vertex: stage = VK_SHADER_STAGE_VERTEX_BIT; break;
         case RHIShaderStage::Fragment: stage = VK_SHADER_STAGE_FRAGMENT_BIT; break;
         default: return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanShader" };

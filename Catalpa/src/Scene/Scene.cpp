@@ -9,7 +9,7 @@
 #include "Camera/CameraProjection.h"
 #include "Scene/Components/MeshRendererComponent.h"
 #include "Geometry/MeshValidation.h"
-
+#include "Geometry/MeshLod.h"
 
 namespace Catalpa {
 
@@ -139,6 +139,12 @@ namespace Catalpa {
     }
 
     WorldStatus Scene::QueueSetMeshRenderer(EntityId entity, const MeshRendererComponent& renderer) {
+        std::string lodError;
+        if (!ValidateMeshLodChain(renderer.meshVersion, renderer.lods, renderer.lodErrors, lodError)) {
+            // 详细错误由 Scene 保活；WorldStatus 仍返回静态文本，不借用局部或可变字符串。
+            m_ComponentDiagnostic = std::move(lodError);
+            return {WorldError::InvalidArgument, "Mesh LOD chain rejected; see Scene component diagnostic"};
+        }
         if (const auto status = ValidateMeshResource(renderer.mesh); !status.IsSuccess()) return { WorldError::InvalidArgument, status.message };
         if(renderer.meshVersion.HasValue()) {
             std::string error;

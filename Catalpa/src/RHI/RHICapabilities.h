@@ -23,6 +23,9 @@ namespace Catalpa {
         uint64_t minUniformBufferOffsetAlignment = 0;
         uint64_t minStorageBufferOffsetAlignment = 0;
 
+        bool compute = false;
+        bool drawIndirect = false;
+        std::array<uint32_t, 3> maxComputeWorkGroupCount{};
         bool presentFence = false;                      // 是否实际启用呈现 Fence；false 时采用设备空闲兼容回收。
         float maxSamplerLodBias = 0.0f;
     };

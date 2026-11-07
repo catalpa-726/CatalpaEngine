@@ -237,7 +237,13 @@ namespace Catalpa {
             if(!assets.PublishBuiltin<MeshAsset>(id,1,std::move(value),resident,assetError)) return false;
             AssetVersionRef<MeshAsset> version;
             if(!assets.Acquire(id,version,fallback,assetError)) return false;
-            output={mesh,color,true,version,{material}}; return true;
+            // 按字段赋值，避免新增 LOD 等可选字段后错位绑定材质。
+            output = {};
+            output.mesh = mesh;
+            output.color = color;
+            output.meshVersion = version;
+            output.materials = { material };
+            return true;
         };
         MeshData cube;
         MeshResourceRef geometry;

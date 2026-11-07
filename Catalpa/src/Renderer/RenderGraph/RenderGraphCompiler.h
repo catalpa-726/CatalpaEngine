@@ -6,7 +6,7 @@
 namespace Catalpa {
     class RenderGraphBuilder;
 
-    // 编译唯一的单队列访问计划，不录制、不提交、不修改导入的权威状态。
+    // 编译访问/初始化、DAG及别名生命周期，不录制、不提交、不修改导入的权威状态。
     class RenderGraphCompiler {
     public:
         // 实际编译路径使用的纯 CPU 分析：范围版本、数据/顺序依赖、稳定拓扑及死 pass 剔除。

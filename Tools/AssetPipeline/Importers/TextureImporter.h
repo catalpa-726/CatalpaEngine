@@ -7,7 +7,7 @@ namespace Catalpa::Tools {
     class TextureImporter final : public IAssetImporter {
       public:
         std::string_view Name() const noexcept override {
-            return "stb-image/rgba8-hdr-float-v2";
+            return "stb-image/rgba8-hdr-float-v3-mips-bc1";
         }
 
         bool Import(AssetBuildContext&, AssetImportResult&, std::string&) const override;

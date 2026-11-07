@@ -1,10 +1,13 @@
-﻿#include "catpch.h"
+#include "catpch.h"
 #include "Log/Log.h"
 #include "VulkanResourceRegistry.h"
 #include "VulkanDevice.h"
 #include "VulkanDebugUtils.h"
 
 namespace Catalpa {
+    RHIQueueInfo VulkanResourceRegistry::GetQueueInfo(QueueId id) const noexcept {
+        return m_Device.GetQueueInfo(id);
+    }
 
     VulkanResourceRegistry::~VulkanResourceRegistry()
     {
@@ -111,6 +114,7 @@ namespace Catalpa {
 
     RHIStatus VulkanResourceRegistry::RetainSampler(SamplerHandle sampler) noexcept
     {
+        std::lock_guard lock(m_CommandReferenceMutex);
         if (!ResolveSampler(sampler))
             return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanResourceRegistry::RetainSampler" };
 
@@ -125,6 +129,7 @@ namespace Catalpa {
 
     void VulkanResourceRegistry::ReleaseSamplerReference(SamplerHandle sampler) noexcept
     {
+        std::lock_guard lock(m_CommandReferenceMutex);
         const auto* found = FindSampler(sampler);
         CAT_CORE_ASSERT(found && found->references != 0, "Sampler has no retained reference!");
 
@@ -275,6 +280,7 @@ namespace Catalpa {
 
     RHIStatus VulkanResourceRegistry::RetainTextureView(TextureViewHandle view) noexcept
     {
+        std::lock_guard lock(m_CommandReferenceMutex);
         if (!ResolveTextureView(view))
             return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanResourceRegistry::RetainTextureView" };
 
@@ -289,6 +295,7 @@ namespace Catalpa {
 
     void VulkanResourceRegistry::ReleaseTextureViewReference(TextureViewHandle view) noexcept
     {
+        std::lock_guard lock(m_CommandReferenceMutex);
         const auto* found = FindTextureView(view);
         CAT_CORE_ASSERT(found && found->references != 0, "Texture view has no retained reference!");
 
@@ -487,6 +494,52 @@ namespace Catalpa {
         return {};
     }
 
+    RHIStatus VulkanResourceRegistry::CreateComputePipeline(const RHIComputePipelineDesc& desc,
+                                                            ComputePipelineHandle& pipeline) {
+        pipeline = {};
+
+        if (m_FirstFreePipeline == InvalidIndex) {
+            if (m_Pipelines.size() >= InvalidIndex)
+                return {.code = RHIErrorCode::OutOfMemory,
+                        .operation = "VulkanResourceRegistry::CreateComputePipeline"};
+
+            m_Pipelines.reserve(m_Pipelines.size() + 1);
+        }
+
+        VulkanPipelineRecord record{};
+        if (const RHIStatus status = CreateVulkanComputePipeline(m_Device, desc, record); !status.IsSuccess())
+            return status;
+
+        uint32_t index = m_FirstFreePipeline;
+
+        if (index == InvalidIndex) {
+            index = static_cast<uint32_t>(m_Pipelines.size());
+            m_Pipelines.emplace_back();
+        } else {
+            m_FirstFreePipeline = m_Pipelines[index].nextFree;
+        }
+
+        auto& slot = m_Pipelines[index];
+        slot.nextFree = InvalidIndex;
+        slot.references = 0;
+        slot.releaseRequested = false;
+        slot.record = std::move(record);
+
+        pipeline = {.device = m_DeviceId, .slot = {.index = index, .generation = slot.generation}};
+
+        if (const auto& debug = m_Device.GetDebugUtils(); debug.IsEnabled()) {
+            const std::string name = "GraphicsPipeline[" + std::to_string(m_DeviceId.value) + ":" +
+                                     std::to_string(index) + ":" + std::to_string(slot.generation) + "]";
+
+            debug.NameObject(m_Device.GetHandle(), VK_OBJECT_TYPE_PIPELINE,
+                             VulkanHandleToUint64(slot.record.pipeline), name.c_str());
+            debug.NameObject(m_Device.GetHandle(), VK_OBJECT_TYPE_PIPELINE_LAYOUT,
+                             VulkanHandleToUint64(slot.record.layout), (name + ".Layout").c_str());
+        }
+
+        return {};
+    }
+
     const VulkanResourceRegistry::PipelineSlot* VulkanResourceRegistry::FindPipeline(GraphicsPipelineHandle pipeline) const noexcept
     {
         if (!pipeline.HasValue() || pipeline.device != m_DeviceId || pipeline.slot.index >= m_Pipelines.size()) return nullptr;
@@ -512,6 +565,7 @@ namespace Catalpa {
 
     RHIStatus VulkanResourceRegistry::RetainPipeline(GraphicsPipelineHandle pipeline) noexcept
     {
+        std::lock_guard lock(m_CommandReferenceMutex);
         if (!ResolveGraphicsPipeline(pipeline))
             return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanResourceRegistry::RetainPipeline" };
 
@@ -526,6 +580,7 @@ namespace Catalpa {
 
     void VulkanResourceRegistry::ReleasePipeline(GraphicsPipelineHandle pipeline) noexcept
     {
+        std::lock_guard lock(m_CommandReferenceMutex);
         const auto* found = FindPipeline(pipeline);
         CAT_CORE_ASSERT(found && found->references != 0, "Pipeline has no retained reference!");
 
@@ -658,6 +713,7 @@ namespace Catalpa {
 
     RHIStatus VulkanResourceRegistry::RetainBuffer(BufferHandle buffer) noexcept
     {
+        std::lock_guard lock(m_CommandReferenceMutex);
         if (!ResolveBuffer(buffer))
             return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanResourceRegistry::RetainBuffer" };
 
@@ -672,6 +728,7 @@ namespace Catalpa {
 
     void VulkanResourceRegistry::ReleaseBufferReference(BufferHandle buffer) noexcept
     {
+        std::lock_guard lock(m_CommandReferenceMutex);
         const auto* found = FindBuffer(buffer);
         CAT_CORE_ASSERT(found && found->references != 0, "Buffer has no retained reference!");
 
@@ -694,4 +751,4 @@ namespace Catalpa {
         m_FirstFreeBuffer = index;
     }
 
-}
+} // namespace Catalpa

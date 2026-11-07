@@ -1,5 +1,6 @@
 #pragma once
 #include "Panels/PanelText.h"
+#include "Core/IO/FileWatcher.h"
 #include "AssetPipeline/AssetBuildTypes.h"
 #include "Assets/AssetManager.h"
 #include "Assets/AssetDependencyGraph.h"
@@ -67,6 +68,9 @@ namespace Catalpa::Editor {
         std::set<AssetId> m_ProjectAssets;
         std::map<AssetId, size_t> m_RecordIndices; // 当前结果的索引，仅随成功安装的目录替换。
         size_t m_LoadCursor = 0;
+        FileWatcher m_Watcher;
+        bool m_WatchEnabled = false, m_ReimportPending = false;
+        std::string m_WatchError;
         bool m_Loading = false;
         bool m_AssetsReady = false;
         bool m_Cancelled = false;

@@ -9,7 +9,9 @@ namespace Catalpa {
         TransferDestination = 1u << 1,
         Vertex = 1u << 2,
         Index = 1u << 3,
-        Uniform = 1u << 4
+        Uniform = 1u << 4,
+        Storage = 1u << 5,
+        Indirect = 1u << 6
     };
 
     constexpr RHIBufferUsage operator|(RHIBufferUsage left, RHIBufferUsage right) noexcept

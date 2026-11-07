@@ -8,9 +8,9 @@ namespace Catalpa {
 
     inline constexpr uint32_t RHIMaxBindingsPerSet = 32;
 
-    enum class RHIBindingType { SampledTexture, Sampler, UniformBuffer };
+    enum class RHIBindingType { SampledTexture, Sampler, UniformBuffer, StorageBuffer };
 
-    // 当前只支持set 0、单描述符；UBO可用于vertex/fragment，纹理/sampler仍限fragment。
+    // set 0单描述符；按反射限定graphics/compute阶段，buffer范围显式声明。
     struct RHIBindingLayoutEntry {
         uint32_t binding = 0;
         RHIBindingType type = RHIBindingType::SampledTexture;
@@ -33,6 +33,8 @@ namespace Catalpa {
         BufferHandle buffer{};
         uint64_t offset = 0; // UniformBuffer字节范围，不是动态offset。
         uint64_t size = 0;
+        // Compute写输出承诺覆盖整个范围；非完整写必须保持false并预先初始化。
+        bool initializesRange = false;
     };
 
 }

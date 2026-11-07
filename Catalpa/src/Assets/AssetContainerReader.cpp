@@ -1,5 +1,6 @@
 #include "catpch.h"
 #include "Assets/AssetContainerReader.h"
+#include "Assets/AssetCompression.h"
 #include "Core/Serialization/BinaryArchive.h"
 #include "Core/PlatformServices.h"
 namespace Catalpa {
@@ -43,6 +44,9 @@ namespace Catalpa {
     }
     bool AssetContainerReader::Read(std::span<const std::byte> input, AssetContainer& output, std::string& error, size_t maxPayloadBytes) {
         try {
+            if (input.size() >= 12 && input[8] == std::byte{2} && input[9] == std::byte{0} &&
+                input[10] == std::byte{0} && input[11] == std::byte{0})
+                return ReadCompressedAssetContainer(input, output, error, maxPayloadBytes);
             BinaryReader reader(input); AssetContainer data;
             std::span<const std::byte> magic; uint32_t format = 0, order = 0, count = 0;
             if (!reader.Bytes(8, magic) || !std::equal(magic.begin(), magic.end(), Magic.begin()) || !reader.U32(format) || format != 1 || !reader.U32(order) || order != 0x01020304) { error = "Unsupported or truncated asset container header"; return false; }

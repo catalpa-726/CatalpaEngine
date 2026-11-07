@@ -5,6 +5,9 @@
 
 namespace Catalpa {
     struct MaterialInstance;
+    struct SkeletonAsset;
+    struct AnimationClip;
+    struct MeshSkinBinding;
     // 导入模型局部身份与父索引，独立于World EntityId；T*R*S、角度弧度。
     // 局部源单位通过明确转换根/父scale合成，最终世界坐标为米，不伪改源顶点。
     struct ModelNode {
@@ -17,9 +20,23 @@ namespace Catalpa {
         uint32_t node = 0;
         AssetHandle<MeshAsset> mesh;
         std::vector<AssetHandle<MaterialInstance>> materials;
+        AssetHandle<MeshSkinBinding> skin;
+        // LOD0 为 mesh；其后派生几何保留相同材质槽，误差使用源网格坐标单位。
+        std::vector<AssetHandle<MeshAsset>> lods;
+        std::vector<float> lodErrors;
     };
     // 一个模型可以包含多个节点和mesh实例；逻辑资产引用不等于已经加载其依赖。
-    struct ModelAsset { std::vector<ModelNode> nodes; std::vector<ModelMeshInstance> meshes; };
+    struct ModelAsset {
+        std::vector<ModelNode> nodes;
+        std::vector<ModelMeshInstance> meshes;
+        AssetHandle<SkeletonAsset> skeleton;
+        std::vector<AssetHandle<AnimationClip>> animations;
+        // 仅运行时保活加载时的精确版本，不写入作者或Cook引用表。
+        AssetVersionRef<SkeletonAsset> skeletonVersion;
+        std::vector<AssetVersionRef<AnimationClip>> animationVersions;
+        std::vector<AssetVersionRef<MeshSkinBinding>> skinVersions;
+        std::vector<AssetVersionRef<MeshAsset>> lodVersions;
+    };
 
     // 验证节点身份、父关系/环、TRS与逻辑引用，不创建World，也不重排或归一化作者数据。
     [[nodiscard]] inline bool ValidateModelAsset(const ModelAsset& model, std::string& error) {
@@ -28,6 +45,20 @@ namespace Catalpa {
         }
         try {
             std::set<StableId> identities;
+            if (model.animations.size() > 1024 || (!model.animations.empty() && !model.skeleton.HasValue())) {
+                error = "Model animation references require a skeleton and at most 1024 clips";
+                return false;
+            }
+            if (model.skeletonVersion.HasValue() && model.skeletonVersion.GetId() != model.skeleton.id) {
+                error = "Model fixed skeleton identity differs from its logical reference";
+                return false;
+            }
+            std::set<AssetId> clips;
+            for (auto clip : model.animations)
+                if (!clip.HasValue() || !clips.insert(clip.id).second) {
+                    error = "Model clip references must be valid and unique";
+                    return false;
+                }
             for (size_t i = 0; i < model.nodes.size(); ++i) {
                 const auto& node = model.nodes[i];
                 if (!node.id.HasValue() || !identities.insert(node.id).second || node.name.size() > 1024
@@ -51,9 +82,29 @@ namespace Catalpa {
                 }
             }
             for (const auto& instance : model.meshes) {
+                if (instance.skin.HasValue() && !model.skeleton.HasValue()) {
+                    error = "Model skin binding requires a shared skeleton reference";
+                    return false;
+                }
                 if (instance.node >= model.nodes.size() || !instance.mesh.HasValue() || instance.materials.empty()
                     || instance.materials.size() > 65536) { error = "Model mesh instance or materials are invalid"; return false; }
                 for (const auto material : instance.materials) if (!material.HasValue()) { error = "Model material reference is invalid"; return false; }
+                if (instance.lods.size() != instance.lodErrors.size() || instance.lods.size() > 8 ||
+                    (instance.skin.HasValue() && !instance.lods.empty())) {
+                    error = "Model LOD lists differ or skinned instance uses unsupported LOD weights";
+                    return false;
+                }
+                std::set<AssetId> lods{instance.mesh.id};
+                float previous = 0;
+                for (size_t i = 0; i < instance.lods.size(); ++i) {
+                    if (!instance.lods[i].HasValue() || !lods.insert(instance.lods[i].id).second ||
+                        !std::isfinite(instance.lodErrors[i]) || instance.lodErrors[i] <= previous) {
+                        error = "LOD identities must be distinct and errors finite, positive and strictly "
+                                "increasing";
+                        return false;
+                    }
+                    previous = instance.lodErrors[i];
+                }
             }
             error.clear(); return true;
         } catch (const std::exception& exception) {

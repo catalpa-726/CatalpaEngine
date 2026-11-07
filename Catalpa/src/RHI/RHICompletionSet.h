@@ -7,7 +7,7 @@
 namespace Catalpa {
 
     // 整批 last-use 集合：同一 device epoch/queue 只保留最大序列。
-    // 当前提交路径只有 graphics queue；集合表示多个身份不意味着已实现多队列调度。
+    // 不同queue之间没有可比较的全局sequence，不能用最后一条graphics点替代整组要求。
     class RHICompletionSet {
     public:
         // 在接受 GPU 工作前预留不同队列身份的总数；失败保留已有记录。

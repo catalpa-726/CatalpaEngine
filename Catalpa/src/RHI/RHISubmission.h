@@ -1,6 +1,8 @@
 ﻿#pragma once
 
 #include "RHIGpuDependency.h"
+#include "RHICompletionPoint.h"
+#include <span>
 
 // 描述当前一帧使用的命令列表及提交依赖
 namespace Catalpa {
@@ -19,6 +21,8 @@ namespace Catalpa {
         RHICommandList* commands = nullptr;
         RHIGpuDependency wait{};
         RHIGpuDependency signal{};
+        // 只可等待已经接受的提交事实，不预分配或猜测未来sequence。
+        std::span<const RHICompletionPoint> dependencies;
     };
 
-}
+} // namespace Catalpa

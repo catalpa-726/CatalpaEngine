@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "document": "Hud.rml",
+  "files": ["Hud.rml", "Hud.rcss"],
+  "images": {},
+  "fonts": {},
+  "fontSources": {"fonts/default.ttf": "../../../../Catalpa/Resources/Fonts/Inter/InterVariable.ttf"},
+  "values": {"status": "Ready", "name": "Catalpa"}
+}

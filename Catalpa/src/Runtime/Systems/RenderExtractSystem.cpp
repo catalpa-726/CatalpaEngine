@@ -77,6 +77,8 @@ namespace Catalpa {
                                 return { WorldError::InvalidArgument, result.message };
                             instance.meshVersion = renderer.meshVersion;
                             instance.materials = renderer.materials;
+                            instance.lods = renderer.lods;
+                            instance.lodErrors = renderer.lodErrors;
                             candidate.instances.push_back(std::move(instance));
                         }
                     }

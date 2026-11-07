@@ -13,6 +13,8 @@ namespace Catalpa {
         Math::Vec4 color{ 1.0f };
         bool visible = true;
         AssetVersionRef<MeshAsset> meshVersion;
+        std::vector<AssetVersionRef<MeshAsset>> lods;
+        std::vector<float> lodErrors; // 源局部坐标的几何误差，Renderer换算为像素后选择。
         std::vector<AssetVersionRef<MaterialInstance>> materials; // 按mesh材质槽排列，跨帧保活确切版本。
 
     };

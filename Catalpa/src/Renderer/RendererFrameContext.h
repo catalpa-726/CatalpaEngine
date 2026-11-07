@@ -19,6 +19,7 @@ namespace Catalpa {
         bool depthPrepass = true;
         bool normalDebug = false;
         std::array<float, 4> clearColor{ 0.02f, 0.02f, 0.025f, 1.0f };
+        bool asyncQueues = true; // false保留同一状态/完成协议，全部批次交给graphics串行执行。
     };
 
     // 严格校验实际部署JSON；失败保留output，不读取cwd或创建GPU对象。

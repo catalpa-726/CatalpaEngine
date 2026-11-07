@@ -38,7 +38,9 @@ namespace Catalpa {
 
         // 取得图像与图形提交
         [[nodiscard]] RHIStatus Acquire(VulkanSwapchain& swapchain, uint64_t timeoutNanoseconds, RHIAcquireResult& acquired);
-        [[nodiscard]] RHIStatus Submit(VulkanQueue& queue, const RHIGpuDependency& wait, const RHIGpuDependency& signal);
+        [[nodiscard]] RHIStatus Submit(VulkanQueue& queue, const RHIGpuDependency& wait,
+                                       const RHIGpuDependency& signal,
+                                       std::span<const RHICompletionPoint> dependencies = {});
 
         // 检查提交与获取对应关系，再进入原生呈现。
         [[nodiscard]] RHIStatus Present(VulkanSwapchain& swapchain, const RHIAcquireResult& acquired, RHIPresentOutcome& outcome);
@@ -66,4 +68,4 @@ namespace Catalpa {
         VulkanCommandList m_CommandList;
     };
 
-}
+} // namespace Catalpa

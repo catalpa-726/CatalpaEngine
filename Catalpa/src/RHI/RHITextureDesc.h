@@ -53,14 +53,18 @@ namespace Catalpa {
         bytes = 0;
         const PixelFormatInfo info = GetPixelFormatInfo(format);
 
-        if (extent.IsEmpty() || info.isDepth || info.blockWidth != 1 || info.blockHeight != 1 || info.bytesPerBlock == 0)
+        if (extent.IsEmpty() || info.isDepth || info.blockWidth == 0 || info.blockHeight == 0 ||
+            info.bytesPerBlock == 0)
             return false;
 
-        const uint64_t rowBytes = static_cast<uint64_t>(extent.width) * info.bytesPerBlock;
+        const uint64_t rowBytes =
+            ((uint64_t(extent.width) + info.blockWidth - 1) / info.blockWidth) * info.bytesPerBlock;
+        const uint64_t rows = (uint64_t(extent.height) + info.blockHeight - 1) / info.blockHeight;
 
-        if (extent.height > std::numeric_limits<uint64_t>::max() / rowBytes) return false;
+        if (rows > std::numeric_limits<uint64_t>::max() / rowBytes)
+            return false;
 
-        bytes = rowBytes * extent.height;
+        bytes = rowBytes * rows;
         return true;
     }
 

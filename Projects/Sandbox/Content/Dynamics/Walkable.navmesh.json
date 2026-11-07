@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "settings": {
+    "cellSize": 0.2,
+    "cellHeight": 0.1,
+    "agentHeight": 1.8,
+    "agentRadius": 0.3,
+    "maxClimb": 0.3,
+    "maxSlopeDegrees": 45,
+    "maxCells": 1000000
+  },
+  "vertices": [
+    [
+      -10,
+      0,
+      -10
+    ],
+    [
+      10,
+      0,
+      -10
+    ],
+    [
+      10,
+      0,
+      10
+    ],
+    [
+      -10,
+      0,
+      10
+    ]
+  ],
+  "indices": [
+    0,
+    2,
+    1,
+    0,
+    3,
+    2
+  ],
+  "areas": [
+    0,
+    0
+  ]
+}

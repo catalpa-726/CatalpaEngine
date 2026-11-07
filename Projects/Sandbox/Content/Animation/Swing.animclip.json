@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "skeleton": "6cf99e29-4905-61f8-d43e-839aafe999a0",
+  "duration": 2,
+  "rootMotionJoint": "414e494d-5341-4d50-0000-000000000001",
+  "tracks": [
+    {
+      "joint": "414e494d-5341-4d50-0000-000000000002",
+      "rotation": {
+        "interpolation": "linear",
+        "keys": [
+          {
+            "time": 0,
+            "value": [
+              0.9004471023526769,
+              0,
+              0,
+              -0.43496553411123023
+            ]
+          },
+          {
+            "time": 1,
+            "value": [
+              0.9004471023526769,
+              0,
+              0,
+              0.43496553411123023
+            ]
+          },
+          {
+            "time": 2,
+            "value": [
+              0.9004471023526769,
+              0,
+              0,
+              -0.43496553411123023
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "events": [
+    {
+      "time": 0.5,
+      "name": "swing",
+      "payload": "left"
+    },
+    {
+      "time": 1.5,
+      "name": "swing",
+      "payload": "right"
+    }
+  ]
+}

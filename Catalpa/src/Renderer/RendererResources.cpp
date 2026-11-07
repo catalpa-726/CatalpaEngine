@@ -1,4 +1,5 @@
 #include "catpch.h"
+#include "Geometry/MeshLod.h"
 #include "Renderer/RendererInternal.h"
 #include "Assets/AssetManager.h"
 #include "Assets/BuiltinAssetIds.h"
@@ -23,6 +24,9 @@ namespace Catalpa {
                     RHIBindingType type;
                     switch (source.kind) {
                     case ShaderResourceKind::UniformBuffer: type = RHIBindingType::UniformBuffer; break;
+                    case ShaderResourceKind::StorageBuffer:
+                        type = RHIBindingType::StorageBuffer;
+                        break;
                     case ShaderResourceKind::SampledImage: type = RHIBindingType::SampledTexture; break;
                     case ShaderResourceKind::Sampler: type = RHIBindingType::Sampler; break;
                     default: return false;
@@ -249,6 +253,11 @@ namespace Catalpa {
                 }
                 if (expected == 0 || binding.minimumBufferBytes != expected)
                     return { .code = RHIErrorCode::Unsupported, .operation = "Renderer/unsupported surface uniform ABI" };
+            } else if (binding.type == RHIBindingType::StorageBuffer) {
+                if (binding.binding != 24 || binding.visibility != RHIShaderVisibility::Fragment ||
+                    binding.minimumBufferBytes > 16)
+                    return {.code = RHIErrorCode::Unsupported,
+                            .operation = "Renderer/unsupported tiled-light storage ABI"};
             } else if (binding.type == RHIBindingType::SampledTexture) {
                 uint32_t sampler = UINT32_MAX;
                 auto viewType = RHITextureViewType::Texture2D;
@@ -366,7 +375,10 @@ namespace Catalpa {
             const auto sampledColor = RHITextureUsage::Sampled | RHITextureUsage::ColorAttachment;
             if (const auto status = create(targets->hdr, extent, PixelFormat::RGBA32_Float, sampledColor); !status.IsSuccess()) return status;
             if (const auto status = create(targets->display, extent, PixelFormat::RGBA8_SRGB, sampledColor); !status.IsSuccess()) return status;
-            if (const auto status = create(targets->depth, extent, m_Profile.depthFormat, RHITextureUsage::DepthAttachment); !status.IsSuccess()) return status;
+            if (const auto status = create(targets->depth, extent, m_Profile.depthFormat,
+                                           RHITextureUsage::DepthAttachment | RHITextureUsage::Sampled);
+                !status.IsSuccess())
+                return status;
             if (const auto status = create(targets->shadow, { 1024, 1024 }, m_Profile.depthFormat,
                 RHITextureUsage::DepthAttachment | RHITextureUsage::Sampled); !status.IsSuccess()) return status;
             if (preview) {
@@ -392,7 +404,39 @@ namespace Catalpa {
             if (instance.mesh->GetData().vertexCount == 0) { instances.push_back(std::move(gpu)); continue; }
             if (!instance.meshVersion.HasValue() || instance.materials.size() != instance.meshVersion.Get()->materialSlots.size())
                 return { .code = RHIErrorCode::InvalidDescription, .operation = "Renderer/fixed asset snapshots required" };
-            if (const auto status = m_Geometry.Acquire(instance.meshVersion, gpu.geometry); !status.IsSuccess()) return status;
+            auto selected = instance.meshVersion;
+            std::string lodError;
+            if (!ValidateMeshLodChain(instance.meshVersion, instance.lods, instance.lodErrors, lodError))
+                return {RHIErrorCode::InvalidDescription, 0, "Renderer/LOD metadata"};
+            const bool skinned = std::any_of(packet.skinning.begin(), packet.skinning.end(),
+                                             [&](const auto& value) { return value.id == instance.id; });
+            if (!skinned && !instance.lods.empty()) {
+                BoundingSphere sphere;
+                if (!ComputeBoundingSphere(instance.worldBounds, sphere).IsSuccess())
+                    return {RHIErrorCode::InvalidDescription, 0, "Renderer/LOD bounds"};
+                const auto& view = packet.views.front();
+                double scaleSquared = 0;
+                for (int column = 0; column < 3; ++column)
+                    for (int row = 0; row < 3; ++row)
+                        scaleSquared +=
+                            double(instance.worldMatrix[column][row]) * instance.worldMatrix[column][row];
+                const double distance = std::max<double>(
+                    view.lens.nearPlane,
+                    glm::dot(sphere.center - view.matrices.position, view.matrices.forward) - sphere.radius);
+                const double pixelsPerMeter =
+                    view.lens.projection == ProjectionType::Orthographic
+                        ? double(extent.height) / view.lens.orthographicHeight
+                        : double(extent.height) * .5 / std::tan(view.lens.verticalFovRadians * .5) / distance;
+                for (size_t lod = 0; lod < instance.lods.size(); ++lod) {
+                    if (!instance.lods[lod].HasValue() || !std::isfinite(instance.lodErrors[lod]) ||
+                        instance.lodErrors[lod] <= 0)
+                        return {RHIErrorCode::InvalidDescription, 0, "Renderer/LOD reference/error"};
+                    if (double(instance.lodErrors[lod]) * std::sqrt(scaleSquared) * pixelsPerMeter <= 1.5)
+                        selected = instance.lods[lod];
+                }
+            }
+            if (const auto status = m_Geometry.Acquire(selected, gpu.geometry); !status.IsSuccess())
+                return status;
             for (size_t slot = 0; slot < instance.materials.size(); ++slot) {
                 const auto& material = instance.materials[slot];
                 DrawResources draw;

@@ -3,6 +3,7 @@
 #include "catpch.h"
 #include "Layer/Layer.h"
 #include "WorkspaceSettings.h"
+#include "Core/Localization/LocalizationCatalog.h"
 #include "Panels/ProjectSettingsPanel.h"
 
 namespace Catalpa::Editor {
@@ -11,6 +12,8 @@ namespace Catalpa::Editor {
     class ContentBrowserPanel;
     class ConsolePanel;
     class DependencyPanel;
+    class NetworkDiagnosticsPanel;
+    class AudioMixerPanel;
     class WorkspaceEditing;
 
     // 编辑工作区由宿主应用挂载；只借用引擎服务和既有 ImGui 上下文。
@@ -53,6 +56,9 @@ namespace Catalpa::Editor {
         void Report(const char* key, const char* fallback, std::string error = {});
 
         WorkspaceSettings m_Settings;
+        bool m_ShowNetwork = false, m_ShowAudioMixer = false;
+        std::unique_ptr<NetworkDiagnosticsPanel> m_Network;
+        std::unique_ptr<AudioMixerPanel> m_AudioMixer;
         std::filesystem::path m_ProjectFile;
         std::unique_ptr<EditorProject> m_Project;
         std::unique_ptr<BuildPanel> m_Build;
@@ -67,7 +73,7 @@ namespace Catalpa::Editor {
         std::filesystem::path m_SettingsPath;
         std::filesystem::path m_BrowseDirectory;
         std::filesystem::path m_SelectedFile;
-        std::unordered_map<std::string, std::string> m_Strings;
+        LocalizationCatalog m_Catalog;
         std::vector<FileEntry> m_Files;
         std::array<char, 128> m_Filter{};
         std::string m_FileError;

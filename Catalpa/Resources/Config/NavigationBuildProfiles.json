@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "default": "humanoid",
+  "profiles": {
+    "humanoid": {
+      "cellSize": 0.2,
+      "cellHeight": 0.1,
+      "agentHeight": 1.8,
+      "agentRadius": 0.3,
+      "maxClimb": 0.3,
+      "maxSlopeDegrees": 45,
+      "maxCells": 1000000
+    },
+    "small": {
+      "cellSize": 0.2,
+      "cellHeight": 0.1,
+      "agentHeight": 0.9,
+      "agentRadius": 0.18,
+      "maxClimb": 0.15,
+      "maxSlopeDegrees": 45,
+      "maxCells": 1000000
+    }
+  }
+}

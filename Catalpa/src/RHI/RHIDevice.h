@@ -13,6 +13,8 @@
 #include "RHITextureDesc.h"
 #include "RHISamplerDesc.h"
 #include "RHIQueryDesc.h"
+#include "RHIMemoryBudget.h"
+#include "RHIQueueTypes.h"
 
 namespace Catalpa {
 
@@ -32,6 +34,9 @@ namespace Catalpa {
 
         // 查询初始化时保存的设备上限与实际启用的可选能力。
         virtual const RHICapabilities& GetCapabilities() const = 0;
+        [[nodiscard]] virtual RHIStatus GetMemoryBudgets(std::vector<RHIMemoryHeapBudget>&) const {
+            return {RHIErrorCode::Unsupported, 0, "RHIDevice/MemoryBudgets"};
+        }
 
         // 查询普通 GPU 纹理的单项格式能力；未知格式返回全 false。
         virtual RHIFormatSupport GetFormatSupport(PixelFormat format) const = 0;
@@ -48,6 +53,30 @@ namespace Catalpa {
 
         // 图形队列与帧槽准备。
         virtual RHIQueue& GetGraphicsQueue() = 0;
+        virtual RHIQueue* GetQueue(QueueId id) {
+            auto& queue = GetGraphicsQueue();
+            return queue.GetId() == id ? &queue : nullptr;
+        }
+        virtual RHIQueue& GetQueue(RHIQueueClass) {
+            return GetGraphicsQueue();
+        }
+        virtual RHIQueueInfo GetQueueInfo(QueueId id) const {
+            return {id, 0, true, true, true};
+        }
+        [[nodiscard]] virtual RHIStatus QueryCompletion(const RHICompletionPoint& point, bool& complete) {
+            complete = false;
+            auto* queue = GetQueue(point.queue);
+            if (!queue || point.device != GetDeviceId())
+                return {RHIErrorCode::InvalidDescription, 0, "RHIDevice/CompletionIdentity"};
+            return queue->IsComplete(point, complete);
+        }
+        [[nodiscard]] virtual RHIStatus PrepareAuxiliaryCommands(RHIFrameToken, QueueId, uint32_t,
+                                                                 RHIFrameResources&) {
+            return {RHIErrorCode::Unsupported, 0, "RHIDevice/AuxiliaryCommands"};
+        }
+        virtual bool SupportsScheduledBatches() const noexcept {
+            return false;
+        }
         virtual uint32_t GetFrameCount() const = 0;
 
         // 等待指定帧槽，再重置它的命令资源；超时通过 ready == false 表示。
@@ -91,6 +120,14 @@ namespace Catalpa {
 
         // 同步创建管线；成功后由设备管理原生资源。
         [[nodiscard]] virtual RHIStatus CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc, GraphicsPipelineHandle& pipeline) = 0;
+
+        [[nodiscard]] virtual RHIStatus CreateComputePipeline(const RHIComputePipelineDesc&,
+                                                              ComputePipelineHandle&) {
+            return {.code = RHIErrorCode::Unsupported, .operation = "RHIDevice::CreateComputePipeline"};
+        }
+        virtual void ReleaseComputePipeline(ComputePipelineHandle handle) {
+            ReleaseGraphicsPipeline(handle);
+        }
 
         // 释放逻辑所有权；已有命令引用会继续保留原生管线。
         virtual void ReleaseGraphicsPipeline(GraphicsPipelineHandle pipeline) = 0;

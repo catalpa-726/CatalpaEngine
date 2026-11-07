@@ -182,4 +182,51 @@ namespace Catalpa::Tests {
         CAT_INFO("[S04 CPU/IO] {0} checks, {1} failures.",context.GetCheckCount(),context.GetFailureCount());
         return context.GetFailureCount()==0?0:1;
     }
-}
+    int RunS14FoundationTests() {
+        CAT_INFO("Delivery/localization/dynamic-phase/Loopback CPU contracts. No window/GPU/audio device. "
+                 "This is not full S14-S17 acceptance.");
+        TestContext test("Delivery CPU/IO");
+        try {
+            test.Check(RunS10S13Tests() == 0, "Existing CPU/IO regressions remain valid");
+            RunDeliveryContractsTests(test);
+            RunLoopbackContractsTests(test);
+            RunDynamicPhaseContractsTests(test);
+        } catch (const std::exception& e) {
+            test.Check(false, e.what());
+        } catch (...) {
+            test.Check(false, "Unexpected non-standard exception");
+        }
+        CAT_INFO("Delivery CPU/IO: {0} checks, {1} failures", test.GetCheckCount(), test.GetFailureCount());
+        return test.GetFailureCount() == 0 ? 0 : 1;
+    }
+} // namespace Catalpa::Tests
+
+namespace Catalpa::Tests {
+    int RunS14S17Tests() {
+        CAT_INFO("Delivery/dynamic domains CPU/IO/native-CPU contracts. No window/GPU/audio device. GPU, IME "
+                 "and interactive acceptance remain separate.");
+        TestContext context("Delivery and dynamic domains");
+        try {
+            context.Check(RunS14FoundationTests() == 0, "Existing regression and delivery contracts");
+            RunOptimizationContractsTests(context);
+            RunAssetInspectionTests(context);
+            RunAssetChangeTests(context);
+            RunAdvancedSchedulingTests(context);
+            RunAnimationContractsTests(context);
+            RunParticleContractsTests(context);
+            RunPhysicsNavigationTests(context);
+            RunTerrainTests(context);
+            RunAudioDomainTests(context);
+            RunUIDomainTests(context);
+            RunScriptLifecycleTests(context);
+            RunReplicationContractsTests(context);
+        } catch (const std::exception& error) {
+            context.Check(false, error.what());
+        } catch (...) {
+            context.Check(false, "Unexpected non-standard exception");
+        }
+        CAT_INFO("Delivery/dynamic domains: {0} checks, {1} failures", context.GetCheckCount(),
+                 context.GetFailureCount());
+        return context.GetFailureCount() == 0 ? 0 : 1;
+    }
+} // namespace Catalpa::Tests

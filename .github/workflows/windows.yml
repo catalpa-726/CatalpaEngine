@@ -1,0 +1,147 @@
+name: Windows delivery contracts
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# The labelled runner has VS2022/v143, Python, Vulkan 1.3 SDK and the dependency
+# source cache already provisioned. No dependency versions are silently upgraded.
+jobs:
+  windows:
+    runs-on: [self-hosted, Windows, X64, catalpa]
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release, Dist]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+          submodules: recursive
+      - name: Restore provisioned dependency sources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (!$env:CATALPA_DEPENDENCY_ROOT) { throw 'Set CATALPA_DEPENDENCY_ROOT to the approved source cache' }
+          Get-ChildItem -LiteralPath $env:CATALPA_DEPENDENCY_ROOT -Directory | ForEach-Object {
+            $destination = Join-Path 'Catalpa/third_party' $_.Name
+            if (!(Test-Path -LiteralPath $destination)) { Copy-Item -LiteralPath $_.FullName -Destination $destination -Recurse }
+          }
+          if (!(Test-Path -LiteralPath 'Catalpa/Resources/Fonts/Inter/InterVariable.ttf')) {
+            throw 'Provision the currently configured Inter font in Catalpa/Resources/Fonts/Inter before CI'
+          }
+      - name: Check architecture and source manifests
+        shell: pwsh
+        run: python -X utf8 Script/check_architecture.py
+      - name: Generate and build
+        shell: cmd
+        run: |
+          Script\premake\premake5.exe vs2022
+          if errorlevel 1 exit /b 1
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -version "[17.0,18.0)" -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "CATALPA_VS=%%i"
+          call "%CATALPA_VS%\Common7\Tools\VsDevCmd.bat" -arch=x64
+          if errorlevel 1 exit /b 1
+          msbuild CatalpaEngine.sln /m /p:Configuration=${{ matrix.configuration }} /p:Platform=x64
+      - name: CPU and IO regression
+        if: matrix.configuration != 'Dist'
+        shell: pwsh
+        run: |
+          & "bin/windows-x86_64/${{ matrix.configuration }}/CatalpaBox/CatalpaBox.exe" --test-s14-s17
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Dist excludes test runner
+        if: matrix.configuration == 'Dist'
+        shell: pwsh
+        run: |
+          & bin/windows-x86_64/Dist/CatalpaBox/CatalpaBox.exe --test-s14-s17
+          if ($LASTEXITCODE -ne 2) { throw 'Dist must reject test commands with exit code 2' }
+      - name: Shared tool production and read-only inspection
+        if: matrix.configuration == 'Release'
+        shell: pwsh
+        run: |
+          $hostPath = (Resolve-Path bin/windows-x86_64/Release/CatalpaBox/CatalpaBox.exe).Path
+          $shaderPath = Join-Path (Split-Path $hostPath) 'Resources/Shaders'
+          python -X utf8 Script/build_assets.py --host $hostPath --batch Projects/Sandbox/AssetBuild.json --shader-root $shaderPath
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          & $hostPath --inspect (Resolve-Path Projects/Sandbox/Cooked).Path --mount "shaders=$shaderPath"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Package and export the selected runtime host
+        if: matrix.configuration == 'Release'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $hostPath = (Resolve-Path bin/windows-x86_64/Release/CatalpaBox/CatalpaBox.exe).Path
+          $hostRoot = Split-Path $hostPath
+          $cooked = (Resolve-Path Projects/Sandbox/Cooked).Path
+          $shaderPath = Join-Path $hostRoot 'Resources/Shaders'
+          $entrySource = (Resolve-Path Projects/Sandbox/Content/Authoring/Example.scene.json).Path
+          $reports = Get-ChildItem -LiteralPath (Join-Path $cooked 'versions') -Filter SourceMap.json -Recurse |
+            ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json } |
+            Where-Object { $_.source -eq $entrySource.Replace('\', '/') }
+          $identities = @($reports.primary | Sort-Object -Unique)
+          if ($identities.Count -ne 1) { throw 'Expected exactly one cooked entry-scene identity' }
+          $stage = Join-Path '${{ runner.temp }}' 'CatalpaStage-${{ github.run_id }}-${{ github.run_attempt }}'
+          New-Item -ItemType Directory -Path $stage -ErrorAction Stop | Out-Null
+          $package = Join-Path $stage 'Sandbox.catpkg'
+          & $hostPath --package --manifest (Join-Path $cooked 'Assets.manifest') --entry $identities[0] --output $package --mount "shaders=$shaderPath"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item -LiteralPath (Join-Path $hostRoot 'Catalpa.dll') -Destination $stage
+          Copy-Item -LiteralPath (Join-Path $hostRoot 'Resources') -Destination $stage -Recurse
+          $files = @('Catalpa.dll') + @(Get-ChildItem -LiteralPath (Join-Path $stage 'Resources') -File -Recurse |
+            ForEach-Object { [IO.Path]::GetRelativePath($stage, $_.FullName).Replace('\', '/') })
+          @{schemaVersion=1; package='Sandbox.catpkg'; files=$files} | ConvertTo-Json -Depth 5 |
+            Set-Content -LiteralPath (Join-Path $stage 'deployment.json') -Encoding utf8NoBOM
+          python -X utf8 Script/package_runtime.py --host $hostPath --tool-host $hostPath --manifest (Join-Path $stage 'deployment.json') --output '${{ runner.temp }}/CatalpaRuntime-${{ github.run_id }}-${{ github.run_attempt }}'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "CATALPA_DELIVERY_PACKAGE=$package" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Export SDK and source snapshot
+        if: matrix.configuration == 'Release'
+        shell: pwsh
+        run: |
+          python -X utf8 Script/export_sdk.py --library bin/windows-x86_64/Release/Catalpa/Catalpa.lib --dll bin/windows-x86_64/Release/Catalpa/Catalpa.dll --resources bin/windows-x86_64/Release/CatalpaBox/Resources --tool-host bin/windows-x86_64/Release/CatalpaBox/CatalpaBox.exe --configuration Release --package "$env:CATALPA_DELIVERY_PACKAGE" --output "${{ runner.temp }}/CatalpaSdk-${{ github.run_id }}-${{ github.run_attempt }}"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -X utf8 Script/export_source.py --output "${{ runner.temp }}/CatalpaSource-${{ github.run_id }}-${{ github.run_attempt }}.zip" --with-dependencies
+      - name: Isolated SDK consumer without PCH or Box sources
+        if: matrix.configuration == 'Release'
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -version "[17.0,18.0)" -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "CATALPA_VS=%%i"
+          call "%CATALPA_VS%\Common7\Tools\VsDevCmd.bat" -arch=x64
+          if errorlevel 1 exit /b 1
+          call "${{ runner.temp }}\CatalpaSdk-${{ github.run_id }}-${{ github.run_attempt }}\example\build.cmd"
+      - name: Consume the Tests library from a temporary validation host
+        if: matrix.configuration == 'Release'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $directory = Join-Path '${{ runner.temp }}' 'CatalpaValidation-${{ github.run_id }}-${{ github.run_attempt }}'
+          New-Item -ItemType Directory -Path $directory -ErrorAction Stop | Out-Null
+          $source = '#include <Log/Log.h>' + "`n" + '#include <TestRunner.h>' + "`n" + 'int main() { Catalpa::Log::Init(); return Catalpa::Tests::RunS14S17Tests(); }'
+          Set-Content -LiteralPath (Join-Path $directory 'host.cpp') -Value $source -Encoding utf8NoBOM
+          $response = @('/nologo', '/std:c++20', '/EHsc', '/utf-8', '/MD', '/DCATALPA_PLATFORM_WINDOW',
+            ('/I"' + (Resolve-Path Catalpa/src).Path + '"'), ('/I"' + (Resolve-Path Tests).Path + '"'),
+            ('/I"' + (Resolve-Path Catalpa/third_party/spdlog/include).Path + '"'),
+            'host.cpp', '/Fe:ValidationHost.exe', '/link')
+          $response += @(Get-ChildItem -LiteralPath bin/windows-x86_64/Release -Filter '*.lib' -File -Recurse |
+            ForEach-Object { '"' + $_.FullName + '"' })
+          $response += @('user32.lib', 'gdi32.lib', 'shell32.lib', 'ole32.lib', 'uuid.lib', 'winmm.lib', 'comdlg32.lib', 'advapi32.lib')
+          Set-Content -LiteralPath (Join-Path $directory 'build.rsp') -Value $response -Encoding utf8BOM
+          Copy-Item -LiteralPath bin/windows-x86_64/Release/Catalpa/Catalpa.dll -Destination $directory
+          Copy-Item -LiteralPath bin/windows-x86_64/Release/CatalpaBox/Resources -Destination $directory -Recurse
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $visualStudio = & $vswhere -latest -version '[17.0,18.0)' -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $setup = Join-Path $visualStudio 'Common7/Tools/VsDevCmd.bat'
+          Push-Location $directory
+          try {
+            & cmd.exe /d /c "call `"$setup`" -arch=x64 && cl @build.rsp && ValidationHost.exe"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          } finally { Pop-Location }
+      - name: Build tool-free runtime target
+        if: matrix.configuration == 'Dist'
+        shell: cmd
+        run: |
+          Script\premake\premake5.exe --runtime-only vs2022
+          if errorlevel 1 exit /b 1
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -version "[17.0,18.0)" -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "CATALPA_VS=%%i"
+          call "%CATALPA_VS%\Common7\Tools\VsDevCmd.bat" -arch=x64
+          if errorlevel 1 exit /b 1
+          msbuild CatalpaBox/CatalpaBox.vcxproj /m /p:Configuration=Dist /p:Platform=x64

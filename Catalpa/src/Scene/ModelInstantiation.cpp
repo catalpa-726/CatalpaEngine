@@ -1,4 +1,6 @@
 #include "catpch.h"
+#include "Scene/Components/AnimatorComponent.h"
+#include "Scene/Components/SkinnedMeshRendererComponent.h"
 #include "Scene/ModelInstantiation.h"
 #include "Scene/Components/MeshRendererComponent.h"
 #include "Materials/MaterialValidation.h"
@@ -17,6 +19,7 @@ namespace Catalpa {
             ModelNode source;
             PersistentEntityId persistent;
             std::optional<MeshRendererComponent> renderer;
+            std::optional<SkinnedMeshRendererComponent> skin;
         };
 
         // 在场景安全点之前解析材质槽，并为同一源节点上的额外网格创建子节点。
@@ -74,13 +77,38 @@ namespace Catalpa {
                     renderer.materials.push_back(replacement == replacements.end() ? *material->second
                                                                                    : replacement->second);
                 }
-                if (!plan[instance.node].renderer)
+                for (size_t lod = 0; lod < instance.lods.size(); ++lod) {
+                    const auto found = std::find_if(
+                        model.lodVersions.begin(), model.lodVersions.end(),
+                        [&](const auto& version) { return version.GetId() == instance.lods[lod].id; });
+                    if (found == model.lodVersions.end()) {
+                        error = "Missing fixed model LOD";
+                        return false;
+                    }
+                    renderer.lods.push_back(*found);
+                    renderer.lodErrors.push_back(instance.lodErrors[lod]);
+                }
+                std::optional<SkinnedMeshRendererComponent> skin;
+                if (instance.skin.HasValue()) {
+                    const auto found = std::find_if(
+                        model.skinVersions.begin(), model.skinVersions.end(),
+                        [&](const auto& version) { return version.GetId() == instance.skin.id; });
+                    if (found == model.skinVersions.end()) {
+                        error = "Missing fixed model skin binding";
+                        return false;
+                    }
+                    skin.emplace();
+                    skin->binding = instance.skin.id;
+                    skin->bindingVersion = *found;
+                }
+                if (!plan[instance.node].renderer) {
                     plan[instance.node].renderer = std::move(renderer);
-                else { // 同节点多个实例也完整保留，增加无变换子实体，不覆盖前一个组件。
+                    plan[instance.node].skin = std::move(skin);
+                } else { // 同节点多个实例也完整保留，增加无变换子实体，不覆盖前一个组件。
                     ModelNode child;
                     child.name = plan[instance.node].source.name + "/mesh";
                     child.parent = int32_t(instance.node);
-                    plan.push_back({std::move(child), {}, std::move(renderer)});
+                    plan.push_back({std::move(child), {}, std::move(renderer), std::move(skin)});
                 }
             }
             return true;
@@ -106,6 +134,20 @@ namespace Catalpa {
             std::vector<PlannedNode> plan;
             if (!PlanRenderers(*model.Get(), meshes, materials, overrides, plan, error))
                 return false;
+            if (model.Get()->skeleton.HasValue()) {
+                if (!model.Get()->skeletonVersion.HasValue()) {
+                    error = "Animated model requires its fixed skeleton version";
+                    return false;
+                }
+                // Animator 的 model-space root motion 已包含导入转换；独立恒等锚点避免轴/单位再次相乘。
+                const auto anchor = static_cast<int32_t>(plan.size());
+                for (auto& node : plan)
+                    if (node.source.parent < 0)
+                        node.source.parent = anchor;
+                ModelNode owner;
+                owner.name = "Animation root";
+                plan.push_back({std::move(owner), {}, {}, {}});
+            }
 
             std::set<PersistentEntityId> identities;
             for (auto& node : plan) {
@@ -190,7 +232,7 @@ namespace Catalpa {
             std::vector<EntityId> created(plan.size());
             const auto status = scene.m_Commands.Enqueue(
                 [&scene, plan = std::move(plan), order = std::move(order), created = std::move(created),
-                 parent, result](World& world) mutable {
+                 parent, result, rig = model](World& world) mutable {
                     const bool wasDirty = scene.m_Dirty;
                     auto rollback = [&](WorldStatus reason) {
                         WorldStatus rollbackStatus;
@@ -234,6 +276,23 @@ namespace Catalpa {
                                                            node.source.local, nodeParent);
                                 !s.IsSuccess())
                                 return rollback(s);
+                            if (node.skin) {
+                                auto skin = *node.skin;
+                                skin.animator = plan[order.front()].persistent;
+                                if (const auto s = world.Add(created[index], skin); !s.IsSuccess())
+                                    return rollback(s);
+                            }
+                            if (index == order.front() && rig.Get()->skeleton.HasValue()) {
+                                AnimatorComponent animator;
+                                animator.skeletonVersion = rig.Get()->skeletonVersion;
+                                animator.animation = rig.Get()->skeleton.id;
+                                if (!rig.Get()->animationVersions.empty()) {
+                                    animator.clipVersion = rig.Get()->animationVersions.front();
+                                    animator.animation = animator.clipVersion.GetId();
+                                }
+                                if (const auto s = world.Add(created[index], animator); !s.IsSuccess())
+                                    return rollback(s);
+                            }
                             if (node.renderer)
                                 if (const auto s = world.Add(created[index], *node.renderer); !s.IsSuccess())
                                     return rollback(s);

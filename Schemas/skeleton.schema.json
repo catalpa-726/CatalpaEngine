@@ -1,70 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Catalpa skeleton author protocol version 1",
-  "description": "This stage defines the author contract. S16 loader/cooker must validate unique joint IDs, resolved parents, absence of cycles, finite transforms and inverse bind agreement; this schema does not instantiate animation runtime or normalize source data.",
+  "title": "Catalpa skeleton protocol version 1",
+  "description": "Matches ReadSkeleton/WriteSkeleton. IDs identify source joints; the skeleton asset ID belongs to its container. Column vectors, parent*local and T*R*S; bind translations retain source local units and the explicit import-conversion root produces metres/Y-up. Rotation is unit w/x/y/z and matrices are column-major. Runtime additionally validates unique IDs, acyclic resolved parents, finite invertible bind transforms and inverse-bind agreement. Sources are never normalized or overwritten.",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schemaVersion",
-    "id",
-    "coordinates",
-    "joints"
-  ],
   "properties": {
     "schemaVersion": {
       "const": 1
     },
-    "id": {
-      "type": "string",
-      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-      "not": {
-        "const": "00000000-0000-0000-0000-000000000000"
-      }
-    },
-    "coordinates": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "handedness",
-        "upAxis",
-        "forwardAxis",
-        "lengthUnit",
-        "matrixLayout"
-      ],
-      "properties": {
-        "handedness": {
-          "const": "right"
-        },
-        "upAxis": {
-          "const": "+Y"
-        },
-        "forwardAxis": {
-          "const": "-Z"
-        },
-        "lengthUnit": {
-          "const": "meter"
-        },
-        "matrixLayout": {
-          "const": "column-major"
-        }
-      }
-    },
     "joints": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 4096,
+      "maxItems": 256,
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "id",
-          "name",
-          "parent",
-          "translation",
-          "rotation",
-          "scale",
-          "inverseBindMatrix"
-        ],
         "properties": {
           "id": {
             "type": "string",
@@ -78,68 +28,74 @@
             "maxLength": 1024
           },
           "parent": {
-            "anyOf": [
-              {
-                "type": "string",
-                "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-                "not": {
-                  "const": "00000000-0000-0000-0000-000000000000"
+            "type": "integer",
+            "minimum": -1,
+            "maximum": 255
+          },
+          "bind": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "translation": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {
+                  "type": "number",
+                  "minimum": -3.402823466e+38,
+                  "maximum": 3.402823466e+38
                 }
               },
-              {
-                "type": "null"
+              "rotation": {
+                "type": "array",
+                "minItems": 4,
+                "maxItems": 4,
+                "items": {
+                  "type": "number",
+                  "minimum": -3.402823466e+38,
+                  "maximum": 3.402823466e+38
+                }
+              },
+              "scale": {
+                "type": "array",
+                "minItems": 3,
+                "maxItems": 3,
+                "items": {
+                  "type": "number",
+                  "minimum": -3.402823466e+38,
+                  "maximum": 3.402823466e+38
+                }
               }
+            },
+            "required": [
+              "translation",
+              "rotation",
+              "scale"
             ]
           },
-          "translation": {
-            "type": "array",
-            "minItems": 3,
-            "maxItems": 3,
-            "items": {
-              "type": "number"
-            }
-          },
-          "rotation": {
-            "type": "array",
-            "minItems": 4,
-            "maxItems": 4,
-            "items": {
-              "type": "number"
-            },
-            "description": "Quaternion components are w,x,y,z; a future skeleton loader must check near-unit norm without rewriting the original."
-          },
-          "scale": {
-            "type": "array",
-            "minItems": 3,
-            "maxItems": 3,
-            "items": {
-              "type": "number"
-            }
-          },
-          "inverseBindMatrix": {
+          "inverseBind": {
             "type": "array",
             "minItems": 16,
             "maxItems": 16,
             "items": {
-              "type": "number"
-            },
-            "description": "Column-major inverse bind matrix; loader checks affine form and agreement with composed bind hierarchy."
+              "type": "number",
+              "minimum": -3.402823466e+38,
+              "maximum": 3.402823466e+38
+            }
           }
-        }
-      },
-      "contains": {
-        "type": "object",
+        },
         "required": [
-          "parent"
-        ],
-        "properties": {
-          "parent": {
-            "type": "null"
-          }
-        }
-      },
-      "minContains": 1,
-      "maxContains": 1
+          "id",
+          "name",
+          "parent",
+          "bind",
+          "inverseBind"
+        ]
+      }
     }
-  }
+  },
+  "required": [
+    "schemaVersion",
+    "joints"
+  ]
 }

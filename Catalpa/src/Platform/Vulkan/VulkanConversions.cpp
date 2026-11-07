@@ -16,6 +16,20 @@ namespace Catalpa {
         case PixelFormat::RGBA16_Float: return VK_FORMAT_R16G16B16A16_SFLOAT;
         case PixelFormat::RGBA32_Float: return VK_FORMAT_R32G32B32A32_SFLOAT;
         case PixelFormat::R32_UInt: return VK_FORMAT_R32_UINT;
+        case PixelFormat::BC1_UNorm:
+            return VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+        case PixelFormat::BC1_SRGB:
+            return VK_FORMAT_BC1_RGBA_SRGB_BLOCK;
+        case PixelFormat::BC3_UNorm:
+            return VK_FORMAT_BC3_UNORM_BLOCK;
+        case PixelFormat::BC3_SRGB:
+            return VK_FORMAT_BC3_SRGB_BLOCK;
+        case PixelFormat::BC5_UNorm:
+            return VK_FORMAT_BC5_UNORM_BLOCK;
+        case PixelFormat::BC7_UNorm:
+            return VK_FORMAT_BC7_UNORM_BLOCK;
+        case PixelFormat::BC7_SRGB:
+            return VK_FORMAT_BC7_SRGB_BLOCK;
         default: return VK_FORMAT_UNDEFINED;
         }
     }
@@ -41,8 +55,10 @@ namespace Catalpa {
 
     VkBufferUsageFlags ToVulkanBufferUsage(RHIBufferUsage usage) noexcept
     {
-        constexpr RHIBufferUsage supported = RHIBufferUsage::TransferSource | RHIBufferUsage::TransferDestination |
-            RHIBufferUsage::Vertex | RHIBufferUsage::Index | RHIBufferUsage::Uniform;
+        constexpr RHIBufferUsage supported = RHIBufferUsage::TransferSource |
+                                             RHIBufferUsage::TransferDestination | RHIBufferUsage::Vertex |
+                                             RHIBufferUsage::Index | RHIBufferUsage::Uniform |
+                                             RHIBufferUsage::Storage | RHIBufferUsage::Indirect;
 
         if ((static_cast<uint32_t>(usage) & ~static_cast<uint32_t>(supported)) != 0) return 0;
 
@@ -51,6 +67,10 @@ namespace Catalpa {
         if (HasBufferUsage(usage, RHIBufferUsage::TransferDestination)) flags |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         if (HasBufferUsage(usage, RHIBufferUsage::Vertex)) flags |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
         if (HasBufferUsage(usage, RHIBufferUsage::Index)) flags |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        if (HasBufferUsage(usage, RHIBufferUsage::Storage))
+            flags |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        if (HasBufferUsage(usage, RHIBufferUsage::Indirect))
+            flags |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
         if (HasBufferUsage(usage, RHIBufferUsage::Uniform)) flags |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
         return flags;
     }
@@ -84,6 +104,8 @@ namespace Catalpa {
     VkShaderStageFlags ToVulkanShaderStages(RHIShaderVisibility visibility) noexcept
     {
         switch (visibility) {
+        case RHIShaderVisibility::Compute:
+            return VK_SHADER_STAGE_COMPUTE_BIT;
         case RHIShaderVisibility::None: return 0;
         case RHIShaderVisibility::Vertex: return VK_SHADER_STAGE_VERTEX_BIT;
         case RHIShaderVisibility::Fragment: return VK_SHADER_STAGE_FRAGMENT_BIT;

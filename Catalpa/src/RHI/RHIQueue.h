@@ -7,6 +7,7 @@
 
 // 公开提交与完成查询，上层不接触 Vulkan 队列
 namespace Catalpa {
+    class RHIDevice;
 
     // 当前由主线程串行调用。
     class CATALPA_API RHIQueue {
@@ -14,6 +15,9 @@ namespace Catalpa {
         virtual ~RHIQueue() = default;
 
         virtual QueueId GetId() const = 0;
+        virtual RHIDevice* GetDevice() noexcept {
+            return nullptr;
+        }
 
         // 只有提交被接受，completion 才有效。
         [[nodiscard]] virtual RHIStatus Submit(const RHISubmission& submission, RHICompletionPoint& completion) = 0;
@@ -22,4 +26,4 @@ namespace Catalpa {
         [[nodiscard]] virtual RHIStatus IsComplete(const RHICompletionPoint& point, bool& complete) = 0;
     };
 
-}
+} // namespace Catalpa

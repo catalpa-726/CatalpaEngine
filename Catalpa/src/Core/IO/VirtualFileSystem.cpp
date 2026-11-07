@@ -1,5 +1,6 @@
 #include "catpch.h"
 #include "Core/IO/VirtualFileSystem.h"
+#include "Assets/PackageReader.h"
 
 namespace Catalpa::FileSystemDetail {
     bool CanonicalizeRoot(const std::filesystem::path&, std::filesystem::path&, std::string&);
@@ -98,6 +99,11 @@ namespace Catalpa {
             VirtualPath validated;
             if (!VirtualPath::Parse(std::string(mount) + ":/__mount_check__", validated, error)) return false;
             if (validated.MountName() != mount) { error = "Mount argument must contain only its name"; return false; }
+            for (const auto& package : m_Packages)
+                if (package->OwnsMount(mount)) {
+                    error = "Directory mount conflicts with a package mount";
+                    return false;
+                }
             std::filesystem::path canonical;
             if (!FileSystemDetail::CanonicalizeRoot(absoluteRoot, canonical, error)) return false;
             for (const auto& item : m_Mounts) {
@@ -112,11 +118,36 @@ namespace Catalpa {
         } catch (const std::exception& exception) { error = exception.what(); return false; }
     }
 
+    bool VirtualFileSystem::MountPackage(std::shared_ptr<const PackageReader> package, std::string& error) {
+        if (!package || m_Packages.size() >= 32) {
+            error = "Package snapshot is null or mount budget exceeded";
+            return false;
+        }
+        for (const auto& record : package->Catalog().GetRecords()) {
+            for (const auto& mount : m_Mounts)
+                if (mount.name == record.locator.path.MountName()) {
+                    error = "Package mount conflicts with a directory mount";
+                    return false;
+                }
+            for (const auto& existing : m_Packages)
+                if (existing->OwnsMount(record.locator.path.MountName())) {
+                    error = "Package mount is already installed";
+                    return false;
+                }
+        }
+        m_Packages.push_back(std::move(package));
+        error.clear();
+        return true;
+    }
+
     bool VirtualFileSystem::ReadFile(const VirtualPath& path, size_t maxBytes,
         std::vector<std::byte>& output, std::string& error) const
     {
         try {
             if (!path.HasValue()) { error = "Virtual path is invalid"; return false; }
+            for (const auto& package : m_Packages)
+                if (package->OwnsMount(path.MountName()))
+                    return package->Read(path, maxBytes, output, error);
             bool foundMount = false;
             for (const auto& mount : m_Mounts) {
                 if (mount.name != path.MountName()) continue;

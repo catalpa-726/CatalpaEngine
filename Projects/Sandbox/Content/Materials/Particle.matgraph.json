@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "shadingModel": "unlit",
+  "alphaMode": "blend",
+  "parameters": {
+    "base_color": [
+      1,
+      0.7,
+      0.15,
+      0.8
+    ],
+    "emissive": [
+      0,
+      0,
+      0
+    ],
+    "metallic": [
+      0
+    ],
+    "roughness": [
+      0.4
+    ],
+    "normal_scale": [
+      1
+    ],
+    "alpha_cutoff": [
+      0.5
+    ]
+  },
+  "nodes": [
+    {
+      "id": "bce64710-d4d8-5467-95ae-a330c7d1c66a",
+      "type": "SurfaceOutput",
+      "width": 1,
+      "parameter": "",
+      "semantic": "baseColor",
+      "texture": null,
+      "value": [
+        0,
+        0,
+        0,
+        1
+      ],
+      "ports": {
+        "baseColor": "5f62da07-7e6e-5617-a846-7a1580808201",
+        "metallic": "2145ee4a-3176-5869-a27a-0236b35ecece",
+        "roughness": "3e5ca369-39fe-5aa6-8c9b-cc387d30106e",
+        "emissive": "076a41f9-d765-50a5-bda0-0fceb4f520cc",
+        "normal": "cdc5f683-a7cd-5feb-9766-af70c3831cb1",
+        "alpha": "a5d6ea84-fedf-5f1b-a3d8-491f50b34fc2",
+        "cutoff": "e3498da3-6813-5a67-8349-406962aa42c0",
+        "occlusion": "2e5c5ca5-8a91-515d-bd4e-79f21efaee03"
+      }
+    }
+  ],
+  "links": [],
+  "layout": {
+    "bce64710-d4d8-5467-95ae-a330c7d1c66a": [
+      30,
+      30
+    ]
+  }
+}

@@ -1,3 +1,8 @@
+#include "AssetEditors/TerrainEditor.h"
+#include "AssetEditors/AnimationEditor.h"
+#include "AssetEditors/UIDocumentEditor.h"
+#include "AssetEditors/ParticleEditor.h"
+#include "AssetEditors/PhysicsNavigationEditor.h"
 #include "AssetEditors/AssetEditorRegistry.h"
 #include "AssetEditors/MaterialEditor.h"
 #include "AssetEditors/TexturePreviewEditor.h"
@@ -33,6 +38,14 @@ namespace Catalpa::Editor {
 
     AssetEditorRegistry::AssetEditorRegistry() {
         std::string error;
+        if (!RegisterAnimationEditors(*this, error) || !RegisterAudioUIEditors(*this, error) ||
+            !RegisterParticleEditor(*this, error))
+            throw std::logic_error(error);
+        if (!Register("terrain", &CreateEditor<TerrainEditor>, &AuthorOnly, error))
+            throw std::logic_error(error);
+        for (auto type : {"collision_shape", "physics_material", "navmesh"})
+            if (!Register(type, &CreateEditor<PhysicsNavigationEditor>, &AuthorOnly, error))
+                throw std::logic_error(error);
         if (!Register("material_instance", &CreateEditor<MaterialEditor>, &OpenVersion<MaterialInstance>,
                       error) ||
             !Register("image", &CreateEditor<TexturePreviewEditor>, &OpenVersion<ImageAsset>, error) ||

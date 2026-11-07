@@ -1,8 +1,17 @@
+newoption { trigger = "runtime-only", description = "Build the existing Box host without Editor, Tools or Tests" }
+newoption { trigger = "no-sandbox", description = "Build libraries without the default Box host" }
+local buildBox = _OPTIONS["no-sandbox"] == nil
+local runtimeOnly = _OPTIONS["runtime-only"] ~= nil
+CATALPA_RUNTIME_ONLY = runtimeOnly
+
 outputdir = "%{cfg.system}-%{cfg.architecture}/%{cfg.buildcfg}"
-local vulkanSDK = os.getenv("VULKAN_SDK")
+local vulkanSDK = os.getenv("VULKAN_SDK") or ""
+if not runtimeOnly then
 if not vulkanSDK or vulkanSDK == "" then error("VULKAN_SDK is required for the locked shader toolchain.") end
 for _, tool in ipairs { "Bin/slangc.exe", "Bin/slang-compiler.dll", "Bin/spirv-val.exe" } do
     if not os.isfile(path.join(vulkanSDK, tool)) then error("Missing SDK tool: " .. path.join(vulkanSDK, tool)) end
+end
+
 end
 
 IncludeDir = {}
@@ -85,7 +94,12 @@ local requiredDependencies = {
     path.join(IncludeDir.Lua, "linit.c")
 }
 for _, dependency in ipairs(requiredDependencies) do
-    if not os.isfile(path.join(_MAIN_SCRIPT_DIR, dependency)) then
+    local runtimeDependency = dependency:find("/glfw/",1,true) or dependency:find("/spdlog/",1,true)
+        or dependency:find("/imgui/",1,true) or dependency:find("/glad/",1,true)
+        or dependency:find("/VulkanMemoryAllocator/",1,true) or dependency:find("/json/",1,true)
+        or dependency:find("/glm/",1,true) or dependency:find("/entt/",1,true)
+        or dependency:find("/enkiTS/",1,true) or dependency:find("/lua/",1,true)
+    if (not runtimeOnly or runtimeDependency) and not os.isfile(path.join(_MAIN_SCRIPT_DIR, dependency)) then
         error("Missing dependency: " .. dependency ..
             ". Restore the listed dependency file before generating projects.")
     end
@@ -95,7 +109,7 @@ workspace "CatalpaEngine"
     configurations { "Debug", "Release", "Dist" }
     architecture "x86_64"
     -- CatalpaBox 是当前默认启动沙盒；功能库不依赖这个宿主。
-    startproject "CatalpaBox"
+    if buildBox then startproject "CatalpaBox" end
 
     system "windows"
     language "C++"
@@ -126,10 +140,10 @@ workspace "CatalpaEngine"
         optimize "Speed"
     
     filter "configurations:Dist"
-		defines { "CATALPA_DIST" }
-        runtime "Debug"
+        defines { "CATALPA_DIST" }
+        runtime "Release"
         symbols "On"
-        optimize "Off"
+        optimize "Speed"
 
 
 filter {}
@@ -138,10 +152,12 @@ include "Script/Build/GLFW.lua"
 include "Script/Build/GLAD.lua"
 include "Script/Build/EnkiTS.lua"
 -- SPIR-V反射由Tools私有消费；Runtime只读取cooked ShaderAsset。
+if not runtimeOnly then
 include "Script/Build/SPIRVReflect.lua"
 -- 工具依赖均由Premake直接编译；Assimp的派生头也由Lua生成。
 include "Script/Build/AssetImport.lua"
 include "Script/Build/Assimp.lua"
+end
 include "Script/Build/Authoring.lua"
 include "Script/Build/StageDependencies.lua"
 filter {}
@@ -184,13 +200,13 @@ project "Catalpa"
     }
 
     -- 第三方 Gizmo 实现与 ImGui 同属此 DLL；编辑器继续使用导入接口。
-    CatalpaImGuiBuild.AttachGizmoImplementation()
+    if not runtimeOnly then CatalpaImGuiBuild.AttachGizmoImplementation() end
 
     include "Script/Build/Slang.lua"
 
     filter "system:windows"
         -- 系统随机源与Unicode命令行；系统库，不引入第三方源码。
-        links { "bcrypt", "shell32" }
+        links { "bcrypt", "shell32", "imm32" }
 		defines {
 			"CATALPA_BUILD_DLL",
             "CATALPA_PLATFORM_WINDOW",
@@ -206,6 +222,7 @@ project "Catalpa"
 
 
 filter {}
+if buildBox then
 project "CatalpaBox"
     location "CatalpaBox"
     kind "ConsoleApp"
@@ -216,6 +233,7 @@ project "CatalpaBox"
         -- 以公共头作为部署构建项，DLL 是额外输入，不编译此头。
         "Catalpa/src/Catalpa.h",
         "Catalpa/Resources/Localization/*.json",
+        "Catalpa/Resources/Config/*.json",
         "Config/InputProfiles.json",
         "Config/RendererProfiles.json"
     }
@@ -229,19 +247,27 @@ project "CatalpaBox"
         "%{IncludeDir.GLM}"
     }
 
-    links {
-        "Catalpa",
-        "CatalpaEditor",
-        "Tools",
-        -- 最终宿主显式链接工具静态闭包，避免依赖StaticLib传递链接的差异。
-        "fastgltf", "simdjson", "simdutf", "MikkTSpace", "assimp", "AssimpZlib",
-        "imgui-node-editor", "nativefiledialog-extended", "Lua"
-    }
+    if runtimeOnly then
+        links { "Catalpa" }
+        defines { "CATALPA_RUNTIME_ONLY" }
+        removefiles { "CatalpaBox/src/BoxDefaultEnvironment.cpp", "CatalpaBox/src/BoxGameplay.cpp" }
+    else
+        links {
+            "Catalpa",
+            "CatalpaEditor",
+            "Tools",
+            -- 最终宿主显式链接工具静态闭包，避免依赖StaticLib传递链接的差异。
+            "fastgltf", "simdjson", "simdutf", "MikkTSpace", "assimp", "AssimpZlib",
+            "imgui-node-editor", "nativefiledialog-extended", "Lua"
+        }
+    end
 
     -- 开发配置调用验证库；Dist 的入口由现有 CATALPA_DIST 分支禁用。
     filter "configurations:Debug or Release"
-        includedirs { "Tests" }
-        links { "Tests" }
+        if not runtimeOnly then
+            includedirs { "Tests" }
+            links { "Tests" }
+        end
     filter {}
 
     filter "system:windows"
@@ -280,7 +306,7 @@ project "CatalpaBox"
         }
 
     -- 当前宿主部署运行配置；Application 按可执行目录读取，不依赖工作目录。
-    filter { "system:windows", "files:Config/*.json" }
+    filter { "system:windows", "files:**/Config/*.json" }
         buildmessage "Copying runtime configuration"
         buildcommands {
             '{MKDIR} "%{cfg.targetdir}/Resources/Config"',
@@ -291,7 +317,9 @@ project "CatalpaBox"
         buildoutputs { "%{cfg.targetdir}/Resources/Config/%{file.name}" }
 
     filter {}
-    CatalpaShaderBuild.AttachHostCook()
+    if not runtimeOnly then CatalpaShaderBuild.AttachHostCook() end
+
+end
 
 -- 共享作者工具核心：项目配置、Shader编译/校验/反射/Cook及命令协议；宿主只转交，不提供main。
 filter {}
@@ -391,6 +419,7 @@ filter {}
 -- 公开包含目录和静态库宏，供各阶段的真实消费者直接引用。
 for _, consumer in ipairs { "Catalpa", "Tools", "CatalpaEditor", "CatalpaBox", "Tests" } do
     filter {}
+    if buildBox or consumer ~= "CatalpaBox" then
     project(consumer)
         includedirs {
             "Catalpa/third_party/meshoptimizer/src", "Catalpa/third_party/zstd/lib",
@@ -401,9 +430,51 @@ for _, consumer in ipairs { "Catalpa", "Tools", "CatalpaEditor", "CatalpaBox", "
             "Catalpa/third_party/recastnavigation/DetourCrowd/Include", "Catalpa/third_party/recastnavigation/DetourTileCache/Include"
         }
         defines { "RMLUI_STATIC_LIB", "KHRONOS_STATIC" }
+    end
 end
 filter {}
+if buildBox then
 project "CatalpaBox"
-    links { "meshoptimizer", "ktx", "astcenc", "zstd", "FreeType", "ozz_animation_offline", "ozz_animation",
-        "ozz_base", "Jolt", "miniaudio", "RmlUi", "Recast", "DetourCrowd", "DetourTileCache", "Detour", "winmm" }
+    if not runtimeOnly then
+        links { "meshoptimizer", "ktx", "astcenc", "zstd", "FreeType", "ozz_animation_offline", "ozz_animation",
+            "ozz_base", "Jolt", "miniaudio", "RmlUi", "Recast", "DetourCrowd", "DetourTileCache", "Detour", "winmm" }
+    end
+filter {}
+
+filter {}
+end
+filter {}
+project "Catalpa"
+    -- Runtime真实消费者在DLL内链接；runtime-only宿主不再依赖工具/编辑库补符号。
+    links { "zstd", "FreeType", "Jolt", "Detour", "RmlUi", "miniaudio", "winmm" }
+filter {}
+project "Tools"
+    links { "meshoptimizer", "Recast", "Detour", "miniaudio" }
+filter {}
+
+if runtimeOnly then
+    for _, name in ipairs { "Tools", "CatalpaEditor", "Tests" } do
+        filter {}
+        project(name)
+            excludefrombuild "On"
+    end
+end
+filter {}
+
+filter {}
+if buildBox then
+project "CatalpaBox"
+    files { "Catalpa/Resources/Fonts/Inter/extras/ttf/Inter-Regular.ttf", "Catalpa/Resources/Fonts/Inter/InterVariable.ttf", "Catalpa/Resources/Fonts/Inter/LICENSE.txt" }
+    filter { "system:windows", "files:**/Fonts/Inter/**" }
+        buildmessage "Deploying Latin fallback font and license"
+        buildcommands {
+            '{MKDIR} "%{cfg.targetdir}/Resources/Fonts/Inter"',
+            'if errorlevel 1 exit /b 1',
+            '{COPYFILE} "%{file.abspath}" "%{cfg.targetdir}/Resources/Fonts/Inter/%{file.name}"',
+            'if errorlevel 1 exit /b 1'
+        }
+        buildoutputs { "%{cfg.targetdir}/Resources/Fonts/Inter/%{file.name}" }
+filter {}
+
+end
 filter {}

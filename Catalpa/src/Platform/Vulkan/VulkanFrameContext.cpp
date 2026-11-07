@@ -86,8 +86,9 @@ namespace Catalpa {
         return {};
     }
 
-    RHIStatus VulkanFrameContext::Submit(VulkanQueue& queue, const RHIGpuDependency& wait, const RHIGpuDependency& signal)
-    {
+    RHIStatus VulkanFrameContext::Submit(VulkanQueue& queue, const RHIGpuDependency& wait,
+                                         const RHIGpuDependency& signal,
+                                         std::span<const RHICompletionPoint> dependencies) {
         if (m_State != State::Acquired || !m_ActiveSwapchain || wait != m_Acquired.acquireReady || signal != m_Acquired.renderFinished)
             return { .code = RHIErrorCode::InvalidState, .operation = "VulkanFrameContext::Submit" };
 
@@ -106,7 +107,8 @@ namespace Catalpa {
             .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT
         };
 
-        const RHIStatus status = queue.Submit(m_CommandList, m_Fence, { &waitInfo, 1 }, { &signalInfo, 1 });
+        const RHIStatus status =
+            queue.Submit(m_CommandList, m_Fence, {&waitInfo, 1}, {&signalInfo, 1}, dependencies);
         if (status.IsSuccess()) m_State = State::Submitted;
         return status;
     }
@@ -158,4 +160,4 @@ namespace Catalpa {
         return {};
     }
 
-}
+} // namespace Catalpa

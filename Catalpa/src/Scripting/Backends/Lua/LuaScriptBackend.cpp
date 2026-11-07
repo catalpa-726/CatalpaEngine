@@ -22,14 +22,29 @@ namespace Catalpa {
         std::string diagnostic;
         std::string scratch, event;
         double seconds = 0;
+        bool requiredCallback = false;
         std::map<std::string, std::shared_ptr<const ScriptAsset>, std::less<>> modules;
         std::set<std::string, std::less<>> loading;
+        std::map<std::string, std::string, std::less<>> subscriptions;
+        struct Timer {
+            double remaining = 0;
+            std::string callback;
+        };
+        std::map<uint64_t, Timer> timers;
+        uint64_t nextTimer = 1;
+        uint32_t stateSchema = 1, importSchema = 1;
+        ScriptValues exported;
         // Lua 以 longjmp 退出 C 回调；会分配的 Lua 调用之间不能保留 STL 迭代器等 RAII 局部量。
         struct Property {
             std::string name;
             ScriptValue value;
         };
         std::vector<Property> properties;
+        static bool CallbackName(std::string_view name) {
+            return !name.empty() && name.size() <= 128 && std::all_of(name.begin(), name.end(), [](char c) {
+                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+            });
+        }
 
         static void* Allocate(void* user, void* old, size_t oldSize, size_t size) {
             auto& state = *static_cast<State*>(user);
@@ -100,6 +115,174 @@ namespace Catalpa {
             return 3;
         }
 
+        static int CreateEntity(lua_State* vm) {
+            size_t length = 0;
+            const char* name = luaL_checklstring(vm, 1, &length);
+            const double x = luaL_optnumber(vm, 2, 0), y = luaL_optnumber(vm, 3, 0),
+                         z = luaL_optnumber(vm, 4, 0);
+            auto& state = Get(vm);
+            bool ok = false;
+            try {
+                Math::TransformTRS pose;
+                pose.translation = {float(x), float(y), float(z)};
+                PersistentEntityId id;
+                if (std::isfinite(x) && std::isfinite(y) && std::isfinite(z) && std::abs(x) <= FLT_MAX &&
+                    std::abs(y) <= FLT_MAX && std::abs(z) <= FLT_MAX && state.api)
+                    ok = state.api->commands.Create(state.api->scene, std::string_view(name, length), pose,
+                                                    id, state.diagnostic);
+                if (ok)
+                    state.scratch = id.ToString();
+                else if (state.diagnostic.empty())
+                    state.diagnostic = "Invalid entity creation coordinates";
+            } catch (...) {
+                state.diagnostic = "Cannot reserve script entity creation";
+            }
+            if (!ok)
+                return luaL_error(vm, "%s", state.diagnostic.c_str());
+            lua_pushlstring(vm, state.scratch.data(), state.scratch.size());
+            return 1;
+        }
+        static int DestroyEntity(lua_State* vm) {
+            size_t length = 0;
+            const char* id = luaL_checklstring(vm, 1, &length);
+            auto& state = Get(vm);
+            bool ok = false;
+            try {
+                PersistentEntityId target;
+                if (state.api && PersistentEntityId::TryParse(std::string_view(id, length), target))
+                    ok = state.api->commands.Destroy(state.api->scene, target, state.diagnostic);
+            } catch (...) {
+                state.diagnostic = "Cannot reserve script entity deletion";
+            }
+            if (!ok)
+                return luaL_error(vm, "%s",
+                                  state.diagnostic.empty() ? "Invalid script entity identity"
+                                                           : state.diagnostic.c_str());
+            return 0;
+        }
+        static int Subscribe(lua_State* vm) {
+            size_t a = 0, b = 0;
+            const char* topic = luaL_checklstring(vm, 1, &a);
+            const char* callback = luaL_checklstring(vm, 2, &b);
+            auto& state = Get(vm);
+            bool ok = false;
+            if (a && a <= 128 && topic[0] != '@' && !std::memchr(topic, 0, a) &&
+                CallbackName(std::string_view(callback, b)) &&
+                (state.subscriptions.size() < 128 ||
+                 state.subscriptions.contains(std::string_view(topic, a))))
+                try {
+                    state.subscriptions.insert_or_assign(std::string(topic, a), std::string(callback, b));
+                    ok = true;
+                } catch (...) {
+                    state.diagnostic = "Cannot reserve script subscription";
+                }
+            if (!ok)
+                return luaL_error(vm, "Invalid or exhausted script event subscription");
+            return 0;
+        }
+        static int Unsubscribe(lua_State* vm) {
+            size_t size = 0;
+            const char* topic = luaL_checklstring(vm, 1, &size);
+            auto& state = Get(vm);
+            if (size > 128)
+                return luaL_error(vm, "Invalid script event topic");
+            try {
+                state.subscriptions.erase(std::string(topic, size));
+            } catch (...) {
+                return luaL_error(vm, "Cannot remove event subscription");
+            }
+            return 0;
+        }
+        static int Emit(lua_State* vm) {
+            size_t a = 0, b = 0;
+            const char* topic = luaL_checklstring(vm, 1, &a);
+            const char* value = luaL_optlstring(vm, 2, "", &b);
+            auto& state = Get(vm);
+            bool ok = false;
+            try {
+                if (state.api)
+                    ok = state.api->Emit(std::string_view(topic, a), std::string_view(value, b),
+                                         state.diagnostic);
+            } catch (...) {
+                state.diagnostic = "Cannot reserve script event";
+            }
+            if (!ok)
+                return luaL_error(vm, "%s", state.diagnostic.c_str());
+            return 0;
+        }
+        static int After(lua_State* vm) {
+            const double delay = luaL_checknumber(vm, 1);
+            size_t size = 0;
+            const char* callback = luaL_checklstring(vm, 2, &size);
+            auto& state = Get(vm);
+            uint64_t token = 0;
+            if (std::isfinite(delay) && delay >= 0 && delay <= 3600 &&
+                CallbackName(std::string_view(callback, size)) && state.timers.size() < 64 &&
+                state.nextTimer < INT64_MAX)
+                try {
+                    token = state.nextTimer++;
+                    state.timers.emplace(token, Timer{delay, std::string(callback, size)});
+                } catch (...) {
+                    token = 0;
+                }
+            if (!token)
+                return luaL_error(vm, "Timer delay/callback/capacity rejected");
+            lua_pushinteger(vm, lua_Integer(token));
+            return 1;
+        }
+        static int CancelTimer(lua_State* vm) {
+            const auto token = luaL_checkinteger(vm, 1);
+            if (token <= 0)
+                return luaL_error(vm, "Invalid timer token");
+            Get(vm).timers.erase(uint64_t(token));
+            return 0;
+        }
+        static int ChecksumAsync(lua_State* vm) {
+            size_t a = 0, b = 0;
+            const char* text = luaL_checklstring(vm, 1, &a);
+            const char* callback = luaL_checklstring(vm, 2, &b);
+            auto& state = Get(vm);
+            uint64_t token = 0;
+            bool ok = false;
+            try {
+                if (state.api && CallbackName(std::string_view(callback, b)))
+                    ok = state.api->AsyncChecksum(std::string_view(text, a), std::string_view(callback, b),
+                                                  token, state.diagnostic);
+            } catch (...) {
+                state.diagnostic = "Cannot reserve asynchronous script continuation";
+            }
+            if (!ok)
+                return luaL_error(vm, "%s", state.diagnostic.c_str());
+            lua_pushinteger(vm, lua_Integer(token));
+            return 1;
+        }
+        static int CancelAsync(lua_State* vm) {
+            const auto token = luaL_checkinteger(vm, 1);
+            auto& state = Get(vm);
+            bool ok = false;
+            try {
+                if (state.api && token > 0 && state.api->cancelledAsync.size() < 16) {
+                    state.api->cancelledAsync.push_back(uint64_t(token));
+                    ok = true;
+                }
+            } catch (...) {
+                ok = false;
+            }
+            if (!ok)
+                return luaL_error(vm, "Invalid or exhausted async cancellation request");
+            return 0;
+        }
+        static int SwitchScene(lua_State* vm) {
+            size_t size = 0;
+            const char* text = luaL_checklstring(vm, 1, &size);
+            AssetId id;
+            auto& state = Get(vm);
+            if (!state.api || !AssetId::TryParse(std::string_view(text, size), id))
+                return luaL_error(vm, "Scene switch requires a cooked scene AssetId");
+            state.api->requestedScene = id;
+            return 0;
+        }
+
         static int Require(lua_State* vm) {
             auto& state = Get(vm);
             size_t nameSize = 0;
@@ -158,7 +341,31 @@ namespace Catalpa {
             lua_setfield(vm, -2, "set_translation");
             lua_pushcfunction(vm, Position);
             lua_setfield(vm, -2, "position");
+            lua_pushcfunction(vm, CreateEntity);
+            lua_setfield(vm, -2, "create");
+            lua_pushcfunction(vm, DestroyEntity);
+            lua_setfield(vm, -2, "destroy");
+            lua_pushcfunction(vm, SwitchScene);
+            lua_setfield(vm, -2, "switch");
             lua_setglobal(vm, "scene");
+            lua_newtable(vm);
+            lua_pushcfunction(vm, Subscribe);
+            lua_setfield(vm, -2, "subscribe");
+            lua_pushcfunction(vm, Unsubscribe);
+            lua_setfield(vm, -2, "unsubscribe");
+            lua_pushcfunction(vm, Emit);
+            lua_setfield(vm, -2, "emit");
+            lua_setglobal(vm, "events");
+            lua_newtable(vm);
+            lua_pushcfunction(vm, After);
+            lua_setfield(vm, -2, "after");
+            lua_pushcfunction(vm, CancelTimer);
+            lua_setfield(vm, -2, "cancel");
+            lua_pushcfunction(vm, ChecksumAsync);
+            lua_setfield(vm, -2, "checksum");
+            lua_pushcfunction(vm, CancelAsync);
+            lua_setfield(vm, -2, "cancel_async");
+            lua_setglobal(vm, "tasks");
             return 0;
         }
 
@@ -169,7 +376,7 @@ namespace Catalpa {
             return 0;
         }
 
-        static int SetProperties(lua_State* vm) {
+        static int PushValues(lua_State* vm) {
             const auto& values = Get(vm).properties;
             lua_newtable(vm);
             // 使用索引与借用指针；Lua OOM 不会跳过 MSVC Debug 迭代器的析构。
@@ -189,7 +396,109 @@ namespace Catalpa {
                 } else return luaL_error(vm, "Unsupported prepared property type");
                 lua_setfield(vm, -2, property.name.c_str());
             }
+            return 1;
+        }
+        static int SetProperties(lua_State* vm) {
+            PushValues(vm);
             lua_setglobal(vm, "properties");
+            return 0;
+        }
+        static int SetEventValues(lua_State* vm) {
+            PushValues(vm);
+            lua_setglobal(vm, "event");
+            return 0;
+        }
+        static int CaptureState(lua_State* vm) {
+            auto& state = Get(vm);
+            state.exported.clear();
+            state.stateSchema = 1;
+            lua_rawgeti(vm, LUA_REGISTRYINDEX, state.module);
+            lua_getfield(vm, -1, "state_schema");
+            if (!lua_isnil(vm, -1)) {
+                if (!lua_isinteger(vm, -1) || lua_tointeger(vm, -1) < 1 || lua_tointeger(vm, -1) > 65535)
+                    return luaL_error(vm, "state_schema must be an integer in [1,65535]");
+                state.stateSchema = uint32_t(lua_tointeger(vm, -1));
+            }
+            lua_pop(vm, 1);
+            lua_getfield(vm, -1, "state");
+            if (lua_isnil(vm, -1))
+                return 0;
+            if (!lua_istable(vm, -1))
+                return luaL_error(vm, "Script state must be a flat owned value table");
+            lua_pushnil(vm);
+            while (lua_next(vm, -2)) {
+                if (lua_type(vm, -2) != LUA_TSTRING || state.exported.size() >= 256)
+                    return luaL_error(vm, "State keys/count rejected");
+                size_t nameSize = 0;
+                const char* name = lua_tolstring(vm, -2, &nameSize);
+                const int type = lua_type(vm, -1);
+                bool ok = false;
+                double vector[3]{};
+                if (type == LUA_TTABLE) {
+                    if (lua_rawlen(vm, -1) != 3)
+                        return luaL_error(vm, "State vectors require three numeric coordinates");
+                    for (int i = 0; i < 3; ++i) {
+                        lua_rawgeti(vm, -1, i + 1);
+                        if (lua_type(vm, -1) != LUA_TNUMBER)
+                            return luaL_error(vm, "Invalid state vector");
+                        vector[i] = lua_tonumber(vm, -1);
+                        lua_pop(vm, 1);
+                    }
+                }
+                try {
+                    if (type == LUA_TBOOLEAN) {
+                        state.exported[std::string(name, nameSize)] = lua_toboolean(vm, -1) != 0;
+                        ok = true;
+                    } else if (type == LUA_TNUMBER) {
+                        if (lua_isinteger(vm, -1))
+                            state.exported[std::string(name, nameSize)] = int64_t(lua_tointeger(vm, -1));
+                        else
+                            state.exported[std::string(name, nameSize)] = double(lua_tonumber(vm, -1));
+                        ok = true;
+                    } else if (type == LUA_TSTRING) {
+                        size_t size = 0;
+                        const char* text = lua_tolstring(vm, -1, &size);
+                        state.exported[std::string(name, nameSize)] = std::string(text, size);
+                        ok = true;
+                    } else if (type == LUA_TTABLE &&
+                               std::all_of(std::begin(vector), std::end(vector), [](double n) {
+                                   return std::isfinite(n) && std::abs(n) <= FLT_MAX &&
+                                          (n == 0 || float(n) != 0);
+                               })) {
+                        state.exported[std::string(name, nameSize)] =
+                            Math::Vec3(float(vector[0]), float(vector[1]), float(vector[2]));
+                        ok = true;
+                    }
+                } catch (...) {
+                    state.diagnostic = "Cannot reserve script state snapshot";
+                }
+                if (!ok)
+                    return luaL_error(vm, "Unsupported or over-budget state value");
+                lua_pop(vm, 1);
+            }
+            return 0;
+        }
+        static int ApplyState(lua_State* vm) {
+            auto& state = Get(vm);
+            lua_rawgeti(vm, LUA_REGISTRYINDEX, state.module);
+            lua_getfield(vm, -1, "state_schema");
+            const auto schema = lua_isnil(vm, -1) ? 1 : lua_tointeger(vm, -1);
+            if (!lua_isnil(vm, -1) && (!lua_isinteger(vm, -1) || schema < 1 || schema > 65535))
+                return luaL_error(vm, "Invalid destination state_schema");
+            lua_pop(vm, 1);
+            if (uint32_t(schema) != state.importSchema) {
+                lua_getfield(vm, -1, "migrate");
+                if (!lua_isfunction(vm, -1))
+                    return luaL_error(
+                        vm, "State schema changed without a migrate(old_schema,old_state) function");
+                lua_pushinteger(vm, state.importSchema);
+                PushValues(vm);
+                lua_call(vm, 2, 1);
+                if (!lua_istable(vm, -1))
+                    return luaL_error(vm, "Migration must return an owned state table");
+            } else
+                PushValues(vm);
+            lua_setfield(vm, -2, "state");
             return 0;
         }
 
@@ -203,10 +512,16 @@ namespace Catalpa {
             auto& state = Get(vm);
             lua_rawgeti(vm, LUA_REGISTRYINDEX, state.module);
             lua_getfield(vm, -1, state.event.c_str());
-            if (lua_isnil(vm, -1)) return 0;
+            if (lua_isnil(vm, -1)) {
+                if (state.requiredCallback)
+                    return luaL_error(vm, "Subscribed continuation callback does not exist: %s",
+                                      state.event.c_str());
+                return 0;
+            }
             if (!lua_isfunction(vm, -1)) return luaL_error(vm, "Lifecycle field is not a function: %s", state.event.c_str());
             lua_pushnumber(vm, state.seconds);
-            lua_call(vm, 1, 0);
+            lua_getglobal(vm, "event");
+            lua_call(vm, 2, 0);
             return 0;
         }
 
@@ -229,8 +544,12 @@ namespace Catalpa {
             lua_sethook(vm, nullptr, 0, 0);
             api = nullptr;
             if (result != LUA_OK) {
-                const char* message = lua_type(vm,-1)==LUA_TSTRING ? lua_tostring(vm, -1) : nullptr;
-                error = message ? message : "Lua VM error";
+                size_t size = 0;
+                const char* message =
+                    lua_type(vm, -1) == LUA_TSTRING ? lua_tolstring(vm, -1, &size) : nullptr;
+                error = message ? std::string(message, std::min<size_t>(size, 4096)) : "Lua VM error";
+                if (size > 4096)
+                    error += " [diagnostic truncated]";
                 lua_pop(vm, 1);
                 if (borrowed) borrowed->commands.Clear();
                 return false;
@@ -317,19 +636,120 @@ namespace Catalpa {
         lua_pushcfunction(state.vm, State::RetainModule);
         lua_insert(state.vm, -2);
         if (!state.Protected(1, 0, &api, error)) return false;
-        return Call("start", 0, api, error);
+        return api.reloading ? true : Call("start", 0, api, error);
     }
 
     bool LuaScriptBackend::Call(std::string_view event, double seconds, ScriptApi& api, std::string& error) {
         auto& state = *m_State;
         if (std::this_thread::get_id() != state.owner || !state.vm || state.module == LUA_NOREF ||
-            !std::isfinite(seconds) || seconds < 0 || (event!="start" && event!="update" && event!="stop")) {
+            !std::isfinite(seconds) || seconds < 0 ||
+            (event != "start" && event != "update" && event != "stop" && event != "reload")) {
             error = "Invalid Lua call owner, time or lifecycle";
             return false;
         }
+        if (event == "update") {
+            std::vector<std::pair<uint64_t, std::string>> due;
+            for (auto& [token, timer] : state.timers) {
+                timer.remaining -= seconds;
+                if (timer.remaining <= 0 && due.size() < 16)
+                    due.emplace_back(token, timer.callback);
+            }
+            for (const auto& [token, callback] : due) {
+                state.timers.erase(token);
+                ScriptValues payload;
+                payload["timer"] = int64_t(token);
+                if (!Event("@continuation/" + callback, payload, api, error))
+                    return false;
+            }
+        }
+        state.properties.clear();
+        lua_pushcfunction(state.vm, State::SetEventValues);
+        if (!state.Protected(0, 0, &api, error))
+            return false;
         state.event.assign(event);
+        state.requiredCallback = false;
         state.seconds = seconds;
         lua_pushcfunction(state.vm, State::Dispatch);
         return state.Protected(0, 0, &api, error);
+    }
+
+    bool LuaScriptBackend::Event(std::string_view channel, const ScriptValues& values, ScriptApi& api,
+                                 std::string& error) {
+        auto& state = *m_State;
+        if (std::this_thread::get_id() != state.owner || !state.vm || state.module == LUA_NOREF ||
+            !ValidateScriptValues(values, error))
+            return false;
+        std::string callback;
+        if (channel.starts_with("@continuation/"))
+            callback = channel.substr(14);
+        else {
+            const auto found = state.subscriptions.find(channel);
+            if (found == state.subscriptions.end()) {
+                error.clear();
+                return true;
+            }
+            callback = found->second;
+        }
+        if (!State::CallbackName(callback)) {
+            error = "Invalid script event callback name";
+            return false;
+        }
+        state.properties.clear();
+        state.properties.reserve(values.size());
+        for (const auto& [name, value] : values) {
+            State::Property property{name, value};
+            if (const auto* id = std::get_if<PersistentEntityId>(&value))
+                property.value = id->ToString();
+            state.properties.push_back(std::move(property));
+        }
+        lua_pushcfunction(state.vm, State::SetEventValues);
+        if (!state.Protected(0, 0, &api, error))
+            return false;
+        state.event = std::move(callback);
+        state.requiredCallback = true;
+        state.seconds = 0;
+        lua_pushcfunction(state.vm, State::Dispatch);
+        return state.Protected(0, 0, &api, error);
+    }
+
+    bool LuaScriptBackend::ExportState(uint32_t& schema, ScriptValues& values, std::string& error) {
+        auto& state = *m_State;
+        if (std::this_thread::get_id() != state.owner || !state.vm || state.module == LUA_NOREF) {
+            error = "Script state export requires a live owner VM";
+            return false;
+        }
+        lua_pushcfunction(state.vm, State::CaptureState);
+        if (!state.Protected(0, 0, nullptr, error) || !ValidateScriptValues(state.exported, error))
+            return false;
+        values = state.exported;
+        schema = state.stateSchema;
+        error.clear();
+        return true;
+    }
+
+    bool LuaScriptBackend::ImportState(uint32_t schema, const ScriptValues& values, ScriptApi& api,
+                                       std::string& error) {
+        auto& state = *m_State;
+        if (std::this_thread::get_id() != state.owner || !state.vm || state.module == LUA_NOREF ||
+            schema < 1 || schema > 65535 || !ValidateScriptValues(values, error)) {
+            if (error.empty())
+                error = "Invalid script state import";
+            return false;
+        }
+        state.properties.clear();
+        state.properties.reserve(values.size());
+        for (const auto& [name, value] : values) {
+            State::Property property{name, value};
+            if (const auto* id = std::get_if<PersistentEntityId>(&value))
+                property.value = id->ToString();
+            state.properties.push_back(std::move(property));
+        }
+        state.importSchema = schema;
+        lua_pushcfunction(state.vm, State::ApplyState);
+        if (!state.Protected(0, 0, &api, error))
+            return false;
+        ScriptValues checked;
+        uint32_t actual = 0;
+        return ExportState(actual, checked, error);
     }
 }

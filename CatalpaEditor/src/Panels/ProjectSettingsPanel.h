@@ -1,11 +1,12 @@
 #pragma once
 #include "Project/ProjectConfig.h"
+#include "Panels/PanelText.h"
 
 namespace Catalpa::Editor {
     class EditorProject;
     class ProjectSettingsPanel {
       public:
-        void Draw(EditorProject&, bool buildsBusy, std::string& error);
+        void Draw(EditorProject&, bool buildsBusy, const PanelText&, std::string& error);
         void Reset() { m_Project = {}; m_Draft.reset(); m_FieldOverflow = false; }
       private:
         StableId m_Project;

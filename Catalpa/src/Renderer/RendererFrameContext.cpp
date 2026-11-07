@@ -136,11 +136,17 @@ namespace Catalpa {
                 if (event == Json::parse_event_t::key && !keys.insert(value.get<std::string>()).second) invalid = true;
                 return !invalid;
             }, false);
-            if (invalid || !document.is_object() || document.size() != 6)
+            if (invalid || !document.is_object() || (document.size() != 6 && document.size() != 7))
                 return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
             constexpr std::array<const char*, 6> required{ "schemaVersion", "profile", "depthFormat", "depthPrepass", "normalDebug", "clearColor" };
             for (const auto* field : required)
                 if (!document.contains(field)) return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+            for (auto field = document.begin(); field != document.end(); ++field)
+                if (field.key() != "asyncQueues" &&
+                    std::find(required.begin(), required.end(), field.key()) == required.end())
+                    return {.code = RHIErrorCode::InvalidDescription, .operation = operation};
+            if (document.contains("asyncQueues") && !document["asyncQueues"].is_boolean())
+                return {.code = RHIErrorCode::InvalidDescription, .operation = operation};
             if (!document["schemaVersion"].is_number_integer() || document["schemaVersion"] != 1
                 || !document["profile"].is_string() || !document["depthFormat"].is_string()
                 || document["depthFormat"] != "D32_Float" || !document["depthPrepass"].is_boolean()
@@ -156,6 +162,7 @@ namespace Catalpa {
             RendererProfile candidate;
             candidate.depthPrepass = document["depthPrepass"].get<bool>();
             candidate.normalDebug = document["normalDebug"].get<bool>();
+            candidate.asyncQueues = document.value("asyncQueues", true);
             for (size_t i = 0; i < 4; ++i) {
                 if (!document["clearColor"][i].is_number() || !FloatValue(document["clearColor"][i].get<double>(), candidate.clearColor[i]))
                     return { .code = RHIErrorCode::InvalidDescription, .operation = operation };

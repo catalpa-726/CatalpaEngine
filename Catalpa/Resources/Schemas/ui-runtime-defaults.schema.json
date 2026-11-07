@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "density", "maxDocuments"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "density": {"type": "number", "minimum": 0.5, "maximum": 4.0},
+    "maxDocuments": {"type": "integer", "minimum": 1, "maximum": 16}
+  }
+}

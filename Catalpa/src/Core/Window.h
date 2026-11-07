@@ -2,6 +2,7 @@
 
 #include "catpch.h"
 #include "Events/Event.h"
+#include "Core/TextInput.h"
 
 namespace Catalpa {
 
@@ -38,7 +39,18 @@ namespace Catalpa {
 		virtual void SetVSync(bool enabled) = 0;
 		virtual bool IsVSync() const = 0;
 
-		// 原生窗口访问与平台工厂。
+                using TextCompositionCallback = std::function<void(const TextComposition&)>;
+                virtual bool SetTextInputTarget(uint64_t, const TextInputSnapshot&, TextCompositionCallback,
+                                                std::string& error) {
+                    error = "Native IME target is unsupported by this window backend";
+                    return false;
+                }
+                virtual void ClearTextInputTarget(uint64_t) {} // owner=0 仅用于应用关闭时清理任一最后目标。
+                virtual bool HasTextInputTarget() const noexcept {
+                    return false;
+                }
+
+                // 原生窗口访问与平台工厂。
 		virtual void* GetNativeWindow() const = 0;
 
 		static Window* Create(const WindowProps& props = WindowProps());

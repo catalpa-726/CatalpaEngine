@@ -16,6 +16,18 @@ namespace Catalpa::Tests {
         size_t copyCount = 0;
         bool allowReadback = false;
 
+        // 按需记录布局命令，供提交替身独立回放；不把计划中的最终状态当作实际布局。
+        // 此模式只支持用于采样验证的无顶点缓冲全屏三角形，其他绘制仍明确拒绝。
+        struct TextureCommand {
+            enum class Kind { Barrier, RequireLayout };
+            Kind kind = Kind::Barrier;
+            RHITextureBarrier barrier;
+            TextureViewHandle view;
+            RHITextureLayout layout = RHITextureLayout::Undefined;
+        };
+        bool recordTextureLayouts = false;
+        std::vector<TextureCommand> textureCommands;
+
         RHIStatus Begin() override
         {
             if (state != RHICommandListState::Initial) return Invalid();
@@ -40,10 +52,19 @@ namespace Catalpa::Tests {
             textureUpdates.assign(textures.begin(), textures.end());
             return {};
         }
-        RHIStatus BeginRendering(const RHIRenderingDesc&) override
+        RHIStatus BeginRendering(const RHIRenderingDesc& rendering) override
         {
             if (state != RHICommandListState::Recording) return Invalid();
             if (auto status = Visit("BeginRendering"); !status.IsSuccess()) return status;
+            if (recordTextureLayouts) {
+                for (const auto& color : rendering.colorAttachments)
+                    RequireTextureLayout(color.view, RHITextureLayout::ColorAttachment);
+                if (rendering.depthAttachment)
+                    RequireTextureLayout(rendering.depthAttachment->view, RHITextureLayout::DepthAttachment);
+                m_GraphicsBindings.clear();
+                m_GraphicsPipelineBound = false;
+                m_ViewportSet = false;
+            }
             state = RHICommandListState::Rendering;
             return {};
         }
@@ -54,9 +75,14 @@ namespace Catalpa::Tests {
             state = RHICommandListState::Recording;
             return {};
         }
-        RHIStatus PipelineBarrier(std::span<const RHITextureBarrier>) override
+        RHIStatus PipelineBarrier(std::span<const RHITextureBarrier> barriers) override
         {
-            return state == RHICommandListState::Recording ? Visit("TextureBarrier") : Invalid();
+            if (state != RHICommandListState::Recording) return Invalid();
+            if (auto status = Visit("TextureBarrier"); !status.IsSuccess()) return status;
+            if (recordTextureLayouts)
+                for (const auto& barrier : barriers)
+                    textureCommands.push_back({.kind = TextureCommand::Kind::Barrier, .barrier = barrier});
+            return {};
         }
         RHIStatus PipelineBarrier(std::span<const RHIBufferBarrier>) override
         {
@@ -69,24 +95,67 @@ namespace Catalpa::Tests {
             ++copyCount;
             return {};
         }
-        // 本批只验证clear/copy/transition调度；未实现的绘制行为明确失败，不能默认为通过。
+        // 未显式启用的行为明确失败，不能仅凭命令返回成功来冒充GPU验证。
         RHIStatus CopyBufferToTexture(BufferHandle, TextureViewHandle, const RHIBufferTextureCopy&) override { return Unsupported(); }
         RHIStatus CopyTextureToBuffer(TextureViewHandle, BufferHandle, const RHITextureBufferCopy&) override {
             if (!allowReadback) return Unsupported();
             return state == RHICommandListState::Recording ? Visit("CopyTextureToBuffer") : Invalid();
         }
-        RHIStatus BindGraphicsPipeline(GraphicsPipelineHandle) override { return Unsupported(); }
-        RHIStatus SetGraphicsBindings(std::span<const RHIBinding>) override { return Unsupported(); }
+        RHIStatus BindGraphicsPipeline(GraphicsPipelineHandle pipeline) override
+        {
+            if (!recordTextureLayouts) return Unsupported();
+            if (state != RHICommandListState::Rendering || !pipeline.HasValue()) return Invalid();
+            if (auto status = Visit("BindGraphicsPipeline"); !status.IsSuccess()) return status;
+            m_GraphicsPipelineBound = true;
+            return {};
+        }
+        RHIStatus SetGraphicsBindings(std::span<const RHIBinding> bindings) override
+        {
+            if (!recordTextureLayouts) return Unsupported();
+            if (state != RHICommandListState::Rendering) return Invalid();
+            for (const auto& binding : bindings)
+                if (binding.type != RHIBindingType::SampledTexture && binding.type != RHIBindingType::Sampler)
+                    return Unsupported();
+            if (auto status = Visit("SetGraphicsBindings"); !status.IsSuccess()) return status;
+            m_GraphicsBindings.assign(bindings.begin(), bindings.end());
+            return {};
+        }
         RHIStatus SetGraphicsPushConstants(std::span<const std::byte>) override { return Unsupported(); }
         RHIStatus BindVertexBuffer(uint32_t, BufferHandle, uint64_t) override { return Unsupported(); }
         RHIStatus BindIndexBuffer(BufferHandle, RHIIndexType, uint64_t) override { return Unsupported(); }
-        RHIStatus SetViewportAndScissor(const RHIViewport&, const Rect2D&) override { return Unsupported(); }
-        RHIStatus Draw(uint32_t, uint32_t, uint32_t, uint32_t) override { return Unsupported(); }
+        RHIStatus SetViewportAndScissor(const RHIViewport&, const Rect2D&) override
+        {
+            if (!recordTextureLayouts) return Unsupported();
+            if (state != RHICommandListState::Rendering) return Invalid();
+            if (auto status = Visit("SetViewportAndScissor"); !status.IsSuccess()) return status;
+            m_ViewportSet = true;
+            return {};
+        }
+        RHIStatus Draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance) override
+        {
+            if (!recordTextureLayouts || vertexCount != 3 || instanceCount != 1 || firstVertex != 0 || firstInstance != 0)
+                return Unsupported();
+            if (state != RHICommandListState::Rendering || !m_GraphicsPipelineBound || !m_ViewportSet)
+                return Invalid();
+            if (auto status = Visit("Draw"); !status.IsSuccess()) return status;
+            for (const auto& binding : m_GraphicsBindings)
+                if (binding.type == RHIBindingType::SampledTexture)
+                    RequireTextureLayout(binding.texture, RHITextureLayout::ShaderReadOnly);
+            return {};
+        }
         RHIStatus DrawIndexed(uint32_t, uint32_t, uint32_t, int32_t, uint32_t) override { return Unsupported(); }
         bool BeginDebugLabel(const char*, const std::array<float, 4>&) override { return false; }
         void EndDebugLabel() override {}
 
     private:
+        std::vector<RHIBinding> m_GraphicsBindings;
+        bool m_GraphicsPipelineBound = false;
+        bool m_ViewportSet = false;
+
+        void RequireTextureLayout(TextureViewHandle view, RHITextureLayout layout)
+        {
+            textureCommands.push_back({.kind = TextureCommand::Kind::RequireLayout, .view = view, .layout = layout});
+        }
         RHIStatus Visit(const char* name)
         {
             events.emplace_back(name);

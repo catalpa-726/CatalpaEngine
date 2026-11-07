@@ -1,5 +1,6 @@
 #pragma once
 #include "Scene/SceneSerializer.h"
+#include "Scene/DomainComponents.h"
 #include "Core/Serialization/AuthorJson.h"
 
 // 实现私有的比较表示；固定版本引用转换为资产身份，不比较 GPU 或 C++ 对象地址。
@@ -18,6 +19,9 @@ namespace Catalpa::PrefabDetail {
         };
         if(node.script) values(node.script->properties);
         if(node.behavior) values(node.behavior->variables);
+        std::string error;
+        if (!RemapDomainEntityReferences(node.dynamicComponents, inverse, error))
+            throw std::invalid_argument(error);
         return node;
     }
     inline SceneEntityAsset Localize(SceneEntityAsset node, const std::map<PersistentEntityId, PersistentEntityId>& mapping) {

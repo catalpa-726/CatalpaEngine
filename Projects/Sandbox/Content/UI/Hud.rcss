@@ -1,0 +1,6 @@
+body { margin: 0; width: 100%; height: 100%; pointer-events: none; color: white; font-size: 18dp; }
+#panel { position: absolute; left: 24dp; top: 24dp; width: 240dp; padding: 12dp; background-color: #102a38c0; }
+#status { height: 28dp; pointer-events: none; }
+button { pointer-events: auto; height: 32dp; width: 220dp; background-color: #297d68d0; margin-bottom: 8dp; }
+input { pointer-events: auto; height: 30dp; width: 220dp; background-color: #17212cff; }
+button:hover { background-color: #40b88cff; }

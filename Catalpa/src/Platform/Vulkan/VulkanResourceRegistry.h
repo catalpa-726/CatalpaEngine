@@ -12,6 +12,7 @@
 #include "RHI/RHIHandle.h"
 #include "RHI/RHIError.h"
 #include "RHI/RHIResourceState.h"
+#include <mutex>
 
 // 登记自有资源和交换链借用图像/视图，并校验设备身份、槽位和代次。
 namespace Catalpa {
@@ -29,6 +30,7 @@ namespace Catalpa {
         VulkanResourceRegistry& operator=(const VulkanResourceRegistry&) = delete;
 
         DeviceId GetDeviceId() const { return m_DeviceId; }
+        RHIQueueInfo GetQueueInfo(QueueId) const noexcept;
 
         // 创建自有图像和独立视图；本阶段每张图像最多保留一个活视图。
         [[nodiscard]] RHIStatus CreateTexture(const RHITextureDesc& desc, TextureHandle& texture);
@@ -61,6 +63,8 @@ namespace Catalpa {
 
         // 自有管线：创建后由登记表持有原生载荷。
         [[nodiscard]] RHIStatus CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc, GraphicsPipelineHandle& pipeline);
+
+        [[nodiscard]] RHIStatus CreateComputePipeline(const RHIComputePipelineDesc&, ComputePipelineHandle&);
 
         // 只解析仍允许新使用的管线。
         const VulkanPipelineRecord* ResolveGraphicsPipeline(GraphicsPipelineHandle pipeline) const noexcept;
@@ -153,6 +157,8 @@ namespace Catalpa {
 
     private:
         VulkanDevice& m_Device;
+        // 录制worker只修改引用计数；资源创建/释放和状态接受仍由宿主线程串行执行。
+        mutable std::recursive_mutex m_CommandReferenceMutex;
         const DeviceId m_DeviceId;
 
         std::vector<ViewSlot> m_TextureViews;
@@ -174,4 +180,4 @@ namespace Catalpa {
         uint32_t m_FirstFreeSampler = InvalidIndex;
     };
 
-}
+} // namespace Catalpa

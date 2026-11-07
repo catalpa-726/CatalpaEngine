@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "heightSource": "Hills.r16",
+  "encoding": "r16_unorm_le",
+  "settings": {
+    "width": 65,
+    "height": 65,
+    "tileQuads": 32,
+    "lodCount": 4,
+    "spacing": 1,
+    "heightScale": 2,
+    "heightOffset": 0,
+    "skirtDepth": 32,
+    "buildCollision": true,
+    "buildNavigation": true
+  },
+  "material": ""
+}

@@ -15,10 +15,13 @@
 #include "Scripting/BehaviorDebugSnapshot.h"
 
 namespace Catalpa {
+    class AudioService;
+    struct UIDrawData;
+    struct UIInputEvent;
 
-	class EngineRuntime;
-	class ImGuiLayer;
-	class SceneManager;
+    class EngineRuntime;
+    class ImGuiLayer;
+    class SceneManager;
     class AssetManager;
     class JobSystem;
     struct FrameTime;
@@ -45,6 +48,14 @@ namespace Catalpa {
 		// 仅开放场景服务；设备、交换链和 Renderer 仍由 Runtime 管理。
 		SceneManager& GetScenes();
         AssetManager& GetAssets(); // 仅Layer挂载后借用运行期服务，GPU仍封装在Runtime。
+        [[nodiscard]] const std::filesystem::path& GetResourceRoot() const;
+        bool StartPackage(const std::filesystem::path&, std::string& error);
+        bool StopPackage(std::string& error);
+        AudioService& GetAudio();
+        bool PollScriptSceneSwitch(SceneHandle& ownedCandidate, std::string& error);
+        bool RouteGameUIInput(const UIInputEvent&, bool& consumed, std::string& error);
+        [[nodiscard]] TextInputSnapshot GetGameUITextInput() const;
+        [[nodiscard]] bool SetEditorGameUI(uint64_t, std::shared_ptr<const UIDrawData>, std::string& error);
         JobSystem& GetJobs(); // 借用Runtime唯一CPU调度器；Layer只能取消/等待自己提交的任务。
         // 仅借用最近完成的 CPU 时间/场景快照，供沙盒诊断；下一帧可能替换内容。
         [[nodiscard]] const FrameTime& GetFrameTime() const;
@@ -72,6 +83,7 @@ namespace Catalpa {
         [[nodiscard]] bool PollEditorPick(uint64_t ticket, PickingResult& result);
         void CancelEditorPick(uint64_t ticket);
         [[nodiscard]] bool GetGpuFrameMilliseconds(double& milliseconds) const;
+        [[nodiscard]] bool GetManagedGpuPayloadBytes(uint64_t& used, uint64_t& budget) const;
         [[nodiscard]] bool AddDebugBounds(const Aabb& bounds, const Math::Vec4& color, std::string& error, uint64_t surfaceId = 0);
 
 		// 先暂存所有权，初始化成功或当前帧结束后再挂载。

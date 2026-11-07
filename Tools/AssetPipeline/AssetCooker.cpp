@@ -1,4 +1,5 @@
 #include "catpch.h"
+#include <meshoptimizer.h>
 #include "AssetPipeline/AssetCooker.h"
 #include "AssetPipeline/AssetBuildCache.h"
 #include "AssetPipeline/AssetDependencyScanner.h"
@@ -18,6 +19,7 @@
 #include "Shaders/ShaderLibrary.h"
 #include "Materials/MaterialValidation.h"
 #include <assimp/version.h>
+#include <zstd.h>
 #include <fastgltf/types.hpp>
 #include <nlohmann/json.hpp>
 #define CATALPA_IMPORT_STRINGIFY_IMPL(value) #value
@@ -188,8 +190,18 @@ namespace Catalpa::Tools {
                         return false;
                 } else if (const auto* image = std::get_if<ImageAsset>(&asset.value)) {
                     type = "image";
-                    if (!TextureCooker::Encode(*image, payload, error))
+                    if (image->image.pixels.size() > std::numeric_limits<size_t>::max() / 6 ||
+                        !context.WorkspaceFits(image->image.pixels.size() * 6, error))
                         return false;
+                    TextureCookReport report;
+                    if (!TextureCooker::Encode(*image, payload, error, &report))
+                        return false;
+                    context.Diagnose(
+                        AssetDiagnosticLevel::Info, asset.sourceKey,
+                        "Texture Cook: " + report.policy + "; mipmaps=" + std::to_string(report.mipmaps) +
+                            "; compressed=" + std::to_string(report.compressed) +
+                            "; linear RGB RMSE=" + std::to_string(report.linearRmse) +
+                            "; maximum linear error=" + std::to_string(report.maximumLinearError));
                 } else if (const auto* environment = std::get_if<EnvironmentAsset>(&asset.value)) {
                     type = "environment";
                     if (!EnvironmentCooker::Encode(*environment, payload, error))
@@ -219,32 +231,30 @@ namespace Catalpa::Tools {
                     mappings.push_back({MaterialImporter::PreviewId(context, asset.sourceKey),
                                         asset.sourceKey + "/preview", asset.name, "material_preview"});
                 }
+            // 模型与新领域作者产物共同拓扑排序，模型不能先于其骨架/clip被Cook。
+            std::map<AssetId, ImportedAuthorProduct> modelProducts;
             for (const auto& asset : imported.assets)
                 if (const auto* model = std::get_if<ModelAsset>(&asset.value)) {
-                    if (!context.CheckCancelled(error))
+                    ImportedAuthorProduct product;
+                    product.type = "model";
+                    if (!ModelCooker::Encode(*model, product.payload, error))
                         return false;
                     std::set<AssetId> ids;
-                    std::vector<AssetRecord> dependencies;
-                    for (const auto& instance : model->meshes) {
-                        ids.insert(instance.mesh.id);
-                        for (const auto material : instance.materials)
+                    if (model->skeleton.HasValue())
+                        ids.insert(model->skeleton.id);
+                    for (auto clip : model->animations)
+                        ids.insert(clip.id);
+                    for (const auto& mesh : model->meshes) {
+                        ids.insert(mesh.mesh.id);
+                        for (auto material : mesh.materials)
                             ids.insert(material.id);
+                        if (mesh.skin.HasValue())
+                            ids.insert(mesh.skin.id);
+                        for (auto lod : mesh.lods)
+                            ids.insert(lod.id);
                     }
-                    for (auto id : ids) {
-                        const auto it = ready.find(id);
-                        if (it == ready.end()) {
-                            error = "Model dependency was not cooked";
-                            return false;
-                        }
-                        dependencies.push_back(it->second);
-                    }
-                    std::vector<std::byte> payload;
-                    AssetBuildProduct product;
-                    if (!ModelCooker::Encode(*model, payload, error) ||
-                        !AssetArchiveWriter::Encode(asset.id, "model", payload, dependencies, product,
-                                                    error) ||
-                        !append(std::move(product)))
-                        return false;
+                    product.dependencies.assign(ids.begin(), ids.end());
+                    modelProducts.emplace(asset.id, std::move(product));
                 }
             std::set<AssetId> visiting;
             std::function<bool(AssetId)> external = [&](AssetId id) {
@@ -288,6 +298,8 @@ namespace Catalpa::Tools {
             std::map<AssetId, const ImportedAuthorProduct*> authors;
             for (const auto& value : imported.assets)
                 if (const auto* author = std::get_if<ImportedAuthorProduct>(&value.value)) authors.emplace(value.id, author);
+            for (const auto& [id, value] : modelProducts)
+                authors.emplace(id, &value);
             while (!authors.empty()) {
                 bool progressed = false;
                 for (auto it = authors.begin(); it != authors.end();) {
@@ -546,26 +558,32 @@ namespace Catalpa::Tools {
             if (!Read(pbrFile, 64 * 1024 * 1024, pbrProduct.bytes, error) ||
                 AssetBuildDigest(pbrProduct.bytes) != pbrShader->contentHash)
                 return fail("Pbr shader input changed: " + error);
-            Json signatureFields{{"pipeline", 4},
-                                 {"container", 1},
-                                 {"domainSchema", 1},
-                                 {"importer", importer->Name()},
-                                 {"fastgltf", CATALPA_IMPORT_STRINGIFY(FASTGLTF_VERSION)},
-                                 {"tangentGenerator", "MikkTSpace-orthogonal-fallback-v2"},
-                                 {"imageDecoder", "stb-rgba8-hdr-float-v2"},
-                                 {"environmentPreprocessor", "cube-yup-vulkan-faces-ggx-split-sum-v2-128samples"},
-                                 {"assimp", std::to_string(aiGetVersionMajor()) + "." +
-                                                std::to_string(aiGetVersionMinor()) + "." +
-                                                std::to_string(aiGetVersionPatch())},
-                                 {"settings", AssetImportSettingsKey(context.request.settings)},
-                                 {"project", projectHash},
-                                 {"profiles", profileHash},
-                                 {"profile", current.buildProfile},
-                                 {"platform", current.targetPlatform},
-                                 {"configuration", current.buildConfiguration},
-                                 {"shader", shader->contentHash},
-                                 {"pbrShader", pbrShader->contentHash},
-                                 {"cookedRoot", AssetPathText(current.cookedRoot)}};
+            Json signatureFields{
+                {"pipeline", 5},
+                {"container", 1},
+                {"domainSchema", 1},
+                {"modelExtensions", 1},
+                {"textureCook", TextureCooker::Signature},
+                {"meshoptimizer", MESHOPTIMIZER_VERSION},
+                {"lod", "lock-border-half-quarter-eighth-source-error-v1"},
+                {"containerEncoding", "zstd-level-3-or-raw-v1"},
+                {"zstd", ZSTD_VERSION_NUMBER},
+                {"importer", importer->Name()},
+                {"fastgltf", CATALPA_IMPORT_STRINGIFY(FASTGLTF_VERSION)},
+                {"tangentGenerator", "MikkTSpace-orthogonal-fallback-v2"},
+                {"imageDecoder", "stb-rgba8-hdr-float-v2"},
+                {"environmentPreprocessor", "cube-yup-vulkan-faces-ggx-split-sum-v2-128samples"},
+                {"assimp", std::to_string(aiGetVersionMajor()) + "." + std::to_string(aiGetVersionMinor()) +
+                               "." + std::to_string(aiGetVersionPatch())},
+                {"settings", AssetImportSettingsKey(context.request.settings)},
+                {"project", projectHash},
+                {"profiles", profileHash},
+                {"profile", current.buildProfile},
+                {"platform", current.targetPlatform},
+                {"configuration", current.buildConfiguration},
+                {"shader", shader->contentHash},
+                {"pbrShader", pbrShader->contentHash},
+                {"cookedRoot", AssetPathText(current.cookedRoot)}};
             if (AssetSourceExtension(context.request.source) == ".fbx")
                 signatureFields["fbxPhongRoughness"] = 1;
             const auto signatureText = signatureFields.dump();

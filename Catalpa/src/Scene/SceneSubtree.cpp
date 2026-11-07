@@ -1,4 +1,5 @@
 #include "catpch.h"
+#include "Scene/DomainComponents.h"
 #include "Scene/Scene.h"
 #include "Scene/SceneSubtree.h"
 #include "Lighting/LightValidation.h"
@@ -95,8 +96,14 @@ namespace Catalpa {
             parent != b.parent || local.translation != b.local.translation ||
             local.rotation != b.local.rotation || local.scale != b.local.scale ||
             camera.has_value() != b.camera.has_value() || mesh.has_value() != b.mesh.has_value() ||
-            light.has_value() != b.light.has_value() || environment.has_value() != b.environment.has_value() ||
-            script != b.script || behavior != b.behavior || prefab != b.prefab)
+            light.has_value() != b.light.has_value() ||
+            environment.has_value() != b.environment.has_value() || script != b.script ||
+            behavior != b.behavior || prefab != b.prefab ||
+            !SameDomainComponents(dynamicComponents, b.dynamicComponents) ||
+            !std::ranges::equal(dynamicDependencies, b.dynamicDependencies, [](const auto& a, const auto& c) {
+                return a.id == c.id && a.version == c.version && a.cppType == c.cppType &&
+                       a.value.get() == c.value.get();
+            }))
             return false;
         if (camera && (camera->lens != b.camera->lens || camera->enabled != b.camera->enabled ||
                        camera->priority != b.camera->priority || camera->viewId != b.camera->viewId ||
@@ -108,7 +115,9 @@ namespace Catalpa {
             };
             if (mesh->mesh != b.mesh->mesh || mesh->visible != b.mesh->visible ||
                 mesh->color != b.mesh->color || !sameVersion(mesh->meshVersion, b.mesh->meshVersion) ||
-                !std::ranges::equal(mesh->materials, b.mesh->materials, sameVersion))
+                !std::ranges::equal(mesh->materials, b.mesh->materials, sameVersion) ||
+                !std::ranges::equal(mesh->lods, b.mesh->lods, sameVersion) ||
+                mesh->lodErrors != b.mesh->lodErrors)
                 return false;
         }
         if (light) {
@@ -196,6 +205,12 @@ namespace Catalpa {
                 return s;
             if (auto s = capture(node.prefab); !s.IsSuccess())
                 return s;
+            std::string domainError;
+            if (!CaptureDomainComponents(*this, id, node.dynamicComponents, domainError))
+                return {WorldError::InvalidArgument, "Cannot capture domain components"};
+            if (!CollectDomainComponentVersions(m_World, id, node.dynamicDependencies, domainError))
+                return {WorldError::InvalidArgument, "Cannot capture fixed domain versions"};
+            captured += node.dynamicComponents.size();
             size_t count = 0;
             if (auto s = m_World.CountComponents(id, count); !s.IsSuccess())
                 return s;
@@ -288,6 +303,10 @@ namespace Catalpa {
                 if (node.behavior)
                     if (auto s = m_World.Add(id, *node.behavior); !s.IsSuccess())
                         return rollback(s);
+                std::string domainError;
+                if (!RestoreDomainComponents(m_World, id, node.dynamicComponents, domainError) ||
+                    !BindDomainComponentVersions(m_World, id, node.dynamicDependencies, domainError))
+                    return rollback({WorldError::CommandFailed, "Cannot restore domain components"});
                 if (node.prefab)
                     if (auto s = m_World.Add(id, *node.prefab); !s.IsSuccess())
                         return rollback(s);

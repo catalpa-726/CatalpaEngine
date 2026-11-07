@@ -1,5 +1,6 @@
 #pragma once
 #include "Geometry/MeshAsset.h"
+#include "Animation/Skinning.h"
 #include "Materials/MaterialInstance.h"
 
 #include "catpch.h"
@@ -30,6 +31,8 @@ namespace Catalpa {
         Math::Vec4 color{ 1.0f };
         AssetVersionRef<MeshAsset> meshVersion;
         std::vector<AssetVersionRef<MaterialInstance>> materials;
+        std::vector<AssetVersionRef<MeshAsset>> lods;
+        std::vector<float> lodErrors;
     };
 
     // 光源方向为实体局部 -Z 经世界线性变换后的单位向量；不借用组件或设备对象。
@@ -46,6 +49,12 @@ namespace Catalpa {
         AssetVersionRef<EnvironmentAsset> version;
     };
 
+    struct RenderSkinningInput {
+        RenderInstanceId id;
+        AssetVersionRef<MeshSkinBinding> binding;
+        std::vector<Math::Mat4> palette;
+    };
+
     // 单线程提取后向渲染方转移所有权，任何字段都不借用可变 World 内存。
     struct RenderFramePacket {
         uint64_t sequence = 0;
@@ -57,6 +66,7 @@ namespace Catalpa {
         FrameTime time;
         std::vector<RenderLight> lights;
         std::optional<RenderEnvironment> environment;
+        std::vector<RenderSkinningInput> skinning;
     };
 
 }

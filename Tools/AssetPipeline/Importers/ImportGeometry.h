@@ -11,7 +11,8 @@ namespace Catalpa::Tools {
 
     // 校验顶点和索引，再按需生成逐面法线和逐角 MikkTSpace 切线，发布独立网格资源。
     bool BuildImportedMesh(AssetBuildContext&, std::vector<ImportVertex>, std::vector<uint32_t>,
-                           bool hasNormals, bool hasUV, bool hasTangents, MeshAsset&, std::string& error);
+                           bool hasNormals, bool hasUV, bool hasTangents, MeshAsset&, std::string& error,
+                           std::vector<uint32_t>* sourceVertexRemap = nullptr);
     // 将坐标轴和单位转换放在模型根节点，使各网格保留源顶点和实例关系。
     bool SetImportRoot(AssetBuildContext&, ModelAsset&, const Math::Mat4& sourceConversion,
                        std::string& error);

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["schemaVersion", "previewText", "previewPixelSize", "previewWidth", "previewHeight"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "previewText": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "previewPixelSize": {"type": "integer", "minimum": 8, "maximum": 96},
+    "previewWidth": {"type": "integer", "minimum": 64, "maximum": 2048},
+    "previewHeight": {"type": "integer", "minimum": 64, "maximum": 2048}
+  }
+}

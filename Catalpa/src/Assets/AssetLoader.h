@@ -8,6 +8,10 @@ namespace Catalpa {
         CancellationToken cancellation;
         size_t maxResidentBytes = 0;
         std::vector<AssetDependencyValue> dependencies;
+        // 惰性流送依赖仍须匹配目录的精确版本/摘要，只延迟像素/PCM的读取。
+        std::vector<AssetDependency> declaredDependencies;
+        // 仅捕获不可变VFS/目录快照；工作线程读取旧版本chunk，不借用Manager或World。
+        std::function<bool(AssetId, size_t, std::vector<std::byte>&, std::string&)> readDeferred;
         template<class T> std::shared_ptr<const T> FindDependency(AssetId id, uint64_t version) const {
             for (const auto& item : dependencies)
                 if (item.id == id && item.version == version && item.cppType == std::type_index(typeid(T)))
@@ -25,5 +29,6 @@ namespace Catalpa {
         AssetId fallbackId;
         uint64_t fallbackVersion = 1;
         AssetLoadResult fallback;
+        bool deferredDependencies = false;
     };
 }

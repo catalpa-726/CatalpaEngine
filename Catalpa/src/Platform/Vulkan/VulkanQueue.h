@@ -16,12 +16,18 @@ namespace Catalpa {
         // 借用设备和原生队列
         VulkanQueue(VulkanDevice& device, VkQueue queue, uint32_t queueFamily, QueueId id)
             : m_Device(device), m_Queue(queue), m_QueueFamily(queueFamily), m_Id(id), m_Submissions(device, id) {}
+        ~VulkanQueue() override;
+        RHIStatus InitSynchronization();
 
         VulkanQueue(const VulkanQueue&) = delete;
         VulkanQueue& operator=(const VulkanQueue&) = delete;
 
         // 队列身份与状态
         QueueId GetId() const override { return m_Id; }
+        RHIDevice* GetDevice() noexcept override;
+        VkSemaphore GetTimeline() const noexcept {
+            return m_Timeline;
+        }
         VkQueue GetHandle() const { return m_Queue; }
         uint32_t GetQueueFamily() const { return m_QueueFamily; }
         const RHIStatus& GetFailure() const { return m_Failure; }
@@ -31,7 +37,10 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus IsComplete(const RHICompletionPoint& point, bool& complete) override;
 
         // 后端入口，继续使用现有命令、Fence 和信号量。
-        [[nodiscard]] RHIStatus Submit(VulkanCommandList& commands, VulkanFence& fence, std::span<const VkSemaphoreSubmitInfo> waits = {}, std::span<const VkSemaphoreSubmitInfo> signals = {});
+        [[nodiscard]] RHIStatus Submit(VulkanCommandList& commands, VulkanFence& fence,
+                                       std::span<const VkSemaphoreSubmitInfo> waits = {},
+                                       std::span<const VkSemaphoreSubmitInfo> signals = {},
+                                       std::span<const RHICompletionPoint> dependencies = {});
         [[nodiscard]] RHIStatus SubmitSynchronization(VulkanFence& fence, std::span<const VkSemaphoreSubmitInfo> waits, std::span<const VkSemaphoreSubmitInfo> signals = {});
 
         // 将已观察到的 Fence 完成保存为持久的序列记录。
@@ -43,19 +52,23 @@ namespace Catalpa {
 
     private:
         // 命令提交与纯同步提交共用的入口
-        [[nodiscard]] RHIStatus SubmitInternal(VulkanCommandList* commands, VulkanFence& fence, std::span<const VkSemaphoreSubmitInfo> waits, std::span<const VkSemaphoreSubmitInfo> signals);
+      [[nodiscard]] RHIStatus SubmitInternal(VulkanCommandList* commands, VulkanFence& fence,
+                                             std::span<const VkSemaphoreSubmitInfo> waits,
+                                             std::span<const VkSemaphoreSubmitInfo> signals,
+                                             std::span<const RHICompletionPoint> dependencies = {});
 
-        // 原生队列与身份
-        VulkanDevice& m_Device;
-        VkQueue m_Queue;
-        uint32_t m_QueueFamily;
-        QueueId m_Id{};
+      // 原生队列与身份
+      VulkanDevice& m_Device;
+      VkQueue m_Queue;
+      uint32_t m_QueueFamily;
+      QueueId m_Id{};
+      VkSemaphore m_Timeline = VK_NULL_HANDLE;
 
-        // 唯一完成账本；Fence 由帧持有，销毁帧前清除 tracker 的借用。
-        VulkanSubmissionTracker m_Submissions;
+      // 唯一完成账本；Fence 由帧持有，销毁帧前清除 tracker 的借用。
+      VulkanSubmissionTracker m_Submissions;
 
-        // 保存终止性提交失败，不随后续查询恢复。
-        RHIStatus m_Failure{};
+      // 保存终止性提交失败，不随后续查询恢复。
+      RHIStatus m_Failure{};
     };
 
 }

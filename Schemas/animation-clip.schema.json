@@ -1,28 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Catalpa animation clip author protocol version 1",
-  "description": "Times and duration are seconds. Translation is meters, scale is dimensionless and rotations use w,x,y,z quaternions. S16 loader checks monotonic times within duration, equal key/value/tangent counts, unique joint/path tracks, joint resolution and quaternion norms; cubic tangent values are derivatives per second. No animation sampler or source normalization is claimed here.",
+  "title": "Catalpa animation-clip protocol version 1",
+  "description": "Matches human-readable ReadAnimationClip/WriteAnimationClip; Cook also supports lossless explicit little-endian CANI1. Times/duration are seconds, quaternion values are unit w/x/y/z and cubic tangents are derivatives per second. The loader checks strictly increasing keys within duration, at most one million keys in total, resolved unique tracks, finite values and byte budgets. Events are ordered, occur before duration, names/payloads have UTF-8 byte limits. Root motion may select a real joint below an explicit import conversion root; no resampling or lossy compression is implicit.",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schemaVersion",
-    "id",
-    "skeleton",
-    "durationSeconds",
-    "timeUnit",
-    "tracks",
-    "rootMotion"
-  ],
   "properties": {
     "schemaVersion": {
       "const": 1
-    },
-    "id": {
-      "type": "string",
-      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-      "not": {
-        "const": "00000000-0000-0000-0000-000000000000"
-      }
     },
     "skeleton": {
       "type": "string",
@@ -31,26 +15,31 @@
         "const": "00000000-0000-0000-0000-000000000000"
       }
     },
-    "durationSeconds": {
+    "duration": {
       "type": "number",
-      "minimum": 0
+      "exclusiveMinimum": 0,
+      "maximum": 86400
     },
-    "timeUnit": {
-      "const": "second"
+    "rootMotionJoint": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+          "not": {
+            "const": "00000000-0000-0000-0000-000000000000"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "tracks": {
       "type": "array",
-      "maxItems": 12288,
+      "maxItems": 256,
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "joint",
-          "path",
-          "interpolation",
-          "times",
-          "values"
-        ],
         "properties": {
           "joint": {
             "type": "string",
@@ -59,219 +48,312 @@
               "const": "00000000-0000-0000-0000-000000000000"
             }
           },
-          "path": {
-            "enum": [
-              "translation",
-              "rotation",
-              "scale"
+          "translation": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "interpolation": {
+                "enum": [
+                  "step",
+                  "linear",
+                  "cubic"
+                ]
+              },
+              "keys": {
+                "type": "array",
+                "maxItems": 1000000,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "time": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 86400
+                    },
+                    "value": {
+                      "type": "array",
+                      "minItems": 3,
+                      "maxItems": 3,
+                      "items": {
+                        "type": "number",
+                        "minimum": -3.402823466e+38,
+                        "maximum": 3.402823466e+38
+                      }
+                    },
+                    "in": {
+                      "type": "array",
+                      "minItems": 3,
+                      "maxItems": 3,
+                      "items": {
+                        "type": "number",
+                        "minimum": -3.402823466e+38,
+                        "maximum": 3.402823466e+38
+                      }
+                    },
+                    "out": {
+                      "type": "array",
+                      "minItems": 3,
+                      "maxItems": 3,
+                      "items": {
+                        "type": "number",
+                        "minimum": -3.402823466e+38,
+                        "maximum": 3.402823466e+38
+                      }
+                    }
+                  },
+                  "required": [
+                    "time",
+                    "value"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "interpolation",
+              "keys"
+            ],
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "interpolation": {
+                      "const": "cubic"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "keys": {
+                      "items": {
+                        "required": [
+                          "in",
+                          "out"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
             ]
           },
-          "interpolation": {
-            "enum": [
-              "step",
-              "linear",
-              "cubicSpline"
+          "rotation": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "interpolation": {
+                "enum": [
+                  "step",
+                  "linear",
+                  "cubic"
+                ]
+              },
+              "keys": {
+                "type": "array",
+                "maxItems": 1000000,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "time": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 86400
+                    },
+                    "value": {
+                      "type": "array",
+                      "minItems": 4,
+                      "maxItems": 4,
+                      "items": {
+                        "type": "number",
+                        "minimum": -3.402823466e+38,
+                        "maximum": 3.402823466e+38
+                      }
+                    },
+                    "in": {
+                      "type": "array",
+                      "minItems": 4,
+                      "maxItems": 4,
+                      "items": {
+                        "type": "number",
+                        "minimum": -3.402823466e+38,
+                        "maximum": 3.402823466e+38
+                      }
+                    },
+                    "out": {
+                      "type": "array",
+                      "minItems": 4,
+                      "maxItems": 4,
+                      "items": {
+                        "type": "number",
+                        "minimum": -3.402823466e+38,
+                        "maximum": 3.402823466e+38
+                      }
+                    }
+                  },
+                  "required": [
+                    "time",
+                    "value"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "interpolation",
+              "keys"
+            ],
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "interpolation": {
+                      "const": "cubic"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "keys": {
+                      "items": {
+                        "required": [
+                          "in",
+                          "out"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
             ]
           },
-          "times": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 1048576,
-            "items": {
-              "type": "number",
-              "minimum": 0
-            }
-          },
-          "values": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 1048576
-          },
-          "inTangents": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 1048576
-          },
-          "outTangents": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 1048576
+          "scale": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "interpolation": {
+                "enum": [
+                  "step",
+                  "linear",
+                  "cubic"
+                ]
+              },
+              "keys": {
+                "type": "array",
+                "maxItems": 1000000,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "time": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 86400
+                    },
+                    "value": {
+                      "type": "array",
+                      "minItems": 3,
+                      "maxItems": 3,
+                      "items": {
+                        "type": "number",
+                        "minimum": -3.402823466e+38,
+                        "maximum": 3.402823466e+38
+                      }
+                    },
+                    "in": {
+                      "type": "array",
+                      "minItems": 3,
+                      "maxItems": 3,
+                      "items": {
+                        "type": "number",
+                        "minimum": -3.402823466e+38,
+                        "maximum": 3.402823466e+38
+                      }
+                    },
+                    "out": {
+                      "type": "array",
+                      "minItems": 3,
+                      "maxItems": 3,
+                      "items": {
+                        "type": "number",
+                        "minimum": -3.402823466e+38,
+                        "maximum": 3.402823466e+38
+                      }
+                    }
+                  },
+                  "required": [
+                    "time",
+                    "value"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "interpolation",
+              "keys"
+            ],
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "interpolation": {
+                      "const": "cubic"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "keys": {
+                      "items": {
+                        "required": [
+                          "in",
+                          "out"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            ]
           }
         },
-        "allOf": [
-          {
-            "if": {
-              "properties": {
-                "path": {
-                  "const": "rotation"
-                }
-              }
-            },
-            "then": {
-              "properties": {
-                "values": {
-                  "items": {
-                    "type": "array",
-                    "minItems": 4,
-                    "maxItems": 4,
-                    "items": {
-                      "type": "number"
-                    }
-                  }
-                },
-                "inTangents": {
-                  "items": {
-                    "type": "array",
-                    "minItems": 4,
-                    "maxItems": 4,
-                    "items": {
-                      "type": "number"
-                    }
-                  }
-                },
-                "outTangents": {
-                  "items": {
-                    "type": "array",
-                    "minItems": 4,
-                    "maxItems": 4,
-                    "items": {
-                      "type": "number"
-                    }
-                  }
-                }
-              }
-            },
-            "else": {
-              "properties": {
-                "values": {
-                  "items": {
-                    "type": "array",
-                    "minItems": 3,
-                    "maxItems": 3,
-                    "items": {
-                      "type": "number"
-                    }
-                  }
-                },
-                "inTangents": {
-                  "items": {
-                    "type": "array",
-                    "minItems": 3,
-                    "maxItems": 3,
-                    "items": {
-                      "type": "number"
-                    }
-                  }
-                },
-                "outTangents": {
-                  "items": {
-                    "type": "array",
-                    "minItems": 3,
-                    "maxItems": 3,
-                    "items": {
-                      "type": "number"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          {
-            "if": {
-              "properties": {
-                "interpolation": {
-                  "const": "cubicSpline"
-                }
-              }
-            },
-            "then": {
-              "required": [
-                "inTangents",
-                "outTangents"
-              ]
-            },
-            "else": {
-              "not": {
-                "anyOf": [
-                  {
-                    "required": [
-                      "inTangents"
-                    ]
-                  },
-                  {
-                    "required": [
-                      "outTangents"
-                    ]
-                  }
-                ]
-              }
-            }
-          }
+        "required": [
+          "joint"
         ]
       }
     },
-    "rootMotion": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "mode"
-          ],
-          "properties": {
-            "mode": {
-              "const": "none"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "mode",
-            "joint"
-          ],
-          "properties": {
-            "mode": {
-              "const": "extract"
-            },
-            "joint": {
-              "type": "string",
-              "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
-              "not": {
-                "const": "00000000-0000-0000-0000-000000000000"
-              }
-            }
-          }
-        }
-      ]
-    },
     "events": {
       "type": "array",
-      "maxItems": 65536,
+      "maxItems": 4096,
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": [
-          "timeSeconds",
-          "name"
-        ],
         "properties": {
-          "timeSeconds": {
+          "time": {
             "type": "number",
-            "minimum": 0
+            "minimum": 0,
+            "maximum": 86400
           },
           "name": {
             "type": "string",
             "minLength": 1,
-            "maxLength": 128,
-            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            "maxLength": 128
           },
           "payload": {
-            "type": "object"
+            "type": "string",
+            "maxLength": 4096
           }
-        }
+        },
+        "required": [
+          "time",
+          "name"
+        ]
       }
     }
-  }
+  },
+  "required": [
+    "schemaVersion",
+    "skeleton",
+    "duration",
+    "tracks"
+  ]
 }

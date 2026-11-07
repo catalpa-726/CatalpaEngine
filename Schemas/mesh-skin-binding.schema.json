@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Catalpa mesh-skin-binding protocol version 1",
+  "description": "Human-readable skin binding; production Cook uses lossless CSKN2 and can read CSKN1. Weights preserve exact source-to-derived vertex remaps; four nonnegative weights must sum to one within 1e-4 and indices must resolve in the fixed skeleton version. Source inverseBind matrices map mesh-local to joint bind-local. Empty inverseBind uses skeleton.inverseBind*meshToSkeleton. Runtime additionally checks finite invertible matrices, one influence per mesh vertex, exact asset versions and a 96 MiB byte budget.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "skeleton": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "mesh": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "meshToSkeleton": {
+      "type": "array",
+      "minItems": 16,
+      "maxItems": 16,
+      "items": {
+        "type": "number",
+        "minimum": -3.402823466e+38,
+        "maximum": 3.402823466e+38
+      }
+    },
+    "inverseBind": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "array",
+        "minItems": 16,
+        "maxItems": 16,
+        "items": {
+          "type": "number",
+          "minimum": -3.402823466e+38,
+          "maximum": 3.402823466e+38
+        }
+      }
+    },
+    "influences": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2000000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "joints": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            }
+          },
+          "weights": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "items": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        "required": [
+          "joints",
+          "weights"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "skeleton",
+    "mesh",
+    "meshToSkeleton",
+    "influences"
+  ]
+}

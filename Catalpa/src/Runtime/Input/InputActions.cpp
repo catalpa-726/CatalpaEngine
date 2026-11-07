@@ -230,6 +230,9 @@ namespace Catalpa {
         m_BlockedKeys.fill(false); m_BlockedGameplayKeys.fill(false);
         m_BlockedMouse.fill(false); m_BlockedGameplayMouse.fill(false);
         m_HasCursor = false;
+        m_UICapturedKeys.fill(false);
+        m_UICapturedMouse.fill(false);
+        m_UICapturedMove = m_UICapturedScroll = false;
         m_DiscardGameplayFrameEdges = false;
         std::fill(m_Pending.begin(), m_Pending.end(), PendingAction{});
         std::fill(m_PreviousHeld.begin(), m_PreviousHeld.end(), false);
@@ -362,6 +365,44 @@ namespace Catalpa {
         }
     }
 
+    void InputActions::OnCapturedEvent(const Event& event, bool keyboardFocus) {
+        OnEvent(event);
+        if (keyboardFocus)
+            for (size_t i = 0; i < m_Physical.keys.size(); ++i)
+                if (m_Physical.keys[i])
+                    m_BlockedKeys[i] = true;
+        switch (event.GetEventType()) {
+        case EventType::KeyPressed:
+        case EventType::KeyReleased: {
+            const auto key = static_cast<const KeyEvent&>(event).GetKeyCode();
+            if (key < m_UICapturedKeys.size()) {
+                m_UICapturedKeys[key] = true;
+                if (event.GetEventType() == EventType::KeyPressed)
+                    m_BlockedKeys[key] = true;
+            }
+            break;
+        }
+        case EventType::MouseButtonPressed:
+        case EventType::MouseButtonReleased: {
+            const auto button = static_cast<const MouseButtonEvent&>(event).GetMouseButton();
+            if (button < m_UICapturedMouse.size()) {
+                m_UICapturedMouse[button] = true;
+                if (event.GetEventType() == EventType::MouseButtonPressed)
+                    m_BlockedMouse[button] = true;
+            }
+            break;
+        }
+        case EventType::MouseMoved:
+            m_UICapturedMove = true;
+            break;
+        case EventType::MouseScrolled:
+            m_UICapturedScroll = true;
+            break;
+        default:
+            break;
+        }
+    }
+
     bool InputActions::IsKeyboardAllowed(ActionContext context) const {
         return m_Physical.focused && !m_Capture.keyboardCaptured && (context == ActionContext::System || m_Capture.gameplayActive);
     }
@@ -397,6 +438,24 @@ namespace Catalpa {
         for (std::size_t i = 0; i < m_Map.actions.size(); ++i) {
             const auto& definition = m_Map.actions[i];
             auto& value = m_Frame.actions[i];
+            const bool uiEdges =
+                std::any_of(definition.bindings.begin(), definition.bindings.end(),
+                            [&](const ActionBinding& binding) {
+                                switch (binding.source) {
+                                case InputSource::Key:
+                                    return m_UICapturedKeys[binding.code];
+                                case InputSource::MouseButton:
+                                    return m_UICapturedMouse[binding.code];
+                                case InputSource::MouseDeltaX:
+                                case InputSource::MouseDeltaY:
+                                    return m_UICapturedMove;
+                                case InputSource::ScrollX:
+                                case InputSource::ScrollY:
+                                    return m_UICapturedScroll;
+                                }
+                                return false;
+                            }) ||
+                (definition.gateMouseButton && m_UICapturedMouse[*definition.gateMouseButton]);
             const bool discardEdges = definition.context == ActionContext::Gameplay && m_DiscardGameplayFrameEdges;
             const bool gate = !definition.gateMouseButton || (IsMouseAvailable(*definition.gateMouseButton, definition.context)
                 && m_Physical.mouseButtons[*definition.gateMouseButton]);
@@ -443,6 +502,16 @@ namespace Catalpa {
                 m_Pending[i].pressed = false;
                 m_Pending[i].impulse = 0.0;
             }
+            if (uiEdges) {
+                value.pressed = false;
+                m_Pending[i].pressed = false;
+                if (m_ImpulseActions[i]) {
+                    value.value = 0;
+                    value.held = false;
+                    m_Pending[i].impulse = 0;
+                }
+                value.released = m_PreviousHeld[i] && !value.held;
+            }
             m_Pending[i].pressed |= value.pressed;
             m_Pending[i].released |= value.released;
             if (m_ImpulseActions[i]) m_Pending[i].impulse += value.value;
@@ -471,6 +540,9 @@ namespace Catalpa {
 
     void InputActions::ClearFrameEvents()
     {
+        m_UICapturedKeys.fill(false);
+        m_UICapturedMouse.fill(false);
+        m_UICapturedMove = m_UICapturedScroll = false;
         m_Physical.keyPressed.fill(false); m_Physical.keyReleased.fill(false);
         m_Physical.mousePressed.fill(false); m_Physical.mouseReleased.fill(false);
         m_Physical.deltaX = m_Physical.deltaY = m_Physical.scrollX = m_Physical.scrollY = 0.0;

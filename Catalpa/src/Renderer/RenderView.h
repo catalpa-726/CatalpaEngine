@@ -13,6 +13,7 @@ namespace Catalpa {
         uint64_t scene = 0;
         uint32_t index = 0;
         uint32_t generation = 0;
+        uint64_t part = 0; // 派生tile/粒子子实例；前三字段始终保持可拾取的Scene实体身份。
         [[nodiscard]] constexpr bool HasValue() const noexcept { return scene != 0 && generation != 0 && index != std::numeric_limits<uint32_t>::max(); }
         constexpr auto operator<=>(const RenderInstanceId&) const = default;
     };

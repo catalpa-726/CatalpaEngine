@@ -13,8 +13,8 @@ namespace Catalpa {
 
     VulkanMemoryAllocator::~VulkanMemoryAllocator() { Shutdown(); }
 
-    RHIStatus VulkanMemoryAllocator::Init(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device)
-    {
+    RHIStatus VulkanMemoryAllocator::Init(VkInstance instance, VkPhysicalDevice physicalDevice,
+                                          VkDevice device, bool memoryBudgetExtension) {
         if (m_Allocator != VK_NULL_HANDLE)
             return { .code = RHIErrorCode::InvalidState, .operation = "VulkanMemoryAllocator::Init" };
 
@@ -47,15 +47,41 @@ namespace Catalpa {
             .vkGetDeviceImageMemoryRequirements = vkGetDeviceImageMemoryRequirements
         };
 
-        const VmaAllocatorCreateInfo info{
-            .physicalDevice = physicalDevice,
-            .device = device,
-            .pVulkanFunctions = &functions,
-            .instance = instance,
-            .vulkanApiVersion = VK_API_VERSION_1_3
-        };
+        const VmaAllocatorCreateInfo info{.flags = memoryBudgetExtension
+                                                       ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT
+                                                       : VmaAllocatorCreateFlags(0),
+                                          .physicalDevice = physicalDevice,
+                                          .device = device,
+                                          .pVulkanFunctions = &functions,
+                                          .instance = instance,
+                                          .vulkanApiVersion = VK_API_VERSION_1_3};
 
-        return MakeVulkanStatus(vmaCreateAllocator(&info, &m_Allocator), "vmaCreateAllocator");
+        const auto status = MakeVulkanStatus(vmaCreateAllocator(&info, &m_Allocator), "vmaCreateAllocator");
+        if (status.IsSuccess())
+            m_DriverBudget = memoryBudgetExtension;
+        return status;
+    }
+
+    RHIStatus VulkanMemoryAllocator::GetBudgets(std::vector<RHIMemoryHeapBudget>& output) const try {
+        if (!m_Allocator)
+            return {RHIErrorCode::InvalidState, 0, "VMA/GetBudgets"};
+        std::array<VmaBudget, VK_MAX_MEMORY_HEAPS> budgets{};
+        vmaGetHeapBudgets(m_Allocator, budgets.data());
+        const VkPhysicalDeviceMemoryProperties* properties = nullptr;
+        vmaGetMemoryProperties(m_Allocator, &properties);
+        std::vector<RHIMemoryHeapBudget> result;
+        result.reserve(properties->memoryHeapCount);
+        for (uint32_t i = 0; i < properties->memoryHeapCount; ++i) {
+            const auto& heap = properties->memoryHeaps[i];
+            const auto& value = budgets[i];
+            result.push_back({heap.size, value.budget, value.usage, value.statistics.allocationBytes,
+                              value.statistics.blockBytes,
+                              (heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0, m_DriverBudget});
+        }
+        output = std::move(result);
+        return {};
+    } catch (const std::bad_alloc&) {
+        return {RHIErrorCode::OutOfMemory, 0, "VMA/BudgetSnapshot"};
     }
 
     void VulkanMemoryAllocator::Shutdown()
@@ -66,4 +92,4 @@ namespace Catalpa {
         m_Allocator = VK_NULL_HANDLE;
     }
 
-}
+} // namespace Catalpa

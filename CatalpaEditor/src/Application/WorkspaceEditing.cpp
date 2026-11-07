@@ -1,7 +1,11 @@
+#include "AssetEditors/PhysicsNavigationInspector.h"
+#include "AssetEditors/AudioUIInspector.h"
 #include "Application/WorkspaceEditing.h"
 #include "AssetPipeline/AssetImportRegistry.h"
 #include "Core/Application.h"
 #include "Core/Window.h"
+#include "Core/KeyCodes.h"
+#include "UI/UIInputRouter.h"
 #include "Commands/AssetCommands.h"
 #include "Commands/SceneCommands.h"
 #include "Panels/BuildPanel.h"
@@ -171,6 +175,8 @@ namespace Catalpa::Editor {
                 m_Documents.Activate(doc->Id());
             const bool inspected=m_Inspector.Draw(*doc, m_Selection, text, m_Error);
             AuthorComponentControls(*doc);
+            (void)DrawPhysicsNavigationInspector(*doc, m_Selection.Resolve(*doc), m_Error, text);
+            DrawAudioUIInspector(m_App, *doc, m_Selection.Resolve(*doc), text, m_Error);
             return inspected;
         }
         return false;
@@ -300,6 +306,141 @@ namespace Catalpa::Editor {
         return input;
     }
 
+    void WorkspaceEditing::BlurPlayUI() {
+        m_App.GetWindow().ClearTextInputTarget(SceneSurface);
+        if (m_PlayUIActive || m_PlayUICapture) {
+            UIInputEvent blur;
+            blur.type = UIInputEvent::Type::Blur;
+            bool ignored = false;
+            m_App.RouteGameUIInput(blur, ignored, m_Error);
+        }
+        m_PlayUIActive = false;
+        m_PlayUICapture = false;
+    }
+
+    bool WorkspaceEditing::RoutePlayUIInput(float x, float y, float width, float height, Extent2D extent,
+                                            bool hovered, bool focused) {
+        const auto& io = ImGui::GetIO();
+        if (io.AppFocusLost || (!hovered && !focused && !m_PlayUICapture)) {
+            BlurPlayUI();
+            return false;
+        }
+        bool blocked = false;
+        const auto submit = [&](UIInputEvent event) {
+            bool consumed = false;
+            if (!m_App.RouteGameUIInput(event, consumed, m_Error))
+                return false;
+            blocked |= consumed;
+            return true;
+        };
+        const int modifiers =
+            (io.KeyCtrl ? 1 : 0) | (io.KeyShift ? 2 : 0) | (io.KeyAlt ? 4 : 0) | (io.KeySuper ? 8 : 0);
+        if (hovered || m_PlayUICapture) {
+            UIInputEvent move;
+            move.type = UIInputEvent::Type::Move;
+            move.modifiers = modifiers;
+            move.x = (io.MousePos.x - x) / width * extent.width;
+            move.y = (io.MousePos.y - y) / height * extent.height;
+            if (!submit(move))
+                return true;
+            for (int button = 0; button < 3; ++button) {
+                if (hovered && ImGui::IsMouseClicked(button)) {
+                    UIInputEvent event;
+                    event.type = UIInputEvent::Type::ButtonDown;
+                    event.key = button;
+                    event.modifiers = modifiers;
+                    if (!submit(event))
+                        return true;
+                    if (blocked)
+                        m_PlayUICapture = true;
+                }
+                if (ImGui::IsMouseReleased(button)) {
+                    UIInputEvent event;
+                    event.type = UIInputEvent::Type::ButtonUp;
+                    event.key = button;
+                    event.modifiers = modifiers;
+                    if (!submit(event))
+                        return true;
+                }
+            }
+            if (hovered && (io.MouseWheel != 0 || io.MouseWheelH != 0)) {
+                UIInputEvent wheel;
+                wheel.type = UIInputEvent::Type::Wheel;
+                wheel.x = -io.MouseWheelH;
+                wheel.y = -io.MouseWheel;
+                wheel.modifiers = modifiers;
+                if (!submit(wheel))
+                    return true;
+            }
+        }
+        if (!ImGui::IsMouseDown(0) && !ImGui::IsMouseDown(1) && !ImGui::IsMouseDown(2))
+            m_PlayUICapture = false;
+        if (focused && !ImGui::IsAnyItemActive()) {
+            const auto key = [&](ImGuiKey imgui, int platform) {
+                if (!ImGui::IsKeyPressed(imgui, true) && !ImGui::IsKeyReleased(imgui))
+                    return true;
+                UIInputEvent event;
+                event.type =
+                    ImGui::IsKeyReleased(imgui) ? UIInputEvent::Type::KeyUp : UIInputEvent::Type::KeyDown;
+                event.key = UIInputRouter::TranslatePlatformKey(platform);
+                event.modifiers = modifiers;
+                return submit(event);
+            };
+            for (int i = 0; i < 26; ++i)
+                if (!key(ImGuiKey(ImGuiKey_A + i), Key::A + i))
+                    return true;
+            for (int i = 0; i < 10; ++i)
+                if (!key(ImGuiKey(ImGuiKey_0 + i), Key::D0 + i))
+                    return true;
+            const std::pair<ImGuiKey, int> navigation[]{
+                {ImGuiKey_Space, Key::Space},    {ImGuiKey_Enter, Key::Enter},
+                {ImGuiKey_Tab, Key::Tab},        {ImGuiKey_Backspace, Key::Backspace},
+                {ImGuiKey_Delete, Key::Delete},  {ImGuiKey_Escape, Key::Escape},
+                {ImGuiKey_LeftArrow, Key::Left}, {ImGuiKey_RightArrow, Key::Right},
+                {ImGuiKey_UpArrow, Key::Up},     {ImGuiKey_DownArrow, Key::Down},
+                {ImGuiKey_Home, Key::Home},      {ImGuiKey_End, Key::End},
+                {ImGuiKey_PageUp, Key::PageUp},  {ImGuiKey_PageDown, Key::PageDown},
+                {ImGuiKey_Insert, Key::Insert}};
+            for (const auto& [imgui, platform] : navigation)
+                if (!key(imgui, platform))
+                    return true;
+            for (const auto codepoint : io.InputQueueCharacters) {
+                UIInputEvent event;
+                event.type = UIInputEvent::Type::Text;
+                event.codepoint = uint32_t(codepoint);
+                event.modifiers = modifiers;
+                if (!submit(event))
+                    return true;
+            }
+        }
+        const auto caret = m_App.GetGameUITextInput();
+        if (focused && caret.active && !io.WantTextInput) {
+            TextInputSnapshot region = caret;
+            const auto mainPosition = ImGui::GetMainViewport()->Pos;
+            region.x = x - mainPosition.x + caret.x / extent.width * width;
+            region.y = y - mainPosition.y + caret.y / extent.height * height;
+            region.width = caret.width / extent.width * width;
+            region.height = caret.height / extent.height * height;
+            auto* application = &m_App;
+            if (!m_App.GetWindow().SetTextInputTarget(
+                    SceneSurface, region,
+                    [application](const TextComposition& composition) {
+                        UIInputEvent input;
+                        input.type = UIInputEvent::Type::Composition;
+                        input.composition = composition;
+                        bool consumed = false;
+                        std::string error;
+                        if (!application->RouteGameUIInput(input, consumed, error) && !error.empty())
+                            CAT_CORE_WARN("Game UI IME: {0}", error);
+                    },
+                    m_Error))
+                return true;
+        } else
+            m_App.GetWindow().ClearTextInputTarget(SceneSurface);
+        m_PlayUIActive = blocked || m_PlayUICapture || caret.active;
+        return blocked || caret.active;
+    }
+
     void WorkspaceEditing::DrawViewport(SceneDocument* doc, const PanelText& text, uint32_t centerDockId) {
         // 仅迁移这个稳定窗口：旧版保存的浮动位置或侧边 DockId 不影响其他面板。
         if (centerDockId)
@@ -313,6 +454,7 @@ namespace Catalpa::Editor {
                                         nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove |
                                                      ImGuiWindowFlags_NoScrollWithMouse);
         if (!shown || !doc) {
+            BlurPlayUI();
             m_Picking.Cancel(m_App);
             m_Gizmo.Cancel(m_Error);
             m_RightLook = false;
@@ -345,11 +487,19 @@ namespace Catalpa::Editor {
             ImGui::Text("%s: %.2f", label.c_str(), gpuMs);
         else
             ImGui::TextDisabled("%s: N/A", label.c_str());
+        uint64_t payload = 0, payloadBudget = 0;
+        if (m_App.GetManagedGpuPayloadBytes(payload, payloadBudget)) {
+            ImGui::SameLine();
+            ImGui::Text("%s: %.1f / %.1f MiB",
+                        text("viewport.gpu_payload", "Managed GPU payload", nullptr).c_str(),
+                        double(payload) / (1024 * 1024), double(payloadBudget) / (1024 * 1024));
+        }
         if (!doc->Playing()) DrawSelectedBounds(m_App, *doc, m_Selection, m_Error);
 
         const auto available = ImGui::GetContentRegionAvail(), origin = ImGui::GetCursorScreenPos();
         const auto density = ImGui::GetWindowViewport()->FramebufferScale;
         if (available.x < 1 || available.y < 1) {
+            BlurPlayUI();
             m_Picking.Cancel(m_App);
             m_Gizmo.Cancel(m_Error);
             m_RightLook = false;
@@ -373,12 +523,15 @@ namespace Catalpa::Editor {
                        clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
             if (doc->Playing()) {
                 if (clicked) ImGui::SetWindowFocus();
-                if (hovered && ImGui::IsWindowFocused() && !ImGui::GetIO().WantTextInput)
+                const bool uiConsumed = RoutePlayUIInput(origin.x, origin.y, available.x, available.y, extent,
+                                                         hovered, ImGui::IsWindowFocused());
+                if (!uiConsumed && hovered && ImGui::IsWindowFocused() && !ImGui::GetIO().WantTextInput)
                     m_App.AllowEditorPlayInput();
                 (void)m_App.SetEditorPreview(doc->PlayHandle(), SceneSurface, extent, m_Error);
                 ImGui::End();
                 return;
             }
+            BlurPlayUI();
             const bool gizmo = m_Gizmo.Draw(*doc, m_Selection, frame.view, origin.x, origin.y, available.x,
                                             available.y, m_Error);
             input = ViewportInput(hovered, gizmo);
@@ -391,6 +544,7 @@ namespace Catalpa::Editor {
                 m_Picking.Request(m_App, *doc, frame, x, y, m_Error);
             }
         } else {
+            BlurPlayUI();
             m_RightLook = false;
             m_Gizmo.Cancel(m_Error);
             ImGui::TextDisabled("%s",
@@ -429,6 +583,24 @@ namespace Catalpa::Editor {
         UpdateDocuments();
         m_Documents.CloseStaleScenes();
         auto* scene = ActiveScene();
+        if (scene && scene->Playing()) {
+            SceneHandle candidate;
+            std::string switchError;
+            if (m_App.PollScriptSceneSwitch(candidate, switchError)) {
+                const auto previous = scene->PlayHandle();
+                if (!m_App.SetEditorPlayScene(candidate, m_PlayPaused, switchError) ||
+                    !scene->AdoptPlayScene(candidate, switchError)) {
+                    (void)m_App.SetEditorPlayScene(previous, m_PlayPaused, m_Error);
+                    (void)m_App.GetScenes().Unload(candidate);
+                    m_Error = std::move(switchError);
+                } else {
+                    m_Picking.Cancel(m_App);
+                    m_Gizmo.Cancel(m_Error);
+                    BlurPlayUI();
+                }
+            } else if (!switchError.empty())
+                m_Error = std::move(switchError);
+        }
         const auto id = scene ? scene->Id() : StableId{};
         if (m_LastScene != id) {
             m_OverrideRoot = {};

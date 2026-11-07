@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "maxVoices", "maxCommands", "allowNullFallback", "forceNull"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "maxVoices": {"type": "integer", "minimum": 1, "maximum": 256},
+    "maxCommands": {"type": "integer", "minimum": 1, "maximum": 4096},
+    "allowNullFallback": {"type": "boolean"},
+    "forceNull": {"type": "boolean"}
+  }
+}

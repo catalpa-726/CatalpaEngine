@@ -15,7 +15,7 @@ namespace Catalpa {
         if (const RHIStatus status = commands.SetResourceStatePlan(plan.m_BufferUpdates, plan.m_TextureUpdates); !status.IsSuccess())
             return status;
 
-        if (plan.m_Queries) {
+        if (plan.m_Queries && plan.m_QueryBegin) {
             if (const auto status = commands.ResetQueries(plan.m_Queries, 0, 2); !status.IsSuccess()) return status;
             if (const auto status = commands.WriteTimestamp(plan.m_Queries, 0, false); !status.IsSuccess()) return status;
         }
@@ -37,38 +37,63 @@ namespace Catalpa {
                 }
 
                 switch (step.kind) {
-                    case RenderGraphPlan::StepKind::Copy:
-                        if (const RHIStatus status = commands.CopyBuffer(step.source, step.destination, step.copy); !status.IsSuccess())
+                case RenderGraphPlan::StepKind::Compute:
+                    if (const auto status = commands.BindComputePipeline(step.compute.pipeline);
+                        !status.IsSuccess())
+                        return status;
+                    if (!step.bindings.empty())
+                        if (const auto status = commands.SetComputeBindings(step.bindings);
+                            !status.IsSuccess())
                             return status;
-                        break;
-
-                    case RenderGraphPlan::StepKind::TextureUpload:
-                        if (const RHIStatus status = commands.CopyBufferToTexture(step.source, step.destinationView, step.textureCopy); !status.IsSuccess())
+                    if (!step.compute.pushConstants.empty())
+                        if (const auto status = commands.SetComputePushConstants(step.compute.pushConstants);
+                            !status.IsSuccess())
                             return status;
-                        break;
+                    if (const auto status = commands.Dispatch(step.compute.groups[0], step.compute.groups[1],
+                                                              step.compute.groups[2]);
+                        !status.IsSuccess())
+                        return status;
+                    break;
+                case RenderGraphPlan::StepKind::Copy:
+                    if (const RHIStatus status =
+                            commands.CopyBuffer(step.source, step.destination, step.copy);
+                        !status.IsSuccess())
+                        return status;
+                    break;
 
-                    case RenderGraphPlan::StepKind::TextureReadback:
-                        if (const auto status = commands.CopyTextureToBuffer(step.sourceView, step.destination, step.readbackCopy); !status.IsSuccess())
-                            return status;
-                        break;
+                case RenderGraphPlan::StepKind::TextureUpload:
+                    if (const RHIStatus status =
+                            commands.CopyBufferToTexture(step.source, step.destinationView, step.textureCopy);
+                        !status.IsSuccess())
+                        return status;
+                    break;
 
-                    case RenderGraphPlan::StepKind::Clear:
-                    {
-                        const RHIColorAttachment color{
-                            .view = step.color, .loadOp = RHILoadOp::Clear,
-                            .storeOp = RHIStoreOp::Store, .clearColor = step.draw.clearColor
-                        };
-                        RHIRenderingDesc rendering{
-                            .renderArea = { .extent = step.extent }, .sampleCount = 1
-                        };
-                        if (step.color.HasValue()) rendering.colorAttachments = { &color, 1 };
-                        if (step.depth.HasValue()) rendering.depthAttachment = RHIDepthAttachment{
-                            .view = step.depth, .loadOp = RHILoadOp::Clear,
-                            .storeOp = RHIStoreOp::Store, .clearDepth = step.draw.clearDepth };
-                        if (const auto status = commands.BeginRendering(rendering); !status.IsSuccess()) return status;
-                        if (const auto status = commands.EndRendering(); !status.IsSuccess()) return status;
-                        break;
-                    }
+                case RenderGraphPlan::StepKind::TextureReadback:
+                    if (const auto status = commands.CopyTextureToBuffer(step.sourceView, step.destination,
+                                                                         step.readbackCopy);
+                        !status.IsSuccess())
+                        return status;
+                    break;
+
+                case RenderGraphPlan::StepKind::Clear: {
+                    const RHIColorAttachment color{.view = step.color,
+                                                   .loadOp = RHILoadOp::Clear,
+                                                   .storeOp = RHIStoreOp::Store,
+                                                   .clearColor = step.draw.clearColor};
+                    RHIRenderingDesc rendering{.renderArea = {.extent = step.extent}, .sampleCount = 1};
+                    if (step.color.HasValue())
+                        rendering.colorAttachments = {&color, 1};
+                    if (step.depth.HasValue())
+                        rendering.depthAttachment = RHIDepthAttachment{.view = step.depth,
+                                                                       .loadOp = RHILoadOp::Clear,
+                                                                       .storeOp = RHIStoreOp::Store,
+                                                                       .clearDepth = step.draw.clearDepth};
+                    if (const auto status = commands.BeginRendering(rendering); !status.IsSuccess())
+                        return status;
+                    if (const auto status = commands.EndRendering(); !status.IsSuccess())
+                        return status;
+                    break;
+                }
 
                     case RenderGraphPlan::StepKind::Draw:
                     {
@@ -106,9 +131,13 @@ namespace Catalpa {
                         if (draw.vertexCount == 0)
                             if (const RHIStatus status = commands.BindIndexBuffer(step.indices, draw.indexType, draw.indexOffset); !status.IsSuccess()) return status;
                         if (const RHIStatus status = commands.SetViewportAndScissor(draw.viewport, draw.scissor); !status.IsSuccess()) return status;
-                        const auto drawStatus = draw.vertexCount != 0
-                            ? commands.Draw(draw.vertexCount, draw.instanceCount, draw.firstVertex, draw.firstInstance)
-                            : commands.DrawIndexed(draw.indexCount, draw.instanceCount, draw.firstIndex, draw.baseVertex, draw.firstInstance);
+                        const auto drawStatus =
+                            draw.vertexCount != 0 ? commands.Draw(draw.vertexCount, draw.instanceCount,
+                                                                  draw.firstVertex, draw.firstInstance)
+                            : step.indirect.HasValue()
+                                ? commands.DrawIndexedIndirect(step.indirect, draw.indirectOffset)
+                                : commands.DrawIndexed(draw.indexCount, draw.instanceCount, draw.firstIndex,
+                                                       draw.baseVertex, draw.firstInstance);
                         if (!drawStatus.IsSuccess()) return drawStatus;
                         if (const RHIStatus status = commands.EndRendering(); !status.IsSuccess()) return status;
                         break;
@@ -124,7 +153,7 @@ namespace Catalpa {
             }
         }
 
-        if (plan.m_Queries)
+        if (plan.m_Queries && plan.m_QueryEnd)
             if (const auto status = commands.WriteTimestamp(plan.m_Queries, 1, true); !status.IsSuccess()) return status;
         return commands.End();
     }

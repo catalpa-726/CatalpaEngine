@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "material": "4b07ce2d-5c07-5a9c-5b51-0de09361cdb8",
+  "seed": 1704,
+  "maxParticles": 256,
+  "emissionRate": 36,
+  "duration": 3,
+  "loop": true,
+  "localSpace": false,
+  "lifetime": [
+    1,
+    2
+  ],
+  "size": [
+    0.08,
+    0.15
+  ],
+  "velocityMin": [
+    -0.4,
+    1.6,
+    -0.4
+  ],
+  "velocityMax": [
+    0.4,
+    2.2,
+    0.4
+  ],
+  "gravity": [
+    0,
+    -1,
+    0
+  ],
+  "startColor": [
+    1,
+    0.6,
+    0.1,
+    0.9
+  ],
+  "endColor": [
+    0.2,
+    0.05,
+    0,
+    0
+  ],
+  "endSizeScale": 0.3,
+  "angularVelocity": [
+    -1,
+    1
+  ]
+}

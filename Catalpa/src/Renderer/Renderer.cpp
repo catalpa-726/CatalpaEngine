@@ -10,11 +10,14 @@
 
 namespace Catalpa {
 
-    Renderer::Renderer(RHIDevice& device, RHISwapchain& swapchain, AssetManager& assets, const RendererProfile& profile)
+    Renderer::Renderer(RHIDevice& device, RHISwapchain& swapchain, AssetManager& assets,
+                       const RendererProfile& profile)
         : m_Device(device), m_Swapchain(swapchain), m_Assets(assets), m_Uploads(device),
-          m_Geometry(device, m_Uploads), m_Textures(device, m_Uploads), m_Materials(device), m_Pipelines(device),
-          m_UI(device, assets, m_Textures, m_Pipelines), m_Readbacks(device), m_Profile(profile),
-          m_Main(std::make_unique<Surface>(device)), m_Queries(device.GetFrameCount()) {}
+          m_Geometry(device, m_Uploads, &m_Residency), m_Textures(device, m_Uploads, &m_Residency),
+          m_Materials(device), m_Pipelines(device), m_Compute(device, assets),
+          m_UI(device, assets, m_Textures, m_Pipelines), m_GameUI(device, m_Textures), m_Readbacks(device),
+          m_Profile(profile), m_Main(std::make_unique<Surface>(device, m_Textures)),
+          m_Queries(device.GetFrameCount()) {}
 
     Renderer::~Renderer()
     {
@@ -138,12 +141,12 @@ namespace Catalpa {
         return true;
     }
 
-    void Renderer::OnSubmitted(RHICompletionPoint completion) noexcept
-    {
+    void Renderer::OnSubmitted(RHICompletionPoint completion,
+                               std::span<const RHICompletionPoint> points) noexcept {
         m_Uploads.OnSubmitted(completion);
-        m_Readbacks.OnSubmitted(completion);
-        m_Geometry.OnSubmitted();
-        m_Textures.OnSubmitted();
+        m_Readbacks.OnAccepted(points);
+        m_Geometry.OnSubmitted(points);
+        m_Textures.OnSubmitted(points);
         if (m_MainScenePresentation == MainScenePresentation::MainWindow)
             m_Main->uniforms.OnSubmitted();
         for (auto& [id, surface] : m_Previews) {
@@ -192,6 +195,8 @@ namespace Catalpa {
             if (!surface->imageOnly && surface->prepared && !surface->scene.GetFrame().views.empty())
                 if (const auto status = AddSurfacePasses(graph, *surface, surface->scene.GetFrame(), true); !status.IsSuccess()) return status;
 
+        if (const auto status = m_GameUI.Add(graph, color, extent, m_FrameSlot); !status.IsSuccess())
+            return status;
         if (uiFrame)
             if (const auto status = m_UI.AddPasses(graph, color, extent, m_FrameSlot, *uiFrame); !status.IsSuccess()) return status;
         if (m_Queries[m_FrameSlot].pool)
@@ -221,6 +226,8 @@ namespace Catalpa {
             ~DebugFrameReset() { draw.Clear(); }
         } debugFrameReset{ m_Debug };
         OnCancelled();
+        if (const auto changes = RefreshAssetChanges(); !changes.IsSuccess())
+            return changes;
         if (m_Swapchain.GetInfo().state != RHISwapchainState::Ready) return {};
         RHIAcquireResult acquired;
         bool submitted = false;
@@ -302,6 +309,45 @@ namespace Catalpa {
                     CAT_CORE_INFO("Preview surface {0} preparation recovered.", id);
                 surface->lastFailure = {};
             }
+            if ((m_GameUIDraw && !m_GameUIDraw->batches.empty()) ||
+                std::any_of(m_Previews.begin(), m_Previews.end(), [](const auto& entry) {
+                    return entry.second->gameUIDraw && !entry.second->gameUIDraw->batches.empty();
+                })) {
+                constexpr std::array<VertexAttribute, 3> attributes{{{0, VertexFormat::Float2, 0},
+                                                                     {1, VertexFormat::Float2, 8},
+                                                                     {2, VertexFormat::Float4, 16}}};
+                if (const auto result = AcquireBuiltinPipeline(
+                        "GameUI.slang", m_Swapchain.GetInfo().format, PixelFormat::Unknown, {},
+                        {sizeof(UIDrawVertex), attributes}, m_GameUIPipeline, RHIBlendMode::Premultiplied);
+                    !result.IsSuccess())
+                    return result;
+            }
+            if (const auto result = m_GameUI.Prepare(m_FrameSlot, m_GameUIDraw ? *m_GameUIDraw : UIDrawData{},
+                                                     m_GameUIPipeline);
+                !result.IsSuccess())
+                return result;
+            for (auto& [id, surface] : m_Previews)
+                if (surface->prepared) {
+                    if (!surface->gameUIDraw || surface->gameUIDraw->batches.empty()) {
+                        if (const auto result = surface->gameUI.Prepare(m_FrameSlot, UIDrawData{}, nullptr);
+                            !result.IsSuccess())
+                            return result;
+                        continue;
+                    }
+                    constexpr std::array<VertexAttribute, 3> attributes{{{0, VertexFormat::Float2, 0},
+                                                                         {1, VertexFormat::Float2, 8},
+                                                                         {2, VertexFormat::Float4, 16}}};
+                    std::shared_ptr<PipelineResource> pipeline;
+                    if (const auto result = AcquireBuiltinPipeline(
+                            "GameUI.slang", PixelFormat::RGBA8_SRGB, PixelFormat::Unknown, {},
+                            {sizeof(UIDrawVertex), attributes}, pipeline, RHIBlendMode::Premultiplied);
+                        !result.IsSuccess())
+                        return result;
+                    if (const auto result =
+                            surface->gameUI.Prepare(m_FrameSlot, *surface->gameUIDraw, pipeline);
+                        !result.IsSuccess())
+                        return result;
+                }
             if (uiFrame)
                 if (const auto prepare = m_UI.Prepare(m_FrameSlot, *uiFrame, m_Swapchain.GetInfo().format); !prepare.IsSuccess()) return prepare;
             if (!uiFrame)
@@ -311,6 +357,7 @@ namespace Catalpa {
             m_Materials.Prune();
             m_Textures.Prune();
             m_Pipelines.Prune();
+            m_Compute.Prune();
             status = m_Swapchain.Acquire(frame.token, timeoutNanoseconds, acquired);
             if (!status.IsSuccess() || !acquired.HasImage()) { OnCancelled(); return status; }
 
@@ -323,11 +370,28 @@ namespace Catalpa {
             const RHISubmission submission{ .frame = frame.token, .commands = frame.commands,
                 .wait = acquired.acquireReady, .signal = acquired.renderFinished };
             FrameSubmissionResult execution;
-            status = FrameScheduler::Execute(plan, m_Device.GetGraphicsQueue(), submission, execution);
+            status = FrameScheduler::Execute(plan, m_Device.GetGraphicsQueue(), submission, execution, m_Jobs,
+                                             m_Profile.asyncQueues);
+            if (execution.serializedForBudget) {
+                static bool reportedBudgetFallback = false;
+                if (!reportedBudgetFallback) {
+                    CAT_CORE_WARN("Render graph queue switches exceed the parallel scheduling budget; this "
+                                  "frame uses ordered graphics recording.");
+                    reportedBudgetFallback = true;
+                }
+            }
             submitted = execution.accepted;
+            if (execution.anyAccepted) {
+                const auto points = execution.completions.GetPoints();
+                m_Geometry.MarkUses(points);
+                m_Textures.MarkUses(points);
+                m_Readbacks.OnAccepted(points);
+                if (!execution.accepted)
+                    m_Uploads.OnPartiallySubmitted(points);
+            }
             if (!submitted) return CancelFrame(acquired, status);
             if (!status.IsSuccess()) return status;
-            OnSubmitted(execution.completion);
+            OnSubmitted(execution.completion, execution.completions.GetPoints());
             m_FrameSlot = (m_FrameSlot + 1) % m_Device.GetFrameCount();
             RHIPresentOutcome outcome;
             return m_Swapchain.Present(acquired, outcome);
@@ -338,3 +402,16 @@ namespace Catalpa {
         }
     }
 }
+
+namespace Catalpa {
+    bool Renderer::SetPreviewGameUI(uint64_t id, std::shared_ptr<const UIDrawData> data, std::string& error) {
+        const auto found = m_Previews.find(id);
+        if (found == m_Previews.end()) {
+            error = "Create a preview Scene/surface before attaching Game UI";
+            return false;
+        }
+        found->second->gameUIDraw = std::move(data);
+        error.clear();
+        return true;
+    }
+} // namespace Catalpa

@@ -57,6 +57,8 @@ namespace Catalpa {
         [[nodiscard]] InputStatus ParseProfile(std::string_view json);
         // 即使 UI 已标记 Handled 也收集物理事件，发布时再应用捕获策略。
         void OnEvent(const Event& event);
+        // 保留完整物理源，同时封住已交给游戏 UI 的动作边沿及按键，释放始终正常收集。
+        void OnCapturedEvent(const Event&, bool keyboardFocus = false);
         // 事件泵和 UI NewFrame 之后发布一次展示帧快照。
         [[nodiscard]] const ActionSnapshot& BeginFrame(InputCapture capture = {});
         // 边沿/位移只交给首个消费 tick，连续键轴在补步中保持。
@@ -99,5 +101,8 @@ namespace Catalpa {
         std::array<bool, PhysicalInputSnapshot::MouseButtonCount> m_BlockedGameplayMouse{};
         bool m_HasCursor = false;
         bool m_DiscardGameplayFrameEdges = false;
+        std::array<bool, PhysicalInputSnapshot::KeyCount> m_UICapturedKeys{};
+        std::array<bool, PhysicalInputSnapshot::MouseButtonCount> m_UICapturedMouse{};
+        bool m_UICapturedMove = false, m_UICapturedScroll = false;
     };
 }

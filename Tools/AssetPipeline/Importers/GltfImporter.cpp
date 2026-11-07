@@ -3,6 +3,8 @@
 #include "AssetPipeline/Importers/ImportGeometry.h"
 #include "AssetPipeline/Importers/TextureImporter.h"
 #include "AssetPipeline/Importers/MaterialImporter.h"
+#include "AssetPipeline/Animation/AnimationImport.h"
+#include "AssetPipeline/Cookers/ModelLodBuilder.h"
 #include <fastgltf/core.hpp>
 #include <fastgltf/tools.hpp>
 
@@ -92,6 +94,15 @@ namespace Catalpa::Tools {
                     if ((v.byteOffset + accessor.byteOffset) % component ||
                         (v.byteStride && *v.byteStride < elementBytes)) {
                         error = "Accessor alignment/stride is invalid";
+                        return false;
+                    }
+                    const size_t stride = v.byteStride ? *v.byteStride : elementBytes;
+                    if (accessor.byteOffset > v.byteLength ||
+                        (accessor.count &&
+                         (elementBytes > v.byteLength - accessor.byteOffset ||
+                          (accessor.count - 1) >
+                              (v.byteLength - accessor.byteOffset - elementBytes) / stride))) {
+                        error = "Accessor element range exceeds its buffer view";
                         return false;
                     }
                 }
@@ -184,8 +195,8 @@ namespace Catalpa::Tools {
                 error = "Unsupported glTF extension (no silent approximation): " + extension;
                 return false;
             }
-        if (!asset.skins.empty() || !asset.animations.empty()) {
-            error = "Skin/animation import belongs to the animation pipeline";
+        if (asset.skins.size() > 256 || asset.animations.size() > 256) {
+            error = "Skin/animation collection limit exceeded";
             return false;
         }
         for (auto& buffer : asset.buffers) {
@@ -307,6 +318,7 @@ namespace Catalpa::Tools {
 
         // 一个 glTF mesh 可以有多个独立绘制的图元，各自生成网格并保留材质引用。
         std::map<std::pair<size_t, size_t>, AssetId> meshes;
+        PrimitiveRemaps skinRemaps;
         for (size_t mi = 0; mi < asset.meshes.size(); ++mi)
             for (size_t pi = 0; pi < asset.meshes[mi].primitives.size(); ++pi) {
                 if (!ctx.CheckCancelled(error))
@@ -411,7 +423,8 @@ namespace Catalpa::Tools {
                             error = "Color must be VEC3/VEC4";
                             return false;
                         }
-                    } else if (attribute.name != "POSITION") {
+                    } else if (attribute.name != "POSITION" && attribute.name != "JOINTS_0" &&
+                               attribute.name != "WEIGHTS_0") {
                         error = "Unsupported vertex semantic: " + attribute.name;
                         return false;
                     }
@@ -435,7 +448,8 @@ namespace Catalpa::Tools {
                         indices[i] = uint32_t(i);
                 }
                 MeshAsset mesh;
-                if (!BuildImportedMesh(ctx, std::move(vertices), std::move(indices), n, uv, t, mesh, error))
+                if (!BuildImportedMesh(ctx, std::move(vertices), std::move(indices), n, uv, t, mesh, error,
+                                       &skinRemaps[{mi, pi}]))
                     return false;
                 const auto key = "mesh/" + std::to_string(mi) + "/primitive/" + std::to_string(pi);
                 const auto id = ctx.Identity(key);
@@ -507,7 +521,7 @@ namespace Catalpa::Tools {
                 error = "glTF node/primitive expansion exceeds node budget";
                 return false;
             }
-            if (in.skinIndex || !in.weights.empty() || !in.instancingAttributes.empty()) {
+            if (!in.weights.empty() || !in.instancingAttributes.empty()) {
                 error = "Skin/morph/GPU instancing requires its dedicated importer";
                 return false;
             }
@@ -556,6 +570,10 @@ namespace Catalpa::Tools {
             return false;
         }
         if (!SetImportRoot(ctx, model, Math::Mat4{1}, error))
+            return false;
+        if (!AppendGltfAnimations(ctx, asset, model, result, skinRemaps, error))
+            return false;
+        if (!BuildModelLods(ctx, model, result, error))
             return false;
         ctx.Diagnose(AssetDiagnosticLevel::Info, "coordinates",
                      "glTF right-handed Y-up/metres; explicit root conversion only");

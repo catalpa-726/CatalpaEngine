@@ -11,8 +11,12 @@ namespace Catalpa::Tools {
             if(array.dims_count>1)return Failure(error,"multidimensional shader arrays need a newer metadata schema");
             uint32_t count=1;
             for(uint32_t i=0;i<array.dims_count;++i){
-                if(array.dims[i]==SPV_REFLECT_ARRAY_DIM_RUNTIME||array.spec_constant_op_ids[i]!=UINT32_MAX||array.dims[i]>1048576)
-                    return Failure(error,"runtime/specialized/oversized arrays are not supported by shader schema1");
+                if (array.dims[i] == SPV_REFLECT_ARRAY_DIM_RUNTIME) {
+                    output = 0;
+                    return true;
+                }
+                if (array.spec_constant_op_ids[i] != UINT32_MAX || array.dims[i] > 1048576)
+                    return Failure(error,"specialized/oversized arrays are not supported by shader metadata");
                 count=array.dims[i];
             }
             output=count;return true;
@@ -31,15 +35,65 @@ namespace Catalpa::Tools {
             if(!ArrayCount(a,s.arrayCount,error))return false;
             out=s;return true;
         }
-        bool Members(const SpvReflectBlockVariable& block,std::vector<ShaderBlockMember>& output,size_t depth,size_t& budget,std::string& error) {
-            if(depth>16||block.member_count>budget)return Failure(error,"reflection member/depth budget exceeded");budget-=block.member_count;
-            for(uint32_t i=0;i<block.member_count;++i){const auto& m=block.members[i];ShaderBlockMember v;
-                if(!m.name||!*m.name)return Failure(error,"SPIR-V block member names must be preserved");v.name=m.name;
-                v.offset=m.offset;v.size=m.size;v.paddedSize=m.padded_size;v.arrayStride=m.array.stride;v.matrixStride=m.numeric.matrix.stride;v.rowMajor=(m.decoration_flags&SPV_REFLECT_DECORATION_ROW_MAJOR)!=0;
-                if(!Shape(m.type_description,m.numeric,m.array,v.type,error)||!Members(m,v.members,depth+1,budget,error))return false;
+        bool Members(const SpvReflectBlockVariable& block, std::vector<ShaderBlockMember>& output,
+                     size_t depth, size_t& budget, std::string& error) {
+            if (depth > 16 || block.member_count > budget)
+                return Failure(error, "reflection member/depth budget exceeded");
+            budget -= block.member_count;
+
+            for (uint32_t i = 0; i < block.member_count; ++i) {
+                const auto& m = block.members[i];
+                if (!m.name || !*m.name)
+                    return Failure(error, "SPIR-V block member names must be preserved");
+
+                // 当前 Reflect 只向成员的 array 字段复制定长数组信息；运行时数组要从类型读取。
+                // 只认显式 OpTypeRuntimeArray，不能把尺寸为零的普通成员猜成可变长数组。
+                const bool runtimeArray = m.type_description &&
+                                          m.type_description->op == SpvOpTypeRuntimeArray;
+                const auto& array = runtimeArray ? m.type_description->traits.array : m.array;
+                if (runtimeArray &&
+                    (array.dims_count != 1 || array.dims[0] != SPV_REFLECT_ARRAY_DIM_RUNTIME))
+                    return Failure(error, "unsupported runtime shader array dimensions");
+
+                ShaderBlockMember v;
+                v.name = m.name;
+                v.offset = m.offset;
+                v.size = m.size;
+                v.paddedSize = m.padded_size;
+                v.arrayStride = array.stride;
+                v.matrixStride = m.numeric.matrix.stride;
+                v.rowMajor = (m.decoration_flags & SPV_REFLECT_DECORATION_ROW_MAJOR) != 0;
+                if (!Shape(m.type_description, m.numeric, array, v.type, error) ||
+                    !Members(m, v.members, depth + 1, budget, error))
+                    return false;
+                if ((v.type.arrayCount == 0) != runtimeArray)
+                    return Failure(error, "shader array length does not match its SPIR-V type");
+
+                // Reflect 对结构体数组会给出单个元素的尺寸。schema3 的尾数组没有固定总尺寸；
+                // 保留元素成员和 stride，交给布局校验检查元素范围、重叠和合法的末尾位置。
+                if (runtimeArray) {
+                    v.size = 0;
+                    v.paddedSize = 0;
+                }
                 output.push_back(std::move(v));
             }
-            std::sort(output.begin(),output.end(),[](const auto& a,const auto& b){return a.offset<b.offset;});return true;
+            std::sort(output.begin(), output.end(), [](const auto& a, const auto& b) {
+                return a.offset < b.offset;
+            });
+            return true;
+        }
+
+        bool StorageBlockSize(const std::vector<ShaderBlockMember>& members, uint32_t& output,
+                              std::string& error) {
+            // Reflect 将所有 StorageBuffer 的块尺寸置零，包括有固定前缀或完全定长的块。
+            // 重建最小静态范围；尾数组只贡献起始偏移，不虚构运行时元素数量。
+            uint64_t size = 0;
+            for (const auto& member : members)
+                size = std::max(size, uint64_t(member.offset) + member.paddedSize);
+            if (size > UINT32_MAX)
+                return Failure(error, "reflected storage buffer size overflows metadata");
+            output = uint32_t(size);
+            return true;
         }
         bool Interface(const SpvReflectInterfaceVariable& x,std::vector<ShaderInterfaceVariable>& output,std::string& error) {
             // Upstream propagates BUILT_IN to a parent containing any builtin member; keep ordinary siblings.
@@ -88,7 +142,14 @@ namespace Catalpa::Tools {
                     case SPV_REFLECT_DESCRIPTOR_TYPE_SAMPLER:v.kind=ShaderResourceKind::Sampler;break;
                     case SPV_REFLECT_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:v.kind=ShaderResourceKind::CombinedImageSampler;break;
                     default:return Failure(error,"unsupported reflected resource kind");}
-                    if(v.kind==ShaderResourceKind::UniformBuffer||v.kind==ShaderResourceKind::StorageBuffer){v.blockSize=b->block.padded_size;if(!Members(b->block,v.members,0,budget,error))return false;}
+                    if (v.kind == ShaderResourceKind::UniformBuffer || v.kind == ShaderResourceKind::StorageBuffer) {
+                        v.blockSize = b->block.padded_size;
+                        if (!Members(b->block, v.members, 0, budget, error))
+                            return false;
+                        if (v.kind == ShaderResourceKind::StorageBuffer &&
+                            !StorageBlockSize(v.members, v.blockSize, error))
+                            return false;
+                    }
                     else if(v.kind!=ShaderResourceKind::Sampler) {
                         if (b->image.arrayed || b->image.ms || (b->image.dim != SpvDim2D && b->image.dim != SpvDimCube))
                             return Failure(error, "Schema2 supports non-arrayed, non-MS 2D or Cube images only");

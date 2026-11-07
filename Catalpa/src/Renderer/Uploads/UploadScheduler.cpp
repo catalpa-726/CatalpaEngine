@@ -12,9 +12,14 @@ namespace Catalpa {
     {
         constexpr const char* operation = "UploadScheduler::CreateBuffer";
         buffer = {};
-        if (data.empty() || (usage != RHIBufferUsage::Vertex && usage != RHIBufferUsage::Index &&
-            usage != (RHIBufferUsage::Vertex | RHIBufferUsage::Index)))
+
+        // 几何缓冲可同时供计算着色器读取；复制用途仍由上传器统一补充。
+        constexpr uint32_t geometryUsage = static_cast<uint32_t>(RHIBufferUsage::Vertex | RHIBufferUsage::Index);
+        constexpr uint32_t allowedUsage = geometryUsage | static_cast<uint32_t>(RHIBufferUsage::Storage);
+        const uint32_t requestedUsage = static_cast<uint32_t>(usage);
+        if (data.empty() || (requestedUsage & geometryUsage) == 0 || (requestedUsage & ~allowedUsage) != 0)
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+
         BufferHandle destination{}, staging{};
         const auto discard = [&] {
             m_Device.ReleaseBuffer(std::exchange(staging, BufferHandle{}));
@@ -185,6 +190,43 @@ namespace Catalpa {
         m_RecordedCount = 0;
         m_RecordedTextureCount = 0;
         m_Recorded = false;
+    }
+
+    void UploadScheduler::OnPartiallySubmitted(std::span<const RHICompletionPoint> points) noexcept try {
+        if (!m_Recorded)
+            return;
+        const auto accepted = [&](RHICompletionPoint writer) {
+            return writer.HasValue() && std::any_of(points.begin(), points.end(), [&](const auto& point) {
+                       return point.device == writer.device && point.queue == writer.queue &&
+                              point.sequence >= writer.sequence;
+                   });
+        };
+        for (size_t i = m_RecordedCount; i > 0; --i) {
+            const auto index = i - 1;
+            RHIBufferStateSnapshot state;
+            if (!m_Device.GetBufferState(m_Pending[index].destination, state).IsSuccess() ||
+                !accepted(state.state.frontier.writer) ||
+                !RangeContains(state.state.initialized, 0, m_Pending[index].size))
+                continue;
+            m_LastSubmission = state.state.frontier.writer;
+            m_Device.ReleaseBuffer(m_Pending[index].staging);
+            m_Pending.erase(m_Pending.begin() + static_cast<std::ptrdiff_t>(index));
+            --m_RecordedCount;
+        }
+        for (size_t i = m_RecordedTextureCount; i > 0; --i) {
+            const auto index = i - 1;
+            RHITextureStateSnapshot state;
+            if (!m_Device.GetTextureState(m_PendingTextures[index].destination, state).IsSuccess() ||
+                !accepted(state.state.frontier.writer) || !state.state.initialized ||
+                !RangeContains(state.state.initializedSubresources, 0,
+                               uint64_t(state.mipLevels) * state.arrayLayers))
+                continue;
+            m_LastSubmission = state.state.frontier.writer;
+            m_Device.ReleaseBuffer(m_PendingTextures[index].staging);
+            m_PendingTextures.erase(m_PendingTextures.begin() + static_cast<std::ptrdiff_t>(index));
+            --m_RecordedTextureCount;
+        }
+    } catch (const std::bad_alloc&) { /* 无法取得证明时继续保留staging，不能推测复制已完成。 */
     }
 
     void UploadScheduler::Shutdown() noexcept

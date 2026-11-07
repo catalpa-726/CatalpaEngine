@@ -4,6 +4,7 @@ local nodeRoot = path.join(root, IncludeDir.NodeEditor)
 local dialogRoot = path.join(root, "Catalpa/third_party/nativefiledialog-extended")
 local luaSource = path.join(root, IncludeDir.Lua)
 
+if not CATALPA_RUNTIME_ONLY then
 filter {}
 project "imgui-node-editor"
     kind "StaticLib"
@@ -46,6 +47,8 @@ project "nativefiledialog-extended"
     filter "system:windows"
         files { path.join(dialogRoot, "src/nfd_win.cpp") }
         links { "ole32", "uuid", "shell32" }
+
+end
 
 filter {}
 project "Lua"

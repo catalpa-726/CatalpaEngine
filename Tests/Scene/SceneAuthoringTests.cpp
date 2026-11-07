@@ -13,6 +13,8 @@
 #include "Scripting/ScriptAsset.h"
 #include "Assets/BuiltinAssetIds.h"
 #include "Geometry/PrimitiveMesh.h"
+#include "Animation/AnimationAssetLoader.h"
+#include "Physics/PhysicsMaterialAsset.h"
 
 namespace Catalpa::Tests {
     namespace {
@@ -170,6 +172,55 @@ namespace Catalpa::Tests {
                 Editor::DocumentRecovery::Read(escapedPath, stored, error, Editor::DocumentRecovery::MaxRecoveryBytes) &&
                 AuthorJson::Parse(stored, Editor::DocumentRecovery::MaxRecoveryBytes).at("content").get<std::string>() == *escaped.Source() &&
                 escaped.History().Dirty(), "Recovery's bounded envelope budget includes JSON escaping without changing draft bytes");
+
+            std::string binary = "CANI1";
+            for (unsigned byte = 0; byte < 256; ++byte)
+                binary += char(byte);
+            Editor::AssetDocument binaryDraft{StableId::FromWords(8, 4), {}, "animation_clip", binary};
+            const auto binaryRecovery = files.root / (binaryDraft.Id().ToString() + ".recovery.json");
+            files.files.push_back(binaryRecovery);
+            std::string recoveredType, recoveredContent;
+            test.Check(Editor::DocumentRecovery::Checkpoint(binaryDraft, files.root, error) &&
+                           Editor::DocumentRecovery::Read(binaryRecovery, stored, error) &&
+                           AuthorJson::Json::parse(stored).at("contentEncoding") == "base64" &&
+                           Editor::DocumentRecovery::DecodeCheckpoint(stored, recoveredType, recoveredContent,
+                                                                      error) &&
+                           recoveredType == "animation_clip" && recoveredContent == binary,
+                       "Binary animation drafts recover every byte through bounded canonical base64");
+            auto malformed = AuthorJson::Json::parse(stored);
+            malformed["content"] = "YQ=A";
+            test.Check(!Editor::DocumentRecovery::DecodeCheckpoint(malformed.dump(), recoveredType,
+                                                                   recoveredContent, error) &&
+                           recoveredContent == binary,
+                       "Malformed recovery base64 does not replace the previous draft");
+            const AuthorJson::Json legacy{{"schemaVersion", 1},
+                                          {"document", binaryDraft.Id().ToString()},
+                                          {"type", "script"},
+                                          {"path", ""},
+                                          {"content", "return {}"}};
+            test.Check(Editor::DocumentRecovery::DecodeCheckpoint(legacy.dump(), recoveredType,
+                                                                  recoveredContent, error) &&
+                           recoveredContent == "return {}",
+                       "Legacy plain UTF-8 recovery envelopes remain compatible");
+            for (const auto type :
+                 {"skeleton", "animation_clip", "mesh_skin_binding", "blend_tree", "particle_effect",
+                  "collision_shape", "physics_material", "navmesh", "terrain", "ui_document"})
+                test.Check(Editor::DocumentRecovery::AuthorType(
+                               "." + std::string(Editor::DocumentRecovery::AuthorSuffix(type)), {}) == type,
+                           "Every new authored domain has a matching open/save extension");
+            PhysicsMaterialAsset physics;
+            test.Check(WritePhysicsMaterial(physics, structured, error), "Prepare authored physics material");
+            Editor::AssetDocument physicsDraft{StableId::FromWords(8, 5), {}, "physics_material", structured};
+            const auto physicsPath = files.root / "Surface.physics-material";
+            files.files.push_back(physicsPath);
+            test.Check(Editor::DocumentRecovery::Save(physicsDraft, physicsPath, files.root, error) &&
+                           Editor::DocumentRecovery::Read(physicsPath, stored, error) && stored == structured,
+                       "New domain Save validates and atomically preserves its author source");
+            Editor::AssetDocument fontPreview{StableId::FromWords(8, 6), {}, "font", "{}"};
+            test.Check(!Editor::DocumentRecovery::Save(fontPreview, files.root / "Original.ttf", files.root,
+                                                       error) &&
+                           !std::filesystem::exists(files.root / "Original.ttf"),
+                       "Read-only font preview cannot overwrite an original font file");
         } else test.Check(false,error);
 
         PrefabAsset prefab{SimpleScene(),{}};

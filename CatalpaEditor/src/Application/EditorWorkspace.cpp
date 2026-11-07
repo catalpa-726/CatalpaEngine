@@ -1,3 +1,5 @@
+#include "Panels/NetworkDiagnosticsPanel.h"
+#include "Panels/AudioMixerPanel.h"
 #include "catpch.h"
 #include "EditorWorkspace.h"
 #include "EditorProject.h"
@@ -41,8 +43,7 @@ namespace Catalpa::Editor {
 
     const char* EditorWorkspace::Text(const char* key, const char* fallback) const
     {
-        const auto found = m_Strings.find(key);
-        return found == m_Strings.end() ? fallback : found->second.c_str();
+        return m_Catalog.Text(key, fallback);
     }
 
     std::string EditorWorkspace::Label(const char* key, const char* fallback, const char* id) const
@@ -61,32 +62,20 @@ namespace Catalpa::Editor {
 
     void EditorWorkspace::LoadLanguage()
     {
-        m_Strings.clear();
+        if (m_Settings.language == "zh-CN" &&
+            (!ImGui::GetIO().FontDefault || !ImGui::GetIO().FontDefault->IsGlyphInFont(0x4e2d))) {
+            // 当前 ImGui 在 ImFont 上查询源字体覆盖；不触发新字号烘焙或替换现用字体。
+            CAT_WARN("Configured workspace font does not cover Chinese; retaining the available language.");
+            m_Settings.language = m_Catalog.Language();
+            return;
+        }
         std::string bytes, error;
-        const auto path = m_ExecutableDirectory / "Resources" / "Localization" / "en-US.json";
-        if (!ReadWorkspaceText(path, bytes, 64 * 1024, error)) {
-            CAT_WARN("Language pack unavailable; using built-in English: {0}", error);
-            return;
-        }
-        // 当前固定字体仅支持英文。限制 JSON 深度，后续中文适配需同时替换字体。
-        bool tooDeep = false;
-        const auto document = nlohmann::json::parse(bytes, [&tooDeep](int depth, auto, auto&) {
-            if (depth > 4) tooDeep = true;
-            return depth <= 4;
-        }, false);
-        if (tooDeep || document.is_discarded() || !document.is_object()
-            || document.value("language", nlohmann::json()) != "en-US"
-            || !document.contains("strings") || !document["strings"].is_object()) {
-            CAT_WARN("Invalid English language pack; using built-in English.");
-            return;
-        }
-        for (const auto& [key, value] : document["strings"].items()) {
-            if (!value.is_string()) continue;
-            const auto& text = value.get_ref<const std::string&>();
-            // 禁止语言包注入 ImGui 隐藏 ID，也避免当前字体无法显示的字符。
-            if (text.empty() || text.size() > 2048 || text.find("##") != std::string::npos
-                || !std::all_of(text.begin(), text.end(), [](unsigned char c) { return c >= 32 && c < 127; })) continue;
-            m_Strings.emplace(key, text);
+        const auto path =
+            m_ExecutableDirectory / "Resources" / "Localization" / (m_Settings.language + ".json");
+        if (!ReadWorkspaceText(path, bytes, 512 * 1024, error) ||
+            !m_Catalog.Load(bytes, m_Settings.language, error)) {
+            CAT_WARN("Language pack rejected; retaining {0}: {1}", m_Catalog.Language(), error);
+            m_Settings.language = m_Catalog.Language();
         }
     }
 
@@ -337,6 +326,10 @@ namespace Catalpa::Editor {
         if (!m_SavedForExit && m_AutoSave && m_FrameSeen && ImGui::GetCurrentContext()) SaveWorkspace();
         m_Files.clear();
         m_SelectedFile.clear();
+        if (m_Network)
+            m_Network->Close(Application::Get());
+        m_Network.reset();
+        m_AudioMixer.reset();
         m_Editing.reset();
         m_Build.reset();
         m_Content.reset();
@@ -410,6 +403,15 @@ namespace Catalpa::Editor {
                                        &m_Settings.showConsole);
             m_Dirty |= ImGui::MenuItem(Label("panel.dependencies", "Dependencies", "Dependencies").c_str(),
                                        nullptr, &m_Settings.showDependencies);
+            if (ImGui::MenuItem(Label("panel.audio_mixer", "Audio mixer", "AudioMixerPanel").c_str(), nullptr,
+                                &m_ShowAudioMixer))
+                m_Dirty = true;
+            if (ImGui::MenuItem(Label("panel.network", "Loopback network", "NetworkPanel").c_str(), nullptr,
+                                &m_ShowNetwork)) {
+                if (!m_ShowNetwork && m_Network)
+                    m_Network->Close(Application::Get());
+                m_Dirty = true;
+            }
             ImGui::Separator();
             if (ImGui::MenuItem(Label("action.reset", "Reset Layout", "Reset").c_str())) m_Action = Action::ResetLayout;
             ImGui::EndMenu();
@@ -615,7 +617,14 @@ namespace Catalpa::Editor {
                 m_Settings.vsync = vsync;
                 m_Dirty = true;
             }
-            ImGui::TextUnformatted(Text("setting.language", "Language: English (en-US)"));
+            int language = m_Settings.language == "zh-CN" ? 1 : 0;
+            const char* names[]{"English (en-US)", "简体中文 (zh-CN)"};
+            if (ImGui::Combo(Label("setting.language", "Language", "WorkspaceLanguage").c_str(), &language,
+                             names, 2)) {
+                m_Settings.language = language ? "zh-CN" : "en-US";
+                LoadLanguage();
+                m_Dirty = true;
+            }
             ImGui::TextUnformatted(Text("setting.theme", "Theme: Dark Gray / Emerald"));
             ImGui::Separator();
             if (ImGui::Button(Label("action.save", "Save Workspace", "Save").c_str())) m_Action = Action::Save;
@@ -628,7 +637,12 @@ namespace Catalpa::Editor {
             if (m_Project) {
                 const bool busy = (m_Build && m_Build->Busy()) ||
                     (m_Editing && (m_Editing->HasDirtyDocuments() || m_Editing->HasPendingWork()));
-                m_ProjectSettings.Draw(*m_Project, busy, m_StatusError);
+                m_ProjectSettings.Draw(
+                    *m_Project, busy,
+                    [this](const char* key, const char* fallback, const char* id) {
+                        return id ? Label(key, fallback, id) : std::string(Text(key, fallback));
+                    },
+                    m_StatusError);
             }
             if (!m_StatusError.empty()) ImGui::TextWrapped("%s", m_StatusError.c_str());
             if (!m_AutoSave) ImGui::TextWrapped("%s", Text("setting.retry", "Automatic saving is disabled. Save Workspace retries explicitly; Reload Workspace keeps current changes if loading fails."));
@@ -677,6 +691,24 @@ namespace Catalpa::Editor {
         const PanelText text = [this](const char* key, const char* fallback, const char* id) {
             return id ? Label(key, fallback, id) : std::string(Text(key, fallback));
         };
+        if (m_ShowAudioMixer) {
+            if (!m_AudioMixer)
+                m_AudioMixer = std::make_unique<AudioMixerPanel>();
+            if (ImGui::Begin(Label("panel.audio_mixer", "Audio mixer", "Catalpa.AudioMixer").c_str(),
+                             &m_ShowAudioMixer))
+                m_AudioMixer->Draw(Application::Get(), text, m_StatusError);
+            ImGui::End();
+        }
+        if (m_ShowNetwork) {
+            if (!m_Network)
+                m_Network = std::make_unique<NetworkDiagnosticsPanel>();
+            if (ImGui::Begin(Label("panel.network", "Loopback network", "Catalpa.Network").c_str(),
+                             &m_ShowNetwork))
+                m_Network->Draw(Application::Get(), text, m_StatusError);
+            ImGui::End();
+            if (!m_ShowNetwork)
+                m_Network->Close(Application::Get());
+        }
         if (m_Content && m_Build)
             m_Content->Draw(m_Settings.showContent, m_Project ? m_Project->GetSession() : nullptr,
                             m_ExecutableDirectory / "Resources" / "Shaders", *m_Build, text);

@@ -10,6 +10,8 @@
 #include "Runtime/Systems/TransformSystem.h"
 #include "Log/Log.h"
 #include "imgui.h"
+#include <nlohmann/json.hpp>
+#include "Core/Serialization/JsonArchive.h"
 
 namespace Catalpa::Editor {
     BuildPanel::BuildPanel(JobSystem& jobs, AssetManager& assets, SceneManager& scenes)
@@ -65,6 +67,11 @@ namespace Catalpa::Editor {
                 job, error))
             return false;
         // 烘焙进行中保留上一次可用的目录和选择；新目录安装成功后才释放旧缓存。
+        if (m_Recipe && m_Recipe->source != task->recipe->source) {
+            m_Watcher.Clear();
+            m_WatchEnabled = false;
+            m_ReimportPending = false;
+        }
         m_Task = std::move(task);
         m_Job = std::move(job);
         m_Error.clear();
@@ -91,6 +98,10 @@ namespace Catalpa::Editor {
     }
 
     void BuildPanel::CloseProject() {
+        m_Watcher.Clear();
+        m_WatchEnabled = false;
+        m_ReimportPending = false;
+        m_WatchError.clear();
         Cancel();
         std::string error;
         if (m_Job.HasValue() && !m_Jobs.Wait(m_Job, error))
@@ -188,6 +199,41 @@ namespace Catalpa::Editor {
         // Runtime 安装整份已发布目录，本面板只请求本次源资产及它的依赖。
         m_Result = std::move(next);
         m_Recipe = std::move(recipe);
+        // 报告由已成功的生产链发布；只观察其中明确记录的输入，不猜测来源目录。
+        try {
+            VirtualFileSystem fs;
+            VirtualPath path;
+            std::vector<std::byte> bytes;
+            std::vector<std::filesystem::path> inputs{m_Recipe->source, m_Recipe->project.projectFile};
+            const auto relative = m_Result.report.lexically_relative(m_Result.cookedRoot);
+            if (!fs.MountReadOnly("watch-report", m_Result.cookedRoot, 0, m_WatchError) ||
+                !VirtualPath::Parse("watch-report:/" + Tools::AssetPathText(relative), path, m_WatchError) ||
+                !fs.ReadFile(path, 4 * 1024 * 1024, bytes, m_WatchError))
+                throw std::runtime_error(m_WatchError);
+            std::unique_ptr<ArchiveValue> checked;
+            ArchiveError diagnostic;
+            ArchiveLimits limits;
+            limits.maxBytes = 4 * 1024 * 1024;
+            limits.maxDepth = 24;
+            limits.maxNodes = 262144;
+            if (!JsonArchive::Parse({reinterpret_cast<const char*>(bytes.data()), bytes.size()}, checked,
+                                    diagnostic, limits))
+                throw std::runtime_error(diagnostic.ToString());
+            const auto document = nlohmann::json::parse(bytes.begin(), bytes.end());
+            const auto& values = document.at("inputs");
+            if (!values.is_array() || values.size() > 4094)
+                throw std::runtime_error("Watch input budget exceeded");
+            for (const auto& value : values)
+                inputs.push_back(std::filesystem::u8path(value.at("path").get<std::string>()));
+            if (!m_Watcher.SetPaths(inputs, m_WatchError)) {
+                m_WatchEnabled = false;
+                m_Watcher.Clear();
+            }
+        } catch (const std::exception& e) {
+            m_WatchError = e.what();
+            m_WatchEnabled = false;
+            m_Watcher.Clear();
+        }
         m_RecordIndices.clear();
         for (size_t i = 0; i < m_Result.records.size(); ++i)
             m_RecordIndices.emplace(m_Result.records[i].id, i);
@@ -241,6 +287,19 @@ namespace Catalpa::Editor {
     }
 
     void BuildPanel::Update(const CameraViewport& viewport) {
+        if (m_WatchEnabled && m_Recipe) {
+            std::vector<std::filesystem::path> changed;
+            if (!m_Watcher.Poll(changed, m_WatchError))
+                m_WatchEnabled = false;
+            else if (!changed.empty())
+                m_ReimportPending = true;
+        }
+        if (m_ReimportPending && !Busy() && m_Recipe) {
+            auto recipe = *m_Recipe;
+            m_ReimportPending = false;
+            if (!Start(std::move(recipe), m_WatchError))
+                m_WatchEnabled = false;
+        }
         if (std::exchange(m_ReturnScene, false) && m_Scenes.GetScene(m_PreviousScene)) {
             const auto status = m_Scenes.SetActive(m_PreviousScene);
             if (!status.IsSuccess())
@@ -533,6 +592,20 @@ namespace Catalpa::Editor {
         if (!visible)
             return;
         if (ImGui::Begin(text("panel.build", "Build", "Catalpa.Build").c_str(), &visible)) {
+            if (m_Recipe) {
+                ImGui::BeginDisabled(!m_Watcher.HasInputs());
+                ImGui::Checkbox(text("build.watch", "Watch source changes", "BuildWatch").c_str(),
+                                &m_WatchEnabled);
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::BeginDisabled(Busy());
+                if (ImGui::Button(text("build.reimport", "Reimport", "BuildReimport").c_str()))
+                    m_ReimportPending = true;
+                ImGui::EndDisabled();
+                if (!m_WatchError.empty())
+                    ImGui::TextWrapped("%s", m_WatchError.c_str());
+            }
+
             if (m_Task) {
                 std::lock_guard lock(m_Task->mutex);
                 ImGui::TextUnformatted(m_Task->phase.c_str());

@@ -4,7 +4,7 @@
 
 namespace Catalpa {
     // 多实例共用受检CPU几何及稳定材质槽名；不保存实体Transform或GPU所有权。
-    // LOD与skin binding仍由对应后续阶段扩展，当前cooked loader必须拒绝不支持的版本/字段。
+    // LOD 链由 ModelAsset/Renderer 关联，蒙皮权重由独立 MeshSkinBinding 持有，不混入基础几何载荷。
     struct MeshAsset {
         MeshResourceRef mesh;
         std::vector<std::string> materialSlots;

@@ -61,6 +61,23 @@ namespace Catalpa {
             || (time.tickCount != 0 && static_cast<uint64_t>(time.tickCount - 1) > std::numeric_limits<uint64_t>::max() - time.firstTick))
             return { Math::MathError::OutOfRange, "Render frame time is invalid or overflows the tick range" };
         try {
+            std::map<RenderInstanceId, const RenderSkinningInput*> skins;
+            for (const auto& skin : packet.skinning) {
+                std::string error;
+                const bool previouslyValidated =
+                    std::any_of(m_Frame.skinning.begin(), m_Frame.skinning.end(), [&](const auto& previous) {
+                        return previous.binding.GetId() == skin.binding.GetId() &&
+                               previous.binding.GetVersion() == skin.binding.GetVersion() &&
+                               previous.binding.Get() == skin.binding.Get();
+                    });
+                if (!skin.binding.HasValue() || !skin.binding.Get()->meshVersion.HasValue() ||
+                    !skin.binding.Get()->skeletonVersion.HasValue() ||
+                    skin.palette.size() != skin.binding.Get()->skeletonVersion.Get()->joints.size() ||
+                    (!previouslyValidated && !ValidateMeshSkinBinding(*skin.binding.Get(), error)) ||
+                    !skins.emplace(skin.id, &skin).second)
+                    return {Math::MathError::OutOfRange, "Invalid or duplicate fixed skinning input"};
+            }
+
             std::set<RenderInstanceId> instances;
             for (const auto& transform : packet.transforms) {
                 if (!transform.id.HasValue() || transform.id.scene != packet.sceneIdentity || !instances.insert(transform.id).second)
@@ -110,6 +127,30 @@ namespace Catalpa {
                     return { Math::MathError::OutOfRange, "Material snapshot requires mesh asset identity" };
                 RenderMeshInstance expected;
                 if (const auto status = BuildRenderMeshInstance(instance.id, instance.mesh, instance.worldMatrix, instance.color, expected); !status.IsSuccess()) return status;
+                if (const auto entry = skins.find(instance.id); entry != skins.end()) {
+                    const auto& skin = *entry->second;
+                    if (instance.meshVersion.Get() != skin.binding.Get()->meshVersion.Get() ||
+                        instance.meshVersion.GetId() != skin.binding.Get()->meshVersion.GetId() ||
+                        instance.meshVersion.GetVersion() != skin.binding.Get()->meshVersion.GetVersion())
+                        return {Math::MathError::OutOfRange,
+                                "Skinning input and render mesh versions disagree"};
+                    Aabb local;
+                    for (const auto& matrix : skin.palette) {
+                        Aabb transformed, merged;
+                        if (const auto status =
+                                TransformBounds(instance.mesh->GetData().localBounds, matrix, transformed);
+                            !status.IsSuccess())
+                            return status;
+                        if (const auto status = MergeBounds(local, transformed, merged); !status.IsSuccess())
+                            return status;
+                        local = merged;
+                    }
+                    if (const auto status =
+                            TransformBounds(local, instance.worldMatrix, expected.worldBounds);
+                        !status.IsSuccess())
+                        return status;
+                    skins.erase(entry);
+                }
                 for (int column = 0; column < 3; ++column)
                     for (int row = 0; row < 3; ++row) {
                         const double actual = instance.normalMatrix[column][row], required = expected.normalMatrix[column][row];
@@ -125,6 +166,8 @@ namespace Catalpa {
                             || instance.worldBounds.maximum[axis] < expected.worldBounds.maximum[axis])
                             return { Math::MathError::OutOfRange, "Mesh world bounds are not conservative" };
             }
+            if (!skins.empty())
+                return {Math::MathError::OutOfRange, "Skinning input has no mesh instance"};
             std::set<uint64_t> views;
             if (packet.lights.size() > MaximumRenderLights)
                 return { Math::MathError::OutOfRange, "Render light count exceeds the explicit 32-light budget" };

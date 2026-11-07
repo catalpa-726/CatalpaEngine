@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include "Core/Application.h"
+
 #ifdef CATALPA_PLATFORM_WINDOW
 
 int main(int argc, char** argv) {

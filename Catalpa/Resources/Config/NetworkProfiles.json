@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "transport": "loopback",
+  "tickRate": 60,
+  "maxEntities": 64,
+  "maxTombstones": 256,
+  "maxRetiredIdentities": 1024,
+  "maxPacketBytes": 61440,
+  "delayTicks": 2,
+  "dropEvery": 5,
+  "duplicateEvery": 7,
+  "reorder": true
+}

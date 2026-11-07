@@ -51,7 +51,7 @@ namespace Catalpa {
         bool operator==(const ShaderEntryPointMetadata&) const = default;
     };
     struct ShaderMetadata {
-        uint32_t schemaVersion = 2;
+        uint32_t schemaVersion = 3; // v3: StorageBuffer最后一成员允许arrayCount=0的运行期数组。
         std::string targetEnvironment = "vulkan1.3";
         uint32_t spirvVersion = 0x00010500;
         std::string bytecodeSha256;

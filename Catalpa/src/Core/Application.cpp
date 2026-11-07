@@ -38,7 +38,8 @@ namespace Catalpa {
     void Application::OnEvent(Event& e)
     {
         // 原始事件先进入收集器；玩法是否消费由本帧 UI 捕获与焦点统一决定。
-        if (m_Runtime) m_Runtime->OnInputEvent(e);
+        if (m_Runtime)
+            e.Handled = m_Runtime->OnInputEvent(e) || e.Handled;
         EventDispatcher dispatcher(e);
         if (e.GetEventType() == EventType::WindowClose) {
             // 正常关闭先交给宿主层完成文档确认；运行时错误仍可用非零退出码终止。
@@ -69,6 +70,31 @@ namespace Catalpa {
     void Application::PushOverlay(std::unique_ptr<Layer> overlay) { m_PendingLayers.push_back({ .layer = std::move(overlay), .overlay = true }); }
 
     AssetManager& Application::GetAssets() { return m_Runtime->GetAssets(); }
+    const std::filesystem::path& Application::GetResourceRoot() const {
+        return m_Runtime->GetResourceRoot();
+    }
+    bool Application::StartPackage(const std::filesystem::path& path, std::string& error) {
+        return m_Runtime->StartPackage(path, error);
+    }
+    bool Application::StopPackage(std::string& error) {
+        return m_Runtime->StopPackage(error);
+    }
+    bool Application::RouteGameUIInput(const UIInputEvent& event, bool& consumed, std::string& error) {
+        return m_Runtime->RouteGameUIInput(event, consumed, error);
+    }
+    TextInputSnapshot Application::GetGameUITextInput() const {
+        return m_Runtime->GetGameUITextInput();
+    }
+    bool Application::PollScriptSceneSwitch(SceneHandle& candidate, std::string& error) {
+        return m_Runtime->PollScriptSceneSwitch(candidate, error);
+    }
+    AudioService& Application::GetAudio() {
+        return m_Runtime->GetAudio();
+    }
+    bool Application::SetEditorGameUI(uint64_t id, std::shared_ptr<const UIDrawData> data,
+                                      std::string& error) {
+        return m_Runtime->SetEditorGameUI(id, std::move(data), error);
+    }
     JobSystem& Application::GetJobs() { return m_Runtime->GetJobs(); }
     SceneManager& Application::GetScenes() { return m_Runtime->GetScenes(); }
     const FrameTime& Application::GetFrameTime() const { return m_Runtime->GetFrameTime(); }
@@ -116,6 +142,9 @@ namespace Catalpa {
     bool Application::PollEditorPick(uint64_t ticket, PickingResult& result) { return m_Runtime->PollEditorPick(ticket, result); }
     void Application::CancelEditorPick(uint64_t ticket) { m_Runtime->CancelEditorPick(ticket); }
     bool Application::GetGpuFrameMilliseconds(double& milliseconds) const { return m_Runtime->GetGpuFrameMilliseconds(milliseconds); }
+    bool Application::GetManagedGpuPayloadBytes(uint64_t& used, uint64_t& budget) const {
+        return m_Runtime->GetManagedGpuPayloadBytes(used, budget);
+    }
     bool Application::AddDebugBounds(const Aabb& bounds, const Math::Vec4& color, std::string& error, uint64_t surfaceId)
     { return m_Runtime->AddDebugBounds(bounds, color, error, surfaceId); }
 

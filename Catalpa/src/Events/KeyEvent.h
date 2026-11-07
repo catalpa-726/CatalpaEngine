@@ -54,19 +54,19 @@ namespace Catalpa {
 		EVENT_CLASS_TYPE(KeyReleased)
 	};
 
-	class KeyTypedEvent : public KeyEvent
-	{
-	public:
-		KeyTypedEvent(const KeyCode keycode) : KeyEvent(keycode) {}
-
-		std::string ToString() const override
-		{
-			std::stringstream ss;
-			ss << "KeyTypedEvent: " << m_KeyCode;
-			return ss.str();
-		}
-
-		EVENT_CLASS_TYPE(KeyTyped)
-	};
-
+        // 文本事件传Unicode scalar，与物理KeyCode的uint16协议分开。
+        class KeyTypedEvent : public Event {
+          public:
+            explicit KeyTypedEvent(uint32_t codepoint) : m_Codepoint(codepoint) {}
+            uint32_t GetCodepoint() const noexcept {
+                return m_Codepoint;
+            }
+            std::string ToString() const override {
+                return "KeyTypedEvent: " + std::to_string(m_Codepoint);
+            }
+            EVENT_CLASS_TYPE(KeyTyped)
+            EVENT_CLASS_CATEGORY(EventCategoryKeyboard | EventCategoryInput)
+          private:
+            uint32_t m_Codepoint;
+        };
 }

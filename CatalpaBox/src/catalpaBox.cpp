@@ -1,8 +1,10 @@
 #include <Catalpa.h>
 
+#if !defined(CATALPA_RUNTIME_ONLY)
 #include "Application/EditorWorkspace.h"
 #include "BoxDefaultEnvironment.h"
 #include "BoxGameplay.h"
+#endif
 #include "Core/PlatformServices.h"
 #include "Scene/SceneManager.h"
 #include "BoxCommandLine.h"
@@ -12,6 +14,7 @@ namespace {
     Catalpa::BoxLaunchOptions sandboxOptions;
 }
 
+#if !defined(CATALPA_RUNTIME_ONLY)
 class BoxLayer final : public Catalpa::Layer {
 public:
     BoxLayer(bool reversedZ,bool errorMaterial) : Layer("BoxLayer"), m_ReversedZ(reversedZ), m_ErrorMaterial(errorMaterial) {}
@@ -56,12 +59,35 @@ private:
     bool m_ErrorMaterial = false;
 };
 
+#endif
+
+class PackageLayer final : public Catalpa::Layer {
+  public:
+    explicit PackageLayer(std::filesystem::path file) : Layer("PackageSession"), m_File(std::move(file)) {}
+    void OnAttach() override {
+        std::string error;
+        if (!Catalpa::Application::Get().StartPackage(m_File, error)) {
+            CAT_ERROR("Package startup failed: {0}", error);
+            Catalpa::Application::Get().RequestClose(1);
+        }
+    }
+
+  private:
+    std::filesystem::path m_File;
+};
+
 class CatalpaBox : public Catalpa::Application {
 public:
     // CatalpaBox 是唯一启动应用；编辑器静态库只提供由宿主挂载的功能。
     explicit CatalpaBox(const Catalpa::BoxLaunchOptions& options) {
+        if (!options.package.empty()) {
+            PushLayer(std::make_unique<PackageLayer>(options.package));
+            return;
+        }
+#if !defined(CATALPA_RUNTIME_ONLY)
         PushLayer(std::make_unique<BoxLayer>(options.reversedZ,options.errorMaterial));
         PushOverlay(std::make_unique<Catalpa::Editor::EditorWorkspace>(options.project));
+#endif
     }
 
     ~CatalpaBox() {}
@@ -78,3 +104,6 @@ Catalpa::ApplicationStartupResult Catalpa::HandleApplicationArguments(int, char*
     if(!GetProcessArguments(arguments,error)||arguments.empty()) {CAT_ERROR("Cannot read arguments: {0}",error);return {true,2};}
     return BoxCommandLine::Dispatch(std::span<const std::string>(arguments).subspan(1),sandboxOptions);
 }
+
+// 公共头不定义 main；唯一宿主在这里显式选择入口。
+#include "Core/Entry.h"

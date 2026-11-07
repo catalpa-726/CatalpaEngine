@@ -15,8 +15,8 @@ namespace Catalpa {
         switch (type) { case MeshIndexType::UInt16: return 2; case MeshIndexType::UInt32: return 4; default: return 0; }
     }
 
-    // 作者/生成器拥有的 CPU 数据。此步只支持单 interleaved float stream、triangle list；
-    // planar、skin、LOD 和正式资产身份留对应后续阶段，不隐式修复或改写原数据。
+    // 作者/生成器拥有的 CPU 几何，只支持单 interleaved float stream、triangle list。
+    // skin 权重、LOD 关系和资产身份由独立领域对象关联；本结构不隐式修复或改写源数据。
     struct MeshData {
         uint32_t vertexCount = 0;
         uint32_t vertexStride = 0;

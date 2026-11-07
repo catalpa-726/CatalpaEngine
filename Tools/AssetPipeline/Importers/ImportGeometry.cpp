@@ -90,7 +90,7 @@ namespace Catalpa::Tools {
 
     bool BuildImportedMesh(AssetBuildContext& ctx, std::vector<ImportVertex> vertices,
                            std::vector<uint32_t> indices, bool normals, bool uv, bool tangents,
-                           MeshAsset& out, std::string& e) {
+                           MeshAsset& out, std::string& e, std::vector<uint32_t>* sourceVertexRemap) {
         if (!ctx.CheckCancelled(e))
             return false;
         const auto& limits = ctx.request.settings;
@@ -133,6 +133,17 @@ namespace Catalpa::Tools {
             }
         const bool makeTangents = uv && !tangents && limits.generateTangents;
         const bool expandCorners = !normals || makeTangents;
+        // 权重严格按原顶点索引传播到切线接缝/逐角派生顶点，不按坐标近似匹配。
+        std::vector<uint32_t> remap;
+        if (sourceVertexRemap) {
+            if (expandCorners)
+                remap = indices;
+            else {
+                remap.resize(vertices.size());
+                for (size_t i = 0; i < remap.size(); ++i)
+                    remap[i] = uint32_t(i);
+            }
+        }
         const size_t outputVertices = expandCorners ? indices.size() : vertices.size();
         if (outputVertices > limits.maxVertices) {
             e = "Corner expansion exceeds the vertex limit";
@@ -240,6 +251,8 @@ namespace Catalpa::Tools {
         if (!ctx.CheckCancelled(e))
             return false;
         out = std::move(candidate);
+        if (sourceVertexRemap)
+            sourceVertexRemap->swap(remap);
         return true;
     }
 

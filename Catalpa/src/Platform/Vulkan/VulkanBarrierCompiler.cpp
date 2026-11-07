@@ -4,6 +4,31 @@
 #include "RHI/RHIBufferDesc.h"
 
 namespace Catalpa {
+    namespace {
+        template <class Barrier>
+        bool Ownership(const RHIQueueTransfer& transfer, const VulkanResourceRegistry& registry,
+                       Barrier& native) noexcept {
+            if (transfer.phase == RHIOwnershipPhase::None)
+                return !transfer.source.HasValue() && !transfer.destination.HasValue();
+            const auto source = registry.GetQueueInfo(transfer.source),
+                       destination = registry.GetQueueInfo(transfer.destination);
+            if (!source.id.HasValue() || !destination.id.HasValue() || source.family == destination.family)
+                return false;
+            native.srcQueueFamilyIndex = source.family;
+            native.dstQueueFamilyIndex = destination.family;
+            if (transfer.phase == RHIOwnershipPhase::Release) {
+                native.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+                native.dstAccessMask = VK_ACCESS_2_NONE;
+                return true;
+            }
+            if (transfer.phase == RHIOwnershipPhase::Acquire) {
+                native.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+                native.srcAccessMask = VK_ACCESS_2_NONE;
+                return true;
+            }
+            return false;
+        }
+    } // namespace
 
     // 显式转换已经声明的访问，不推导未声明的依赖。
     bool ConvertVulkanTextureAccess(
@@ -19,6 +44,9 @@ namespace Catalpa {
         case RHIPipelineStage::DepthStencilTests: stage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT; break;
         case RHIPipelineStage::ColorAttachmentOutput: stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT; break;
         case RHIPipelineStage::FragmentShader: stage = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT; break;
+        case RHIPipelineStage::ComputeShader:
+            stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            break;
         case RHIPipelineStage::AllCommands: stage = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT; break;
         case RHIPipelineStage::Transfer: stage = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT; break;
         default: return false;
@@ -102,7 +130,9 @@ namespace Catalpa {
         case RHIResourceAccess::SampledRead:
             access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
             return source.layout == RHITextureLayout::ShaderReadOnly &&
-                (source.stage == RHIPipelineStage::FragmentShader || source.stage == RHIPipelineStage::AllCommands);
+                   (source.stage == RHIPipelineStage::FragmentShader ||
+                    source.stage == RHIPipelineStage::ComputeShader ||
+                    source.stage == RHIPipelineStage::AllCommands);
 
         default:
             return false;
@@ -152,6 +182,8 @@ namespace Catalpa {
                 native.dstStageMask, native.dstAccessMask, native.newLayout))
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
+        if (!Ownership(desc.transfer, registry, native))
+            return {RHIErrorCode::InvalidDescription, 0, "VulkanTextureBarrier/QueueTransfer"};
         barrier = native;
         return {};
     }
@@ -161,6 +193,12 @@ namespace Catalpa {
         switch (source.stage) {
             case RHIPipelineStage::None: stage = VK_PIPELINE_STAGE_2_NONE; break;
             case RHIPipelineStage::Host: stage = VK_PIPELINE_STAGE_2_HOST_BIT; break;
+            case RHIPipelineStage::ComputeShader:
+                stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+                break;
+            case RHIPipelineStage::DrawIndirect:
+                stage = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+                break;
             case RHIPipelineStage::Transfer: stage = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT; break;
             case RHIPipelineStage::VertexInput: stage = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT; break;
             case RHIPipelineStage::VertexShader: stage = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT; break;
@@ -179,9 +217,30 @@ namespace Catalpa {
                 return true;
             case RHIResourceAccess::UniformRead:
                 access = VK_ACCESS_2_UNIFORM_READ_BIT;
-                return HasBufferUsage(usage, RHIBufferUsage::Uniform)
-                    && (source.stage == RHIPipelineStage::VertexShader || source.stage == RHIPipelineStage::FragmentShader
-                        || source.stage == RHIPipelineStage::VertexFragmentShader || source.stage == RHIPipelineStage::AllCommands);
+                return HasBufferUsage(usage, RHIBufferUsage::Uniform) &&
+                       (source.stage == RHIPipelineStage::VertexShader ||
+                        source.stage == RHIPipelineStage::FragmentShader ||
+                        source.stage == RHIPipelineStage::VertexFragmentShader ||
+                        source.stage == RHIPipelineStage::ComputeShader ||
+                        source.stage == RHIPipelineStage::AllCommands);
+            case RHIResourceAccess::StorageRead:
+            case RHIResourceAccess::StorageWrite:
+            case RHIResourceAccess::StorageReadWrite:
+                access = source.access == RHIResourceAccess::StorageRead ? VK_ACCESS_2_SHADER_STORAGE_READ_BIT
+                         : source.access == RHIResourceAccess::StorageWrite
+                             ? VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
+                             : VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+                return HasBufferUsage(usage, RHIBufferUsage::Storage) &&
+                       (source.stage == RHIPipelineStage::ComputeShader ||
+                        source.stage == RHIPipelineStage::FragmentShader ||
+                        source.stage == RHIPipelineStage::VertexShader ||
+                        source.stage == RHIPipelineStage::VertexFragmentShader ||
+                        source.stage == RHIPipelineStage::AllCommands);
+            case RHIResourceAccess::IndirectRead:
+                access = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+                return HasBufferUsage(usage, RHIBufferUsage::Indirect) &&
+                       (source.stage == RHIPipelineStage::DrawIndirect ||
+                        source.stage == RHIPipelineStage::AllCommands);
             case RHIResourceAccess::HostRead:
                 access = VK_ACCESS_2_HOST_READ_BIT;
                 return source.stage == RHIPipelineStage::Host || source.stage == RHIPipelineStage::AllCommands;
@@ -249,6 +308,8 @@ namespace Catalpa {
             !ConvertVulkanBufferAccess(desc.after, record->desc.usage, native.dstStageMask, native.dstAccessMask))
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
+        if (!Ownership(desc.transfer, registry, native))
+            return {RHIErrorCode::InvalidDescription, 0, "VulkanBufferBarrier/QueueTransfer"};
         barrier = native;
         return {};
     }

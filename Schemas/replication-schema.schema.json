@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Catalpa replication-schema protocol version 1",
+  "description": "Documents the validated ReplicationSchema C++ value contract, not a JSON configuration loader. Current engine constructs DefaultReplicationSchema and validates exact field-ID/name/type correspondence; authority may be server or owner. Snapshots use a separate bounded explicit little-endian binary codec with stable entity IDs, generations, ticks and explicit spawn/despawn; native component memory is never transmitted.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      }
+    },
+    "version": {
+      "const": 1
+    },
+    "fields": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5
+          },
+          "name": {
+            "enum": [
+              "translation",
+              "rotation",
+              "scale",
+              "name",
+              "visible"
+            ]
+          },
+          "type": {
+            "enum": [
+              "vector3",
+              "quaternion",
+              "string",
+              "boolean"
+            ]
+          },
+          "authority": {
+            "enum": [
+              "server",
+              "owner"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "type",
+          "authority"
+        ]
+      }
+    }
+  },
+  "required": [
+    "id",
+    "version",
+    "fields"
+  ]
+}

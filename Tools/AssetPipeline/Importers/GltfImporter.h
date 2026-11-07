@@ -6,7 +6,7 @@ namespace Catalpa::Tools {
     class GltfImporter final : public IAssetImporter {
       public:
         std::string_view Name() const noexcept override {
-            return "fastgltf/core-v2";
+            return "fastgltf/core-v4-cani1-cskn2-lod-mips-bc1";
         }
 
         bool Import(AssetBuildContext&, AssetImportResult&, std::string&) const override;

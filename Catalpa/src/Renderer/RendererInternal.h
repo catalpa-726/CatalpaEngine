@@ -4,6 +4,8 @@
 #include "Renderer/Lighting/LightData.h"
 #include "RHI/RHIDevice.h"
 #include "RHI/RHIQueryDesc.h"
+#include "Renderer/Passes/SkinningPass.h"
+#include "Renderer/Passes/GpuScenePasses.h"
 
 namespace Catalpa {
     struct Renderer::DrawResources {
@@ -37,9 +39,16 @@ namespace Catalpa {
     };
 
     struct Renderer::Surface {
-        struct FrameBuffers { BufferHandle lights{}, shadowView{}, debug{}; uint64_t debugCapacity = 0; };
+        struct FrameBuffers {
+            BufferHandle lights{}, shadowView{}, debug{};
+            uint64_t debugCapacity = 0;
+            std::vector<SkinningFrame> skins;
+            GpuSceneFrame gpu;
+        };
         RHIDevice& device;
         RenderScene scene;
+        GameUIPass gameUI;
+        std::shared_ptr<const UIDrawData> gameUIDraw;
         RendererFrameContext uniforms;
         std::shared_ptr<Targets> targets;
         std::shared_ptr<Targets> publishedTargets; // 跳帧/resize时显示帧仍对应旧目标，不能读取未提交的新目标。
@@ -60,7 +69,8 @@ namespace Catalpa {
         uint32_t imageMip = 0, imageChannels = 15;
         std::shared_ptr<PipelineResource> skybox, tonemap, present, debug;
 
-        explicit Surface(RHIDevice& value) : device(value), uniforms(value), frames(value.GetFrameCount()) {}
+        explicit Surface(RHIDevice& value, TextureGpuCache& textures)
+            : device(value), gameUI(value, textures), uniforms(value), frames(value.GetFrameCount()) {}
         ~Surface()
         {
             for (auto& frame : frames) {

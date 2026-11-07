@@ -6,6 +6,7 @@
 #include "Core/IO/VirtualFileSystem.h"
 #include "Core/PlatformServices.h"
 #include "Core/Serialization/BinaryArchive.h"
+#include <map>
 
 namespace Catalpa {
     namespace {
@@ -22,10 +23,37 @@ namespace Catalpa {
             // schema1 records 32-bit scalar storage, including Vulkan UBO boolean storage.
             return s.width == 32 && (s.rows == 1 || s.scalar == ShaderScalarKind::Float);
         }
-        bool Members(const std::vector<ShaderBlockMember>& members, uint32_t bound, size_t depth, size_t& budget, std::string& error) {
+        bool Members(const std::vector<ShaderBlockMember>& members, uint32_t bound, size_t depth,
+                     size_t& budget, std::string& error, bool runtimeStorage = false) {
             if (depth > MaxDepth || members.size() > budget) return Fail(error,"shader members exceed bounded schema");
             budget -= members.size(); std::set<std::string> names; uint32_t end = 0;
             for (const auto& m : members) {
+                if (m.type.arrayCount == 0) {
+                    auto element = m.type;
+                    element.arrayCount = 1;
+                    if (!runtimeStorage || &m != &members.back() || !Name(m.name) ||
+                        !names.insert(m.name).second || !Shape(element, true) || m.offset < end ||
+                        m.offset > bound || m.arrayStride == 0 || m.size != 0 || m.paddedSize != 0)
+                        return Fail(error, "invalid runtime storage array: " + m.name);
+                    if (element.scalar == ShaderScalarKind::Structure) {
+                        if (m.members.empty() || m.matrixStride || m.rowMajor ||
+                            !Members(m.members, m.arrayStride, depth + 1, budget, error))
+                            return Fail(error, "invalid runtime structure array: " + m.name);
+                    } else {
+                        uint64_t elementBytes = uint64_t(element.columns) * 4;
+                        if (element.rows > 1) {
+                            const uint32_t vectors = m.rowMajor ? element.rows : element.columns;
+                            const uint32_t components = m.rowMajor ? element.columns : element.rows;
+                            if (m.matrixStride < components * 4)
+                                return Fail(error, "runtime matrix stride is smaller than its vector");
+                            elementBytes = uint64_t(vectors - 1) * m.matrixStride + components * 4;
+                        } else if (m.matrixStride || m.rowMajor)
+                            return Fail(error, "non-matrix runtime array has matrix layout");
+                        if (!m.members.empty() || m.arrayStride < elementBytes)
+                            return Fail(error, "runtime array elements overlap");
+                    }
+                    continue;
+                }
                 if (!Name(m.name) || !names.insert(m.name).second || !Shape(m.type,true) || m.size == 0 || m.paddedSize < m.size
                     || m.offset < end || m.offset > bound || m.paddedSize > bound - m.offset)
                     return Fail(error,"invalid/overlapping shader block member: " + m.name);
@@ -82,14 +110,50 @@ namespace Catalpa {
         for(const auto& e:m.entries) if(e.stage==stage&&e.name==name)return &e; return nullptr;
     }
     bool ValidateShaderMetadata(const ShaderMetadata& m,std::string& error) {
-        if((m.schemaVersion!=1&&m.schemaVersion!=2)||m.targetEnvironment!="vulkan1.3"||m.spirvVersion!=0x00010500||!Hash(m.bytecodeSha256)||m.entries.empty()||m.entries.size()>64)return Fail(error,"unsupported shader metadata/target/hash/entries");
+        if ((m.schemaVersion != 1 && m.schemaVersion != 2 && m.schemaVersion != 3) ||
+            m.targetEnvironment != "vulkan1.3" || m.spirvVersion != 0x00010500 || !Hash(m.bytecodeSha256) ||
+            m.entries.empty() || m.entries.size() > 64)
+            return Fail(error, "unsupported shader metadata/target/hash/entries");
         size_t budget=MaxItems; std::set<std::string> entries;
         for(const auto& e:m.entries) {
             if(!Name(e.name)||e.stage<ShaderStage::Vertex||e.stage>ShaderStage::Compute||!entries.insert(e.name).second||e.bindings.size()>256)return Fail(error,"invalid/duplicate shader entry");
-            std::set<std::pair<uint32_t,uint32_t>> slots;
-            for(const auto& b:e.bindings) {
-                if(!Name(b.name)||b.set>31||b.binding>65535||b.count==0||b.count>65536||b.kind<ShaderResourceKind::UniformBuffer||b.kind>ShaderResourceKind::CombinedImageSampler||!slots.emplace(b.set,b.binding).second)return Fail(error,"invalid/duplicate shader binding");
-                const bool block=b.kind==ShaderResourceKind::UniformBuffer||b.kind==ShaderResourceKind::StorageBuffer;
+            std::map<std::pair<uint32_t, uint32_t>, std::string_view> slots;
+            for (const auto& b : e.bindings) {
+                const auto displayName = [](std::string_view name) {
+                    std::string displayed(name.substr(0, 128));
+                    std::replace(displayed.begin(), displayed.end(), '\0', '?');
+                    if (name.size() > 128)
+                        displayed += "...";
+                    return displayed;
+                };
+                const auto description = [&] {
+                    return "entry=" + displayName(e.name) + ", name=" + displayName(b.name) +
+                           ", set=" + std::to_string(b.set) + ", binding=" + std::to_string(b.binding) +
+                           ", count=" + std::to_string(b.count) +
+                           ", kind=" + std::to_string(static_cast<uint32_t>(b.kind));
+                };
+                const char* invalidField = nullptr;
+                if (!Name(b.name))
+                    invalidField = "name";
+                else if (b.set > 31)
+                    invalidField = "set";
+                else if (b.binding > 65535)
+                    invalidField = "binding";
+                else if (b.count == 0 || b.count > 65536)
+                    invalidField = "count";
+                else if (b.kind < ShaderResourceKind::UniformBuffer ||
+                         b.kind > ShaderResourceKind::CombinedImageSampler)
+                    invalidField = "kind";
+                if (invalidField)
+                    return Fail(error, "invalid shader binding field " + std::string(invalidField) + ": " +
+                                           description());
+
+                const auto [existing, inserted] = slots.emplace(std::pair{b.set, b.binding}, b.name);
+                if (!inserted)
+                    return Fail(error, "duplicate shader binding slot: " + description() +
+                                           ", existing resource=" + displayName(existing->second));
+                const bool block = b.kind == ShaderResourceKind::UniformBuffer ||
+                                   b.kind == ShaderResourceKind::StorageBuffer;
                 const bool image=b.kind==ShaderResourceKind::SampledImage||b.kind==ShaderResourceKind::StorageImage||b.kind==ShaderResourceKind::CombinedImageSampler;
                 if (image) {
                     if (b.imageDimension != ShaderImageDimension::Texture2D &&
@@ -97,8 +161,15 @@ namespace Catalpa {
                         return Fail(error, "Shader image has an unsupported or absent dimension");
                 } else if (b.imageDimension != ShaderImageDimension::None)
                     return Fail(error, "Non-image binding cannot declare an image dimension");
-                if(block) { if(b.blockSize==0||b.blockSize>16*1024*1024||b.members.empty()||!Members(b.members,b.blockSize,0,budget,error))return Fail(error,"invalid shader buffer members: "+error); }
-                else if(b.blockSize!=0||!b.members.empty())return Fail(error,"non-buffer shader binding contains block layout");
+                if (block) {
+                    if ((b.blockSize == 0 &&
+                         !(m.schemaVersion >= 3 && b.kind == ShaderResourceKind::StorageBuffer)) ||
+                        b.blockSize > 16 * 1024 * 1024 || b.members.empty() ||
+                        !Members(b.members, b.blockSize, 0, budget, error,
+                                 m.schemaVersion >= 3 && b.kind == ShaderResourceKind::StorageBuffer))
+                        return Fail(error, "invalid shader buffer members: " + error);
+                } else if (b.blockSize != 0 || !b.members.empty())
+                    return Fail(error, "non-buffer shader binding contains block layout");
             }
             for(const auto* io:{&e.inputs,&e.outputs}) {
                 std::set<uint32_t> locations; if(io->size()>256)return Fail(error,"too many shader interface variables");

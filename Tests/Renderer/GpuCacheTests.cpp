@@ -32,9 +32,37 @@ namespace Catalpa::Tests {
             RHIStatus CreateGraphicsPipeline(const RHIGraphicsPipelineDesc&,GraphicsPipelineHandle& out) override {out={GetDeviceId(),{createdPipelines++,1}};return {};}
             void ReleaseGraphicsPipeline(GraphicsPipelineHandle value) override {if(value.HasValue()) ++releasedPipelines;}
         };
+
+        void CheckInvalidGeometryUploads(TestContext& test) {
+            CacheDevice device;
+            UploadScheduler uploads(device);
+            const std::array<std::byte, 4> bytes{};
+            const auto rejected = [&](std::span<const std::byte> data, RHIBufferUsage usage,
+                                      const char* description) {
+                // 非空哨兵只用于检查失败输出，不代表实际分配的 owner。
+                BufferHandle output{device.GetDeviceId(), {0, 1}};
+                const auto status = uploads.CreateBuffer(data, usage, output);
+                test.Check(status.code == RHIErrorCode::InvalidDescription && !output.HasValue() &&
+                               device.createdBuffers == 0,
+                           description);
+            };
+
+            rejected({}, RHIBufferUsage::Vertex | RHIBufferUsage::Storage,
+                     "Empty geometry upload is rejected before allocating a buffer");
+            rejected(bytes, RHIBufferUsage::None, "Geometry upload requires an explicit vertex or index role");
+            rejected(bytes, RHIBufferUsage::Storage,
+                     "Storage-only upload cannot bypass the geometry upload contract");
+            for (const auto extra : {RHIBufferUsage::Uniform, RHIBufferUsage::Indirect,
+                                     RHIBufferUsage::TransferSource, RHIBufferUsage::TransferDestination,
+                                     static_cast<RHIBufferUsage>(1u << 31)}) {
+                rejected(bytes, RHIBufferUsage::Vertex | extra,
+                         "Unsupported geometry usage bits are rejected without publishing or allocating a buffer");
+            }
+        }
     }
     void RunGpuCacheTests(TestContext& test)
     {
+        CheckInvalidGeometryUploads(test);
         CacheDevice device;UploadScheduler uploads(device);std::string error;
         MeshData cube;MeshResourceRef mesh;
         test.Check(CreateCubeMesh(1.0f,cube).IsSuccess()&&CreateMeshResource(cube,mesh).IsSuccess(),"Cache fixture uses validated geometry");
@@ -47,6 +75,28 @@ namespace Catalpa::Tests {
         std::shared_ptr<GeometryGpuResource> a,b;
         test.Check(geometry.Acquire(version,a).IsSuccess()&&geometry.Acquire(version,b).IsSuccess()&&a==b,"Same geometry version has one GPU owner");
         test.Check(device.createdBuffers==4,"One vertex/index upload has exactly two destination and two staging buffers");
+
+        // 真实几何缓存必须同时支持顶点读取和计算读取，不能只让单独的上传入口通过。
+        RHIBufferStateSnapshot vertexState, indexState;
+        const bool haveVertices = a && device.GetBufferState(a->vertices, vertexState).IsSuccess();
+        const bool haveIndices = a && device.GetBufferState(a->indices, indexState).IsSuccess();
+        test.Check(haveVertices && vertexState.desc.memory == RHIMemoryDomain::Device &&
+                       vertexState.desc.usage == (RHIBufferUsage::Vertex | RHIBufferUsage::Storage |
+                                                  RHIBufferUsage::TransferDestination),
+                   "Geometry vertex destination preserves storage access and receives transfer writes");
+        test.Check(haveIndices && indexState.desc.memory == RHIMemoryDomain::Device &&
+                       indexState.desc.usage == (RHIBufferUsage::Index | RHIBufferUsage::TransferDestination),
+                   "Geometry index destination retains its index and transfer roles");
+        size_t stagingCount = 0;
+        bool validStaging = true;
+        for (const auto& buffer : device.buffers) {
+            if (buffer.desc.memory != RHIMemoryDomain::Upload) continue;
+            ++stagingCount;
+            validStaging &= buffer.desc.usage == RHIBufferUsage::TransferSource;
+        }
+        test.Check(stagingCount == 2 && validStaging,
+                   "Geometry staging buffers remain upload-memory transfer sources without storage access");
+
         a.reset();b.reset();geometry.Prune();
         test.Check(geometry.Size()==1&&device.releasedBuffers==0,"Unreferenced pending upload keeps target owners alive");
         AssetVersionRef<MeshAsset> collision;

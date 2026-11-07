@@ -23,6 +23,8 @@ namespace Catalpa {
 
     struct RHIGraphicsPipelineTag;
     using GraphicsPipelineHandle = RHIHandle<RHIGraphicsPipelineTag>;
+    // 同一设备管线池负责寿命；绑定时严格验证 graphics/compute 种类。
+    using ComputePipelineHandle = GraphicsPipelineHandle;
 
     struct RHIBufferTag;
     using BufferHandle = RHIHandle<RHIBufferTag>;

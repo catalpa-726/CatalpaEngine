@@ -28,10 +28,10 @@ float4 fragmentMain(MeshVertexOutput input, bool frontFace : SV_IsFrontFace) : S
     float3 emissive = Material.emissive_metallic.rgb;
     if (surfaceFlag(8u)) emissive *= emissive_texture.Sample(emissiveSampler, uv).rgb;
     float3 result = emissive;
-    for (uint i = 0; i < min(uint(lightingData.countEnvironment.x), 32u); ++i)
+    for (uint i = 0; i < tileLightCount(input.position.xy); ++i)
     {
         float3 lightDirection;
-        LightData light = lightingData.lights[i];
+        LightData light = lightingData.lights[tileLightIndex(input.position.xy,i)];
         float3 incident = lightIncident(light, input.worldPosition, lightDirection);
         if (light.typeInnerCosShadow.z > 0.5) incident *= shadowVisibility(input.worldPosition);
         result += evaluatePbr(base.rgb, metallic, roughness, normal, view, lightDirection, incident);

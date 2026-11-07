@@ -14,7 +14,7 @@ namespace Catalpa {
     class RHIDevice;
     class RenderGraph;
 
-    // 当前由主线程调用，负责新建静态顶点/索引 Buffer 和整幅颜色纹理的上传。
+    // 当前由主线程调用，负责静态顶点/索引 Buffer（可附加 Storage 用途）和颜色纹理上传。
     // 导出统一上传服务，供DLL外的GPU缓存契约测试复用同一实现与关闭路径。
     class CATALPA_API UploadScheduler {
     public:
@@ -39,6 +39,8 @@ namespace Catalpa {
 
         // 只接受本次真实绘制提交的完成点；提交成功不等于 GPU 已完成。
         void OnSubmitted(const RHICompletionPoint& completion) noexcept;
+        // 部分接受时只退休确有完整复制证明的staging；其余请求保留供重新录制。
+        void OnPartiallySubmitted(std::span<const RHICompletionPoint>) noexcept;
 
         // 原命令不会执行时撤销录制状态，保留 staging 内容供重录。
         void OnCancelled() noexcept;

@@ -36,6 +36,9 @@ namespace Catalpa::Editor {
         void ActivateAsset(AssetDocument&);
         void DrawViewport(SceneDocument*, const PanelText&, uint32_t centerDockId);
         EditorCameraInput ViewportInput(bool hovered, bool gizmoBusy);
+        bool RoutePlayUIInput(float x, float y, float width, float height, Extent2D extent, bool hovered,
+                              bool focused);
+        void BlurPlayUI();
         bool SaveDocument(Document&, bool saveAs = false);
         bool LoadProjectCatalog();
         bool OpenAuthor(const std::filesystem::path&, std::string text = {}, std::string type = {},
@@ -85,6 +88,7 @@ namespace Catalpa::Editor {
         TransformGizmo m_Gizmo;
         EditorCameraController m_Camera;
         bool m_RightLook = false;
+        bool m_PlayUIActive = false, m_PlayUICapture = false;
         bool m_ResetCamera = true;
         AssetEditorRegistry m_AssetEditors;
         HierarchyPanel m_Hierarchy;

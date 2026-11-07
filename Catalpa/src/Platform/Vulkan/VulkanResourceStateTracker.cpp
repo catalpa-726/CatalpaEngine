@@ -45,7 +45,8 @@ namespace Catalpa {
             (source.stage == RHIPipelineStage::None || source.stage == RHIPipelineStage::AllCommands);
 
         if (source.access == RHIResourceAccess::DepthRead && !state.initialized) return false;
-        return source.access != RHIResourceAccess::None;
+        // 所有权专用批次没有payload访问，可保留layout/初始化而使用ALL_COMMANDS/NONE。
+        return source.access != RHIResourceAccess::None || source.stage == RHIPipelineStage::AllCommands;
     }
 
     RHIStatus VulkanResourceStateTracker::Query(const VulkanResourceRegistry& registry, BufferHandle buffer, RHIBufferStateSnapshot& snapshot)
@@ -182,6 +183,15 @@ namespace Catalpa {
                 "Accepted Buffer state transaction is no longer valid!");
 
             update.after.lastUse = completion;
+            if (update.after.ownership.IsReleased())
+                update.after.ownership.releasePoint = completion;
+            else
+                update.after.ownership.owner = completion.queue;
+            if (update.writes) {
+                update.after.frontier.writer = completion;
+                update.after.frontier.readers.Clear();
+            } else if (!update.after.frontier.readers.TryInclude(completion))
+                std::terminate();
             std::swap(slot.state, update.after);
         }
 
@@ -196,6 +206,16 @@ namespace Catalpa {
                 textureSlot.state.revision == update.expectedRevision,
                 "Accepted texture state transaction is no longer valid!");
 
+            update.after.lastUse = completion;
+            if (update.after.ownership.IsReleased())
+                update.after.ownership.releasePoint = completion;
+            else
+                update.after.ownership.owner = completion.queue;
+            if (update.writes) {
+                update.after.frontier.writer = completion;
+                update.after.frontier.readers.Clear();
+            } else if (!update.after.frontier.readers.TryInclude(completion))
+                std::terminate();
             std::swap(textureSlot.state, update.after);
         }
     }

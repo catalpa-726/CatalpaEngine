@@ -4,7 +4,8 @@
 #include "imgui.h"
 
 namespace Catalpa::Editor {
-    void ProjectSettingsPanel::Draw(EditorProject& project, bool busy, std::string& error) {
+    void ProjectSettingsPanel::Draw(EditorProject& project, bool busy, const PanelText& text,
+                                    std::string& error) {
         const auto* session = project.GetSession();
         if (!session) return;
         if (m_Project != session->config.id) {
@@ -23,17 +24,27 @@ namespace Catalpa::Editor {
                 std::copy_n(values[i].data(), values[i].size(), m_Fields[i].data());
             }
         }
-        if (!ImGui::CollapsingHeader("Author project settings")) return;
+        if (!ImGui::CollapsingHeader(
+                text("project.settings", "Author project settings", "ProjectSettings").c_str()))
+            return;
         // 配置可以包含长路径；编辑器容量不足时拒绝保存，不把截断内容写回项目。
         if (m_FieldOverflow) {
-            ImGui::TextWrapped("A project field exceeds the editor's 2047-byte limit. "
-                "This panel cannot edit it; the project file is unchanged.");
+            ImGui::TextWrapped("%s", text("project.field_overflow",
+                                          "A project field exceeds the editor's 2047-byte limit. This panel "
+                                          "cannot edit it; the project file is unchanged.",
+                                          nullptr)
+                                         .c_str());
             return;
         }
         ImGui::BeginDisabled(busy);
         constexpr const char* labels[]{"Project name", "Content root", "Derived data root", "Cooked root", "Build profiles", "Build profile"};
-        for (size_t i = 0; i < m_Fields.size(); ++i) ImGui::InputText(labels[i], m_Fields[i].data(), m_Fields[i].size());
-        if (ImGui::Button("Validate and save project")) {
+        constexpr const char* keys[]{"project.name",           "project.content_root",
+                                     "project.derived_root",   "project.cooked_root",
+                                     "project.build_profiles", "project.build_profile"};
+        for (size_t i = 0; i < m_Fields.size(); ++i)
+            ImGui::InputText(text(keys[i], labels[i], keys[i]).c_str(), m_Fields[i].data(),
+                             m_Fields[i].size());
+        if (ImGui::Button(text("project.save", "Validate and save project", "SaveProjectSettings").c_str())) {
             auto candidate = *m_Draft;
             candidate.name = m_Fields[0].data();
             candidate.contentRoot = std::filesystem::u8path(m_Fields[1].data());
@@ -44,6 +55,9 @@ namespace Catalpa::Editor {
             if (project.ApplyConfig(candidate, error)) Reset();
         }
         ImGui::EndDisabled();
-        ImGui::TextDisabled("External source roots remain explicitly declared in the project file.");
+        ImGui::TextDisabled(
+            "%s", text("project.external_roots",
+                       "External source roots remain explicitly declared in the project file.", nullptr)
+                      .c_str());
     }
 }

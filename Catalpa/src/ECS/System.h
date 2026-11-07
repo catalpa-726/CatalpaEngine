@@ -10,7 +10,18 @@ namespace Catalpa {
     class Scene;
 
     // CPU 阶段顺序，与 GPU barrier、队列或录制顺序无关。
-    enum class SystemPhase { Gameplay, Transform, Camera, Extract };
+    enum class SystemPhase {
+        Gameplay,
+        Animation,
+        Kinematic,
+        Physics,
+        PostPhysics,
+        Transform,
+        Camera,
+        AudioExtract,
+        UI,
+        Extract
+    };
     enum class SystemAccessMode { Read, Write };
 
     // 资源名是进程内调度契约；不使用第三方 storage 地址或 RTTI 作为持久身份。

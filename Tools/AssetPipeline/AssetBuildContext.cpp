@@ -122,6 +122,14 @@ namespace Catalpa::Tools {
         }
         request.source = std::filesystem::canonical(request.source);
         request.shaderRoot = std::filesystem::canonical(request.shaderRoot);
+        const auto configuration = request.shaderRoot.parent_path() / "Config";
+        std::error_code configurationError;
+        if (std::filesystem::is_directory(configuration, configurationError))
+            m_ConfigurationRoot = std::filesystem::canonical(configuration);
+        else if (configurationError && configurationError != std::errc::no_such_file_or_directory) {
+            e = configurationError.message();
+            return false;
+        }
         m_Roots.push_back(std::filesystem::canonical(request.project.contentRoot));
         m_RootNames.push_back("content");
         for (const auto& [name, p] : request.project.externalSourceRoots) {
@@ -130,6 +138,13 @@ namespace Catalpa::Tools {
         }
         request.project.cookedRoot = std::filesystem::weakly_canonical(request.project.cookedRoot);
         request.project.derivedDataRoot = std::filesystem::weakly_canonical(request.project.derivedDataRoot);
+        if (!m_ConfigurationRoot.empty())
+            for (const auto& out : {request.project.cookedRoot, request.project.derivedDataRoot})
+                if (IsPathWithinRoot(out, m_ConfigurationRoot) ||
+                    IsPathWithinRoot(m_ConfigurationRoot, out)) {
+                    e = "Derived roots overlap read-only build configuration";
+                    return false;
+                }
         for (const auto& out : {request.project.cookedRoot, request.project.derivedDataRoot})
             if (IsPathWithinRoot(out, request.shaderRoot) || IsPathWithinRoot(request.shaderRoot, out)) {
                 e = "Derived roots overlap the read-only cooked shader input";
@@ -185,6 +200,15 @@ namespace Catalpa::Tools {
 
     bool AssetBuildContext::ReadSource(const std::filesystem::path& path, size_t byteLimit,
                                        std::vector<std::byte>& bytes, std::string& error) const {
+        if (!m_ConfigurationRoot.empty() && IsPathWithinRoot(path, m_ConfigurationRoot)) {
+            VirtualFileSystem files;
+            VirtualPath input;
+            return files.MountReadOnly("build-config", m_ConfigurationRoot, 0, error) &&
+                   VirtualPath::Parse("build-config:/" +
+                                          AssetPathText(path.lexically_relative(m_ConfigurationRoot)),
+                                      input, error) &&
+                   files.ReadFile(input, std::min<size_t>(byteLimit, 65536), bytes, error);
+        }
         for (const auto& root : m_Roots) {
             if (IsPathWithinRoot(path, root)) {
                 VirtualFileSystem files;
@@ -235,6 +259,16 @@ namespace Catalpa::Tools {
 
         e = exception.what();
         return false;
+    }
+
+    bool AssetBuildContext::ReadConfiguration(std::string_view name, std::vector<std::byte>& output,
+                                              std::string& error) {
+        if (m_ConfigurationRoot.empty() || name.empty() ||
+            name.find_first_of("/\\:") != std::string_view::npos || name == "." || name == "..") {
+            error = "Build configuration requires a deployed Config root and one filename";
+            return false;
+        }
+        return Read(m_ConfigurationRoot / std::filesystem::u8path(name), output, error);
     }
 
     // 优先读声明位置。制作机器的绝对地址仅提供文件名，包内缺失的相对地址可尝试同级原件。

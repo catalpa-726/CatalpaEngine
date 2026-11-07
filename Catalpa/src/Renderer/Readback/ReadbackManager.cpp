@@ -67,6 +67,25 @@ namespace Catalpa {
         for (auto& [ticket, pending] : m_Pending) pending.recorded = false;
     }
 
+    void ReadbackManager::OnAccepted(std::span<const RHICompletionPoint> accepted) noexcept try {
+        for (auto& [ticket, pending] : m_Pending)
+            if (pending.recorded) {
+                RHIBufferStateSnapshot state;
+                if (!m_Device.GetBufferState(pending.destination, state).IsSuccess() ||
+                    state.state.access.access != RHIResourceAccess::HostRead)
+                    continue;
+                const auto last = state.state.lastUse;
+                if (last.HasValue() && std::any_of(accepted.begin(), accepted.end(), [&](const auto& p) {
+                        return p.device == last.device && p.queue == last.queue &&
+                               p.sequence >= last.sequence;
+                    })) {
+                    pending.completion = last;
+                    pending.recorded = false;
+                }
+            }
+    } catch (const std::bad_alloc&) { /* 未取得HostRead证明的ticket保留，下次安全点重试。 */
+    }
+
     bool ReadbackManager::Poll(uint64_t ticket, PickingResult& output)
     {
         const auto found = m_Pending.find(ticket);
@@ -75,7 +94,7 @@ namespace Catalpa {
         PickingResult result{ .ticket = ticket, .request = pending.request };
         if (!pending.completion.HasValue()) return false;
         bool complete = false;
-        const auto completionStatus = m_Device.GetGraphicsQueue().IsComplete(pending.completion, complete);
+        const auto completionStatus = m_Device.QueryCompletion(pending.completion, complete);
         if (completionStatus.IsSuccess() && !complete) return false;
         uint32_t identityIndex = 0;
         if (completionStatus.IsSuccess()

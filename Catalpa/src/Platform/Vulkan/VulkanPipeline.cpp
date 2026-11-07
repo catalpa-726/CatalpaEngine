@@ -51,7 +51,8 @@ namespace Catalpa {
         if (desc.frontFace != RHIFrontFace::CounterClockwise && desc.frontFace != RHIFrontFace::Clockwise)
             return { .code=RHIErrorCode::InvalidDescription,.operation="CreateVulkanGraphicsPipeline" };
 
-        if (desc.blendMode != RHIBlendMode::Opaque && desc.blendMode != RHIBlendMode::StraightAlpha && desc.blendMode != RHIBlendMode::Additive)
+        if (desc.blendMode != RHIBlendMode::Opaque && desc.blendMode != RHIBlendMode::StraightAlpha &&
+            desc.blendMode != RHIBlendMode::Additive && desc.blendMode != RHIBlendMode::Premultiplied)
             return { .code = RHIErrorCode::Unsupported, .operation = "CreateVulkanGraphicsPipeline" };
 
         if (desc.blendMode != RHIBlendMode::Opaque && (!hasColor || !device.GetFormatSupport(desc.colorFormat).colorAttachmentBlend))
@@ -228,14 +229,18 @@ namespace Catalpa {
 
             const VkPipelineColorBlendAttachmentState attachment{
                 .blendEnable = static_cast<VkBool32>(desc.blendMode != RHIBlendMode::Opaque),
-                .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
-                .dstColorBlendFactor = desc.blendMode == RHIBlendMode::Additive ? VK_BLEND_FACTOR_ONE : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                .srcColorBlendFactor = desc.blendMode == RHIBlendMode::Premultiplied
+                                           ? VK_BLEND_FACTOR_ONE
+                                           : VK_BLEND_FACTOR_SRC_ALPHA,
+                .dstColorBlendFactor = desc.blendMode == RHIBlendMode::Additive
+                                           ? VK_BLEND_FACTOR_ONE
+                                           : VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
                 .colorBlendOp = VK_BLEND_OP_ADD,
                 .srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE,
                 .dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
                 .alphaBlendOp = VK_BLEND_OP_ADD,
-                .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
-            };
+                .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                  VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT};
 
             const VkPipelineColorBlendStateCreateInfo blend{
                 .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
@@ -306,6 +311,71 @@ namespace Catalpa {
         pipeline.pushConstantBytes = pushConstants.size;
         pipeline.pushConstantStages = pushConstantStages;
         pipeline.bindings.swap(bindings);
+        return {};
+    }
+
+    RHIStatus CreateVulkanComputePipeline(VulkanDevice& device, const RHIComputePipelineDesc& desc,
+                                          VulkanPipelineRecord& output) {
+        std::string error;
+        if (!device.GetCapabilities().compute)
+            return {RHIErrorCode::Unsupported, 0, "Compute queue capability"};
+        if (!ValidateRHIComputeShaderInterface(desc, error) ||
+            desc.pushConstants.size > device.GetCapabilities().maxPushConstantBytes ||
+            desc.pushConstants.size % 4 || desc.bindingLayout.entries.size() > RHIMaxBindingsPerSet)
+            return {RHIErrorCode::InvalidDescription, 0, "Compute pipeline reflection/limits"};
+        VulkanPipelineRecord pipeline;
+        pipeline.compute = true;
+        pipeline.bindings.assign(desc.bindingLayout.entries.begin(), desc.bindingLayout.entries.end());
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(device.GetPhysicalDevice(), &properties);
+        std::array<VkDescriptorSetLayoutBinding, RHIMaxBindingsPerSet> bindings{};
+        if (auto status =
+                BuildVulkanBindingLayout(desc.bindingLayout.entries, properties.limits, 0, bindings);
+            !status.IsSuccess())
+            return status;
+        const VkDescriptorSetLayoutCreateInfo descriptorInfo{
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+            .bindingCount = uint32_t(pipeline.bindings.size()),
+            .pBindings = bindings.data()};
+        auto status = MakeVulkanStatus(vkCreateDescriptorSetLayout(device.GetHandle(), &descriptorInfo,
+                                                                   nullptr, &pipeline.bindingLayout),
+                                       "compute descriptor layout");
+        if (!status.IsSuccess())
+            return status;
+        const VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT, 0, desc.pushConstants.size};
+        const VkPipelineLayoutCreateInfo layoutInfo{.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+                                                    .setLayoutCount = 1,
+                                                    .pSetLayouts = &pipeline.bindingLayout,
+                                                    .pushConstantRangeCount =
+                                                        desc.pushConstants.size ? 1u : 0u,
+                                                    .pPushConstantRanges = &range};
+        status = MakeVulkanStatus(
+            vkCreatePipelineLayout(device.GetHandle(), &layoutInfo, nullptr, &pipeline.layout),
+            "compute pipeline layout");
+        VulkanShaderRecord shader;
+        if (status.IsSuccess())
+            status = CreateVulkanShader(device, desc.shader, shader);
+        if (status.IsSuccess()) {
+            const VkComputePipelineCreateInfo info{
+                .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                          .stage = VK_SHADER_STAGE_COMPUTE_BIT,
+                          .module = shader.module,
+                          .pName = shader.entryPoint},
+                .layout = pipeline.layout,
+                .basePipelineIndex = -1};
+            status = MakeVulkanStatus(vkCreateComputePipelines(device.GetHandle(), device.GetPipelineCache(),
+                                                               1, &info, nullptr, &pipeline.pipeline),
+                                      "vkCreateComputePipelines");
+        }
+        DestroyVulkanShader(device, shader);
+        if (!status.IsSuccess()) {
+            DestroyVulkanPipeline(device, pipeline);
+            return status;
+        }
+        pipeline.pushConstantBytes = desc.pushConstants.size;
+        pipeline.pushConstantStages = VK_SHADER_STAGE_COMPUTE_BIT;
+        output = std::move(pipeline);
         return {};
     }
 

@@ -2,6 +2,7 @@
 
 #include "VulkanHeaders.h"
 #include "RHI/RHIError.h"
+#include "RHI/RHIMemoryBudget.h"
 #include <vk_mem_alloc.h>
 
 namespace Catalpa {
@@ -15,7 +16,9 @@ namespace Catalpa {
         VulkanMemoryAllocator& operator=(const VulkanMemoryAllocator&) = delete;
 
         // 在逻辑设备和 GLAD 函数加载完成后初始化。
-        [[nodiscard]] RHIStatus Init(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device);
+        [[nodiscard]] RHIStatus Init(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device,
+                                     bool memoryBudgetExtension = false);
+        [[nodiscard]] RHIStatus GetBudgets(std::vector<RHIMemoryHeapBudget>&) const;
 
         // 调用前释放全部 allocation；本函数不等待 GPU。
         void Shutdown();
@@ -24,6 +27,7 @@ namespace Catalpa {
 
     private:
         VmaAllocator m_Allocator = VK_NULL_HANDLE;
+        bool m_DriverBudget = false;
     };
 
-}
+} // namespace Catalpa

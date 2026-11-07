@@ -4,6 +4,8 @@
 #include "AssetPipeline/Importers/ImportGeometry.h"
 #include "AssetPipeline/Importers/TextureImporter.h"
 #include "AssetPipeline/Importers/MaterialImporter.h"
+#include "AssetPipeline/Animation/AnimationImport.h"
+#include "AssetPipeline/Cookers/ModelLodBuilder.h"
 #include "Images/ImageValidation.h"
 #include <assimp/Importer.hpp>
 #include <assimp/IOSystem.hpp>
@@ -220,8 +222,8 @@ namespace Catalpa::Tools {
             return false;
         }
         if (!scene->mRootNode || scene->mNumMeshes == 0 || scene->mNumMeshes > 65536 ||
-            scene->mNumMaterials > 4096 || scene->mNumTextures > 4096 || scene->mNumAnimations) {
-            error = "Unsupported empty/oversized/animated Assimp scene";
+            scene->mNumMaterials > 4096 || scene->mNumTextures > 4096 || scene->mNumAnimations > 256) {
+            error = "Unsupported empty/oversized Assimp scene";
             return false;
         }
         AssetImportResult result;
@@ -460,12 +462,13 @@ namespace Catalpa::Tools {
             result.mappings.push_back({id, key, name.C_Str(), "material"});
         }
 
+        std::vector<std::vector<uint32_t>> skinRemaps(scene->mNumMeshes);
         // 几何只构造一次；后面的节点实例按网格索引共享同一个派生资产。
         for (unsigned i = 0; i < scene->mNumMeshes; ++i) {
             if (!ctx.CheckCancelled(error))
                 return false;
             const auto* in = scene->mMeshes[i];
-            if (!in || !in->mVertices || !in->mFaces || in->mNumBones || in->mNumAnimMeshes ||
+            if (!in || !in->mVertices || !in->mFaces || in->mNumAnimMeshes ||
                 in->mNumVertices > ctx.request.settings.maxVertices ||
                 in->mNumFaces > ctx.request.settings.maxIndices / 3) {
                 error = "Unsupported skin/morph or invalid mesh streams/count";
@@ -534,7 +537,8 @@ namespace Catalpa::Tools {
             }
             MeshAsset mesh;
             if (!BuildImportedMesh(ctx, std::move(vertices), std::move(indices), in->HasNormals(),
-                                   in->HasTextureCoords(0), in->HasTangentsAndBitangents(), mesh, error))
+                                   in->HasTextureCoords(0), in->HasTangentsAndBitangents(), mesh, error,
+                                   &skinRemaps[i]))
                 return false;
             const auto key = "mesh/" + std::to_string(i);
             const auto id = ctx.Identity(key);
@@ -635,6 +639,10 @@ namespace Catalpa::Tools {
                          "OBJ has no standard unit/axis metadata; Y-up/metres assumed unless explicit import "
                          "settings override");
         if (!SetImportRoot(ctx, model, conversion, error))
+            return false;
+        if (!AppendAssimpAnimations(ctx, *scene, model, result, skinRemaps, error))
+            return false;
+        if (!BuildModelLods(ctx, model, result, error))
             return false;
         ctx.Diagnose(AssetDiagnosticLevel::Info, "geometry",
                      "Assimp triangulation recorded; no optimization, source normalization, UV flip or mesh "

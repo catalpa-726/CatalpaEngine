@@ -16,6 +16,7 @@ namespace Catalpa::Editor {
         bool Serialize(std::string&, std::string& error) const override;
         bool StartPlay(AssetManager&, std::string& error);
         bool StopPlay(std::string& error);
+        bool AdoptPlayScene(SceneHandle candidate, std::string& error);
         bool Playing() const noexcept { return m_Play.HasValue(); }
         SceneHandle PlayHandle() const noexcept { return m_Play; }
         // 首次使用时记录代次，只有本文件的受控删除/恢复能重新绑定持久身份。

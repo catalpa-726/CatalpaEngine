@@ -7,9 +7,9 @@ namespace Catalpa {
     bool ImageAssetLoader::EncodePayload(const ImageAsset& asset, std::vector<std::byte>& output, std::string& error) {
         try {
             if (!ValidateImageAsset(asset, error)) return false;
-            // 统一80MiB有界载荷容纳像素、mip/face布局和来源头；不压缩、降精度或重采样像素。
+            // 96 MiB 容纳已明确派生的完整 mip/BC 布局；本编码器只保留传入像素，不再重采样。
             const auto& image = asset.image;
-            BinaryWriter writer(80 * 1024 * 1024);
+            BinaryWriter writer(96 * 1024 * 1024);
             writer.U32(static_cast<uint32_t>(image.format)); writer.U32(static_cast<uint32_t>(image.dimension));
             writer.U32(image.width); writer.U32(image.height); writer.U32(image.depth); writer.U32(image.arrayLayers); writer.U32(image.mipLevels);
             writer.U32(static_cast<uint32_t>(image.colorSpace)); writer.U32(static_cast<uint32_t>(image.alphaMode)); writer.U32(static_cast<uint32_t>(image.semantic));
@@ -32,22 +32,49 @@ namespace Catalpa {
                 || !reader.U32(color) || !reader.U32(alpha) || !reader.U32(semantic) || !reader.String(asset.sourceUri, 4096) || !reader.U32(count) || count > 65536) { error = "Invalid image payload header"; return false; }
             image.format = static_cast<PixelFormat>(format); image.dimension = static_cast<ImageDimension>(dimension);
             image.colorSpace = static_cast<ImageColorSpace>(color); image.alphaMode = static_cast<ImageAlphaMode>(alpha); image.semantic = static_cast<ImageSemantic>(semantic);
-            // Leave half of admitted workspace for validator ranges/keys and publication bookkeeping.
-            const size_t payloadBudget = context.maxResidentBytes / 2;
-            const size_t baseBytes = sizeof(ImageAsset) + asset.sourceUri.capacity() + 1 + size_t(count) * sizeof(ImageSubresource);
-            if (baseBytes > payloadBudget || count > reader.Remaining() / 56) { error = "Image layout exceeds decode budget or input"; return false; }
+            constexpr size_t encodedLayoutBytes = 6 * sizeof(uint32_t) + 4 * sizeof(uint64_t);
+            if (count == 0 || count > reader.Remaining() / encodedLayoutBytes) {
+                error = "Invalid or truncated image subresource table";
+                return false;
+            }
+
+            // 验证器为每个子资源保存一个字节区间和一个访问标记，不复制像素。
+            const size_t rangeBytes = size_t(count) * sizeof(std::pair<uint64_t, uint64_t>);
+            const size_t seenBytes = ((size_t(count) + 63) / 64) * sizeof(uint64_t);
+            const size_t scratchBytes = rangeBytes + seenBytes;
+            const size_t assetBytes = sizeof(ImageAsset) + asset.sourceUri.capacity() + 1;
+            if (assetBytes + scratchBytes > context.maxResidentBytes) {
+                error = "Image layout exceeds decode budget";
+                return false;
+            }
+            const size_t storageBudget = context.maxResidentBytes - assetBytes - scratchBytes;
+            if (count > storageBudget / sizeof(ImageSubresource)) {
+                error = "Image subresource table exceeds decode budget";
+                return false;
+            }
             image.subresources.resize(count);
+            if (image.subresources.capacity() > storageBudget / sizeof(ImageSubresource)) {
+                error = "Image subresource allocation exceeds decode budget";
+                return false;
+            }
+            const size_t layoutBytes = image.subresources.capacity() * sizeof(ImageSubresource);
             for (auto& sub : image.subresources) {
                 if (!reader.U32(sub.mip) || !reader.U32(sub.layer) || !reader.U32(sub.face) || !reader.U32(sub.width) || !reader.U32(sub.height) || !reader.U32(sub.depth)
                     || !reader.U64(sub.offset) || !reader.U64(sub.rowPitch) || !reader.U64(sub.slicePitch) || !reader.U64(sub.byteLength)) { error = reader.Error(); return false; }
             }
             uint64_t pixelBytes; std::span<const std::byte> pixels;
-            if (!reader.U64(pixelBytes) || pixelBytes > payloadBudget - baseBytes || pixelBytes > reader.Remaining() || !reader.Bytes(static_cast<size_t>(pixelBytes), pixels) || !reader.AtEnd()) { error = "Image pixel range exceeds input or decode budget"; return false; }
+            if (!reader.U64(pixelBytes) || pixelBytes != reader.Remaining()) {
+                error = "Image pixel length does not match the remaining input";
+                return false;
+            }
+            const size_t pixelBudget = storageBudget - layoutBytes;
+            if (pixelBytes > pixelBudget) { error = "Image pixels exceed decode budget"; return false; }
+            if (!reader.Bytes(static_cast<size_t>(pixelBytes), pixels)) { error = reader.Error(); return false; }
             if (context.cancellation.IsCancellationRequested()) { error = "Image decode cancelled"; return false; }
             image.pixels.assign(pixels.begin(), pixels.end());
+            if (image.pixels.capacity() > pixelBudget) { error = "Image pixel allocation exceeds decode budget"; return false; }
             if (!ValidateImageAsset(asset, error)) return false;
-            const size_t resident = sizeof(ImageAsset) + asset.sourceUri.capacity() + 1 + image.subresources.capacity() * sizeof(ImageSubresource) + image.pixels.capacity();
-            if (resident > context.maxResidentBytes) { error = "Image resident allocation exceeds budget"; return false; }
+            const size_t resident = assetBytes + layoutBytes + image.pixels.capacity();
             output = MakeAssetLoadResult<ImageAsset>(std::make_shared<const ImageAsset>(std::move(asset)), resident); error.clear(); return true;
         } catch (const std::exception& exception) { error = exception.what(); return false; }
     }

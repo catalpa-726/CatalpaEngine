@@ -6,6 +6,12 @@
 #include "imgui.h"
 #include "backends/imgui_impl_glfw.h"
 #include <GLFW/glfw3.h>
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <Windows.h>
+#include <imm.h>
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
 
 namespace Catalpa {
 
@@ -38,6 +44,8 @@ namespace Catalpa {
             &config
         );
 
+        // 暂用 ImGui 内建字体与默认字号，控件也保留默认尺度。
+        //io.FontDefault = io.Fonts->AddFontDefault();
         ImGui::StyleColorsDark();
 
         auto* window = static_cast<GLFWwindow*>(Application::Get().GetWindow().GetNativeWindow());
@@ -47,6 +55,30 @@ namespace Catalpa {
             OnDetach();
             return;
         }
+        ImGui::GetMainViewport()->PlatformHandleRaw = glfwGetWin32Window(window);
+        ImGui::GetPlatformIO().Platform_SetImeDataFn = [](ImGuiContext*, ImGuiViewport* viewport,
+                                                          ImGuiPlatformImeData* data) {
+            const auto hwnd = static_cast<HWND>(viewport->PlatformHandleRaw);
+            if (!hwnd || !data->WantVisible)
+                return;
+            // RmlUi 的显式文本目标拥有当前输入焦点时，不能被 ImGui 的旧 caret 覆盖。
+            if (Application::Get().GetWindow().HasTextInputTarget() && GetFocus() == hwnd)
+                return;
+            const auto context = ImmGetContext(hwnd);
+            if (!context)
+                return;
+            COMPOSITIONFORM composition{};
+            composition.dwStyle = CFS_FORCE_POSITION;
+            composition.ptCurrentPos = {LONG(data->InputPos.x - viewport->Pos.x),
+                                        LONG(data->InputPos.y - viewport->Pos.y)};
+            ImmSetCompositionWindow(context, &composition);
+            CANDIDATEFORM candidate{};
+            candidate.dwStyle = CFS_CANDIDATEPOS;
+            candidate.ptCurrentPos = {composition.ptCurrentPos.x,
+                                      composition.ptCurrentPos.y + LONG(data->InputLineHeight)};
+            ImmSetCandidateWindow(context, &candidate);
+            ImmReleaseContext(hwnd, context);
+        };
         m_Ready = true;
 
         // 使用当前库保留的静态字体路径，不声明尚未实现的 RendererHasTextures。
@@ -55,6 +87,11 @@ namespace Catalpa {
         io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
         if (!pixels || width <= 0 || height <= 0) {
             CAT_CORE_ERROR("Cannot build ImGui font atlas.");
+            OnDetach();
+            return;
+        }
+        if (uint64_t(width) * uint64_t(height) > 16 * 1024 * 1024) {
+            CAT_CORE_ERROR("Static font atlas exceeds the 64 MiB limit.");
             OnDetach();
             return;
         }

@@ -1,4 +1,6 @@
 #include "catpch.h"
+#include "Geometry/MeshLod.h"
+#include "Scene/DomainComponents.h"
 #include "Scene/SceneSerializer.h"
 #include "Scripting/ScriptValueArchive.h"
 #include "Scripting/ScriptAsset.h"
@@ -259,7 +261,15 @@ namespace Catalpa {
                 mesh.color = renderer.color;
                 mesh.visible = renderer.visible;
                 for (const auto& material : renderer.materials) mesh.materials.push_back(material.GetId());
+                for (const auto& lod : renderer.lods)
+                    mesh.lods.push_back(lod.GetId());
+                mesh.lodErrors = renderer.lodErrors;
             }
+            if (!CaptureDomainComponents(scene, id, node.dynamicComponents, error))
+                return {WorldError::InvalidArgument, "Domain component capture failed"};
+            if (!CollectDomainComponentVersions(scene.GetWorld(), id, node.dynamicDependencies, error))
+                return {WorldError::InvalidArgument, "Cannot capture fixed domain versions"};
+            count += node.dynamicComponents.size();
             size_t actual = 0;
             if (auto p = scene.GetWorld().CountComponents(id, actual); !p.IsSuccess()) return p;
             if (count != actual) return {WorldError::InvalidArgument, "Component has no author serializer"};
@@ -291,6 +301,15 @@ namespace Catalpa {
                 node["mesh"] = {{"asset", m.mesh.HasValue() ? Json(m.mesh.ToString()) : Json(nullptr)},
                                 {"materials", materialIds}, {"visible", m.visible},
                                 {"color", Json::array({m.color.x, m.color.y, m.color.z, m.color.w})}};
+                if (!m.lods.empty()) {
+                    Json levels = Json::array();
+                    if (m.lods.size() != m.lodErrors.size())
+                        throw std::invalid_argument("Scene LOD metadata differs");
+                    for (size_t level = 0; level < m.lods.size(); ++level)
+                        levels.push_back(
+                            {{"asset", m.lods[level].ToString()}, {"error", m.lodErrors[level]}});
+                    node["mesh"]["lods"] = std::move(levels);
+                }
                 if (!m.mesh.HasValue()) {
                     if (m.materials.empty()) {
                         error = "Inline geometry requires explicit material asset references before saving";
@@ -307,6 +326,14 @@ namespace Catalpa {
                                            {"properties", Values(n.script->properties)}};
             if (n.behavior) node["behavior"] = {{"asset", n.behavior->graph.ToString()}, {"enabled", n.behavior->enabled},
                                                {"variables", Values(n.behavior->variables)}};
+            if (!n.dynamicComponents.empty()) {
+                std::string archiveText;
+                ArchiveError archiveError;
+                if (!ValidateDomainComponents(n.dynamicComponents, error) ||
+                    !JsonArchive::Write(ArchiveValue{n.dynamicComponents}, archiveText, archiveError))
+                    throw std::invalid_argument(error.empty() ? archiveError.ToString() : error);
+                node["dynamicComponents"] = Json::parse(archiveText);
+            }
             if (n.prefab) {
                 Json mapping = Json::object();
                 for (const auto& [local, instance] : n.prefab->entities) mapping[local.ToString()] = instance.ToString();
@@ -332,8 +359,8 @@ namespace Catalpa {
         const auto& nodes = doc.at("entities");
         if (!nodes.is_array() || nodes.size() > 65536) throw std::invalid_argument("Invalid scene entity array");
         for (const auto& v : nodes) {
-            Fields(v, {"id", "parent", "name", "translation", "rotation", "scale", "camera", "mesh",
-                       "light", "environment", "script", "behavior", "prefab"});
+            Fields(v, {"id", "parent", "name", "translation", "rotation", "scale", "camera", "mesh", "light",
+                       "environment", "script", "behavior", "prefab", "dynamicComponents"});
             SceneEntityAsset n;
             n.id = Identity<PersistentEntityId>(v.at("id"));
             if (!v.at("parent").is_null()) n.parent = Identity<PersistentEntityId>(v.at("parent"));
@@ -351,12 +378,29 @@ namespace Catalpa {
             if (v.contains("environment")) n.environment = ReadEnvironment(v.at("environment"));
             if (v.contains("mesh")) {
                 const auto& m = v.at("mesh");
-                Fields(m, {"asset", "materials", "color", "visible", "procedural"});
+                Fields(m, {"asset", "materials", "color", "visible", "procedural", "lods"});
                 auto& mesh = n.mesh.emplace();
                 if (!m.at("asset").is_null()) mesh.mesh = Identity<AssetId>(m.at("asset"));
                 if (!m.at("materials").is_array() || m.at("materials").empty())
                     throw std::invalid_argument("Mesh requires material references");
                 for (const auto& id : m.at("materials")) mesh.materials.push_back(Identity<AssetId>(id));
+                if (m.contains("lods")) {
+                    const auto& levels = m.at("lods");
+                    if (!levels.is_array() || levels.size() > 8)
+                        throw std::invalid_argument("Scene LOD budget");
+                    float previous = 0;
+                    std::set<AssetId> ids{mesh.mesh};
+                    for (const auto& level : levels) {
+                        Fields(level, {"asset", "error"});
+                        const auto id = Identity<AssetId>(level.at("asset"));
+                        const float value = float(Number(level.at("error")));
+                        if (!std::isfinite(value) || value <= previous || !ids.insert(id).second)
+                            throw std::invalid_argument("Scene LOD reference/error");
+                        previous = value;
+                        mesh.lods.push_back(id);
+                        mesh.lodErrors.push_back(value);
+                    }
+                }
                 const auto& c = m.at("color");
                 if (!c.is_array() || c.size() != 4) throw std::invalid_argument("Mesh requires RGBA");
                 mesh.color = {float(Number(c[0])), float(Number(c[1])), float(Number(c[2])), float(Number(c[3]))};
@@ -384,6 +428,16 @@ namespace Catalpa {
                 Fields(b, {"asset", "enabled", "variables"});
                 n.behavior = BehaviorGraphComponent{Identity<AssetId>(b.at("asset")), b.at("enabled").get<bool>(), ReadValues(b.at("variables"))};
                 if (!ValidateBehaviorVariables(n.behavior->variables, error)) return false;
+            }
+            if (v.contains("dynamicComponents")) {
+                std::unique_ptr<ArchiveValue> values;
+                ArchiveError diagnostic;
+                if (!JsonArchive::Parse(v.at("dynamicComponents").dump(), values, diagnostic) ||
+                    !std::holds_alternative<ArchiveValue::Object>(values->data))
+                    throw std::invalid_argument("Invalid dynamicComponents object");
+                n.dynamicComponents = std::get<ArchiveValue::Object>(std::move(values->data));
+                if (!ValidateDomainComponents(n.dynamicComponents, error))
+                    return false;
             }
             if (v.contains("prefab")) {
                 const auto& p = v.at("prefab");
@@ -417,11 +471,14 @@ namespace Catalpa {
             if (n.mesh) {
                 if (n.mesh->mesh.HasValue()) ids.insert(n.mesh->mesh);
                 ids.insert(n.mesh->materials.begin(), n.mesh->materials.end());
+                ids.insert(n.mesh->lods.begin(), n.mesh->lods.end());
             }
             if (n.environment) ids.insert(n.environment->environment.id);
             if (n.script) ids.insert(n.script->script);
             if (n.behavior) ids.insert(n.behavior->graph);
             if (n.prefab) ids.insert(n.prefab->source);
+            for (auto id : DomainComponentDependencies(n.dynamicComponents))
+                ids.insert(id);
         }
         return {ids.begin(), ids.end()};
     }
@@ -446,6 +503,24 @@ namespace Catalpa {
         std::vector<size_t> order;
         if (!Order(asset, order, error)) return false;
         // 在创建场景前解析全部 Mesh/Material，缺依赖不会留下半成品场景。
+        std::vector<std::vector<AssetDependencyValue>> domainVersions(asset.entities.size());
+        for (size_t index = 0; index < asset.entities.size(); ++index) {
+            const auto& node = asset.entities[index];
+            domainVersions[index] = node.dynamicDependencies;
+            for (const auto id : DomainComponentDependencies(node.dynamicComponents)) {
+                const auto found = std::find_if(domainVersions[index].begin(), domainVersions[index].end(),
+                                                [&](const auto& value) { return value.id == id; });
+                if (found != domainVersions[index].end())
+                    continue;
+                AssetDependencyValue fixed;
+                if (!assets || !assets->GetDependencySnapshot(id, fixed, error)) {
+                    if (error.empty())
+                        error = "Author domain dependency requires a ready AssetManager snapshot";
+                    return false;
+                }
+                domainVersions[index].push_back(std::move(fixed));
+            }
+        }
         std::set<PersistentEntityId> entityIds;
         for(const auto& node:asset.entities) entityIds.insert(node.id);
         const auto entityReferences=[&](const ScriptValues& values) {
@@ -504,6 +579,9 @@ namespace Catalpa {
             if (status.IsSuccess() && n.behavior) status = scene.QueueSetBehaviorGraph(id, *n.behavior);
             if (status.IsSuccess() && n.prefab) status = scene.QueueSetPrefabInstance(id, *n.prefab);
             if (status.IsSuccess() && n.mesh) status = scene.QueueSetMeshRenderer(id, renderers.at(index));
+            if (status.IsSuccess() && (!RestoreDomainComponents(scene, id, n.dynamicComponents, error) ||
+                                       !BindDomainComponentVersions(scene, id, domainVersions[index], error)))
+                return false;
             if (status.IsSuccess()) status = scene.CommitPending();
             if (!status.IsSuccess()) { error = status.message; return false; }
         }
@@ -518,9 +596,9 @@ namespace Catalpa {
     bool SceneSerializer::ResolveMesh(const SceneMeshAsset& source, AssetManager* assets,
         MeshRendererComponent& output, std::string& error) try {
         MeshRendererComponent renderer;
+        bool fallback = false;
         if (source.pinned) renderer = *source.pinned;
         else {
-            bool fallback = false;
             if (source.mesh.HasValue()) {
                 if (!assets || !assets->Acquire(source.mesh, renderer.meshVersion, fallback, error) || fallback)
                     return false;
@@ -538,6 +616,19 @@ namespace Catalpa {
                 renderer.materials.push_back(std::move(material));
             }
         }
+        if (renderer.lods.empty() && !source.lods.empty()) {
+            if (source.lods.size() != source.lodErrors.size()) {
+                error = "Scene LOD metadata differs";
+                return false;
+            }
+            for (auto id : source.lods) {
+                AssetVersionRef<MeshAsset> lod;
+                if (!assets || !assets->Acquire(id, lod, fallback, error) || fallback)
+                    return false;
+                renderer.lods.push_back(std::move(lod));
+            }
+            renderer.lodErrors = source.lodErrors;
+        }
         renderer.color = source.color;
         renderer.visible = source.visible;
         if (!ValidateMeshResource(renderer.mesh).IsSuccess()) { error = "Invalid scene geometry"; return false; }
@@ -551,6 +642,8 @@ namespace Catalpa {
         } else if (!renderer.materials.empty()) { error = "Materials require versioned geometry"; return false; }
         for (const auto& material : renderer.materials)
             if (!material.HasValue() || !ValidateMaterialInstance(*material.Get(), error)) return false;
+        if (!ValidateMeshLodChain(renderer.meshVersion, renderer.lods, renderer.lodErrors, error))
+            return false;
         output = std::move(renderer);
         error.clear();
         return true;
@@ -566,6 +659,18 @@ namespace Catalpa {
             return AssetVersionRef<T>::TryCreate(id, dependency->version,
                 std::static_pointer_cast<const T>(dependency->value), output, error);
         };
+        for (auto& node : candidate.entities) {
+            node.dynamicDependencies.clear();
+            for (auto id : DomainComponentDependencies(node.dynamicComponents)) {
+                const auto found = std::find_if(context.dependencies.begin(), context.dependencies.end(),
+                                                [&](const auto& value) { return value.id == id; });
+                if (found == context.dependencies.end()) {
+                    error = "Missing fixed scene domain dependency: " + id.ToString();
+                    return false;
+                }
+                node.dynamicDependencies.push_back(*found);
+            }
+        }
         for (auto& node : candidate.entities) if (node.mesh) {
             MeshRendererComponent renderer;
             renderer.color = node.mesh->color;
@@ -579,6 +684,13 @@ namespace Catalpa {
                 if (!fixed(id, material)) return false;
                 renderer.materials.push_back(std::move(material));
             }
+            for (auto id : node.mesh->lods) {
+                AssetVersionRef<MeshAsset> lod;
+                if (!fixed(id, lod))
+                    return false;
+                renderer.lods.push_back(std::move(lod));
+            }
+            renderer.lodErrors = node.mesh->lodErrors;
             node.mesh->pinned = std::move(renderer);
             MeshRendererComponent checked;
             if (!ResolveMesh(*node.mesh, nullptr, checked, error)) return false;

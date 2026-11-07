@@ -14,6 +14,8 @@ namespace Catalpa::Tools {
         bool Initialize(std::string& error);
         // 返回自有字节，并对本批次重复打开的同一输入校验内容哈希。
         bool Read(const std::filesystem::path&, std::vector<std::byte>&, std::string& error);
+        // 工具配置根来自显式shaderRoot的同级Config，读取也进入重复读/变更/DDC校验。
+        bool ReadConfiguration(std::string_view name, std::vector<std::byte>&, std::string& error);
         // 相对 URI 从引用者所在目录解析，重映射后的目标也必须属于声明的源根。
         bool Resolve(const std::filesystem::path& owner, std::string_view reference, std::filesystem::path&,
                      std::string& error, SourceReferenceSyntax syntax = SourceReferenceSyntax::Uri);
@@ -48,6 +50,7 @@ namespace Catalpa::Tools {
                         std::string& error) const;
         std::vector<std::filesystem::path> m_Roots;
         std::vector<std::string> m_RootNames;
+        std::filesystem::path m_ConfigurationRoot;
         std::vector<AssetSourceDependency> m_Dependencies;
         std::map<std::string, std::filesystem::path, std::less<>> m_RelocatedTextures;
         std::string m_SourceKey;

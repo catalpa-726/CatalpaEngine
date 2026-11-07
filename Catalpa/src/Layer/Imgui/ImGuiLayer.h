@@ -30,11 +30,11 @@ namespace Catalpa {
 		void OnEvent(Event& event) override;
 
 	private:
-		bool m_Ready = false;
-		bool m_ContextCreated = false;
-		std::span<const std::byte> m_FontPixels;
-		Extent2D m_FontExtent{};
-		ImGuiFrameData m_FrameData;
+          bool m_Ready = false;
+          bool m_ContextCreated = false;
+          std::span<const std::byte> m_FontPixels;
+          Extent2D m_FontExtent{};
+          ImGuiFrameData m_FrameData;
 	};
 
 }

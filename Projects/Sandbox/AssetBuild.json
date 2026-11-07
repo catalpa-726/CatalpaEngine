@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "project": "Sandbox.catalpaproj",
+  "shaderRoot": "../../bin/windows-x86_64/Debug/CatalpaBox/Resources/Shaders",
+  "sources": [
+    "Content/Materials/Example.material.json",
+    "Content/Animation/TwoJoint.skeleton.json",
+    "Content/Animation/Idle.animclip.json",
+    "Content/Animation/Swing.animclip.json",
+    "Content/Animation/Locomotion.blendtree.json",
+    "Content/Animation/SkinnedRibbon.gltf",
+    "Content/Materials/Particle.matgraph.json",
+    "Content/Animation/Fountain.particle.json",
+    "Content/Authoring/Move.lua",
+    "Content/Scripts/DynamicLifecycle.lua",
+    "Content/Authoring/WaitMove.behavior.json",
+    "Content/Authoring/Pulse.matgraph.json",
+    "Content/Authoring/ExampleObject.prefab.json",
+    "Content/Authoring/Example.scene.json",
+    "Content/Dynamics/Box.collision.json",
+    "Content/Dynamics/Bouncy.physics-material.json",
+    "Content/Dynamics/Walkable.navmesh.json",
+    "Content/Dynamics/Hills.terrain.json",
+    "Content/Audio/PreviewTone.wav",
+    "Content/UI/Hud.ui.json"
+  ]
+}

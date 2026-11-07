@@ -12,7 +12,16 @@
 #include "Renderer/RenderFramePacket.h"
 #include "Renderer/RendererFrameContext.h"
 #include "Assets/AssetManager.h"
+#include "Runtime/PackageSession.h"
 #include "Core/Jobs/JobSystem.h"
+#include "Runtime/Systems/AnimationSystem.h"
+#include "Runtime/Systems/AudioExtractSystem.h"
+#include "Runtime/Systems/UISystem.h"
+#include "UI/UIInputRouter.h"
+#include "Physics/PhysicsService.h"
+#include "Navigation/NavigationService.h"
+#include "Terrain/TerrainService.h"
+#include "Runtime/Systems/ParticleSystem.h"
 #include "ECS/ComponentRegistry.h"
 #include "Renderer/RenderSurface.h"
 #include "Renderer/Readback/Picking.h"
@@ -41,10 +50,19 @@ namespace Catalpa {
 
         [[nodiscard]] RHIStatus Init(Window& window, const RHIBackendDesc& backendDesc);
         void Shutdown();
+        bool StartPackage(const std::filesystem::path&, std::string& error);
+        bool StopPackage(std::string& error);
         // 宿主传绝对部署资源根；Runtime不从Box目录或源项目推导路径。
         [[nodiscard]] bool ConfigureResources(std::filesystem::path absoluteRoot, std::string& error);
         AssetManager& GetAssets() { return *m_Assets; }
+        [[nodiscard]] const std::filesystem::path& GetResourceRoot() const noexcept {
+            return m_ResourceRoot;
+        }
         JobSystem& GetJobs() noexcept { return m_Jobs; }
+        AudioService& GetAudio() noexcept {
+            return m_Audio;
+        }
+        [[nodiscard]] bool SetEditorGameUI(uint64_t, std::shared_ptr<const UIDrawData>, std::string& error);
         const ComponentRegistry* GetComponentSchemas() const noexcept { return m_ComponentSchemas.get(); }
 
 
@@ -63,9 +81,17 @@ namespace Catalpa {
         [[nodiscard]] InputStatus ConfigureInputProfile(std::string_view json) { return m_Input.ParseProfile(json); }
         // 渲染配置仅在设备初始化前解析并保存，不在飞行帧中热改资源契约。
         [[nodiscard]] RHIStatus ConfigureRendererProfile(std::string_view json);
-        void OnInputEvent(const Event& event) { m_Input.OnEvent(event); }
+        bool OnInputEvent(const Event& event);
+        bool RouteGameUIInput(const UIInputEvent& event, bool& consumed, std::string& error) {
+            return m_GameUISystem.Input(event, consumed, error);
+        }
+        [[nodiscard]] TextInputSnapshot GetGameUITextInput() const {
+            return m_GameUISystem.TextInput();
+        }
         [[nodiscard]] WorldStatus UpdateSimulation(double realSeconds, InputCapture capture, uint32_t width, uint32_t height);
         void StopSimulation() noexcept;
+        // 返回true才转移候选Scene的所有权；false+空error表示无请求或仍在异步加载。
+        bool PollScriptSceneSwitch(SceneHandle& ownedCandidate, std::string& error);
         [[nodiscard]] const FrameTime& GetFrameTime() const noexcept { return m_FrameTime; }
         [[nodiscard]] const RenderFramePacket& GetSceneFrame() const noexcept;
 
@@ -88,11 +114,13 @@ namespace Catalpa {
         [[nodiscard]] bool PollEditorPick(uint64_t ticket, PickingResult& result);
         void CancelEditorPick(uint64_t ticket);
         [[nodiscard]] bool GetGpuFrameMilliseconds(double& milliseconds) const;
+        [[nodiscard]] bool GetManagedGpuPayloadBytes(uint64_t& used, uint64_t& budget) const;
         [[nodiscard]] bool AddDebugBounds(const Aabb& bounds, const Math::Vec4& color, std::string& error, uint64_t surfaceId = 0);
 
     private:
         // 持有运行期对象；Shutdown 显式按 Renderer、交换链、设备的顺序释放。
         std::unique_ptr<RHIDevice> m_Device;
+        Window* m_Window = nullptr; // 借用宿主窗口，生命周期覆盖 Runtime。
         std::unique_ptr<RHISwapchain> m_Swapchain;
         std::unique_ptr<Renderer> m_Renderer;
         SceneManager m_Scenes;
@@ -103,7 +131,23 @@ namespace Catalpa {
         [[nodiscard]] bool InitAssets(std::string& error);
 
         SimulationClock m_Clock;
+        AnimationSystem m_Animation;
+        ParticleSystem m_Particles;
+        AssetVersionRef<MeshAsset> m_ParticleQuad;
+        TerrainService m_Terrain;
+        std::map<uint64_t, std::unique_ptr<TerrainService>> m_TerrainPreviews;
+        PhysicsService m_Physics;
+        NavigationService m_Navigation;
+        AudioService m_Audio;
+        AudioExtractSystem m_AudioExtract;
+        UISystem m_GameUISystem;
+        UIInputRouter m_GameUIInputRouter;
         ScriptRuntime m_Scripts;
+        std::optional<ScriptRuntime::SceneRequest> m_PendingScriptScene;
+        SceneHandle m_StandaloneScriptScene;
+        SceneHandle m_PrePackageScriptScene;
+        bool m_PackageStopping = false;
+        void ForwardDynamicEvents(Scene&);
         BehaviorGraphRuntime m_Behaviors;
         SceneHandle m_PlayScene;
         bool m_PlayPaused = false;
@@ -118,6 +162,9 @@ namespace Catalpa {
         bool m_EditorViewportActive = false;
         bool m_StandalonePaused = false;
         double m_EditorPreviewSeconds = 0;
+        double m_UISeconds = 0;
+        void AppendAnimationFrame(const Scene&, RenderFramePacket&);
+        bool AppendDynamicFrame(Scene&, RenderFramePacket&, bool preview, std::string&);
         std::string m_LastSceneCameraError;
 
         // 由窗口表面变化事件标记重建请求。
@@ -137,16 +184,18 @@ namespace Catalpa {
         [[nodiscard]] bool StorePreviewRequest(SceneHandle scene, uint64_t viewId, Extent2D extent,
             std::optional<RenderView> independentView, std::string& error);
         // UI 提交请求后提取当前帧；Renderer 在队列接受后发布显示帧。
-        [[nodiscard]] bool UpdateEditorPreviews(uint64_t sequence, std::string& error);
+        [[nodiscard]] bool UpdateEditorPreviews(uint64_t sequence, bool primaryFrameFresh, std::string& error);
 
     private:
-        // 缓存上次接受的请求配置。后端可能限制尺寸或回退呈现模式，因此不能用实际结果代替这个缓存，否则容易每轮都重建。
-        RHISwapchainDesc m_LastSwapchainDesc{};
+      PackageSession m_PackageSession;
 
-        // 只处理交换链更新，避免其中的早退跳过正常绘制。
-        [[nodiscard]] RHIStatus UpdateSwapchain(Window& window);
-        // 每个场景安装通用 Transform/提取阶段，不将客户端玩法移入引擎。
-        [[nodiscard]] WorldStatus EnsureSceneSystems(Scene& scene);
+      // 缓存上次接受的请求配置。后端可能限制尺寸或回退呈现模式，因此不能用实际结果代替这个缓存，否则容易每轮都重建。
+      RHISwapchainDesc m_LastSwapchainDesc{};
+
+      // 只处理交换链更新，避免其中的早退跳过正常绘制。
+      [[nodiscard]] RHIStatus UpdateSwapchain(Window& window);
+      // 每个场景安装通用 Transform/提取阶段，不将客户端玩法移入引擎。
+      [[nodiscard]] WorldStatus EnsureSceneSystems(Scene& scene);
     };
 
 }

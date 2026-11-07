@@ -14,6 +14,56 @@
 #include "RHI/RHITextureDesc.h"
 
 namespace Catalpa {
+    RHIStatus VulkanCommandList::ApplyOwnership(const RHIQueueTransfer& transfer,
+                                                const RHIResourceOwnership& before,
+                                                RHIResourceOwnership& after, RHITextureLayout oldLayout,
+                                                RHITextureLayout newLayout) const {
+        after = before;
+        constexpr const char* operation = "VulkanCommandList/OwnershipProof";
+        if (transfer.phase == RHIOwnershipPhase::None) {
+            if (before.IsReleased() ||
+                (before.owner.HasValue() && m_Device.GetQueueInfo(before.owner).family != m_QueueFamily))
+                return {RHIErrorCode::InvalidState, 0, operation};
+            return {};
+        }
+        const auto source = m_Device.GetQueueInfo(transfer.source),
+                   destination = m_Device.GetQueueInfo(transfer.destination);
+        if (!source.id.HasValue() || !destination.id.HasValue() || source.family == destination.family)
+            return {RHIErrorCode::InvalidDescription, 0, operation};
+        if (transfer.phase == RHIOwnershipPhase::Release) {
+            if (source.family != m_QueueFamily || before.IsReleased() ||
+                (before.owner.HasValue() && m_Device.GetQueueInfo(before.owner).family != source.family))
+                return {RHIErrorCode::InvalidState, 0, operation};
+            after.owner = transfer.source;
+            after.releasedTo = transfer.destination;
+            after.releasePoint = {};
+            after.releaseOldLayout = oldLayout;
+            after.releaseNewLayout = newLayout;
+            return {};
+        }
+        if (transfer.phase != RHIOwnershipPhase::Acquire || destination.family != m_QueueFamily ||
+            !before.IsReleased() || before.owner != transfer.source ||
+            before.releasedTo != transfer.destination || !before.releasePoint.HasValue() ||
+            before.releaseOldLayout != oldLayout || before.releaseNewLayout != newLayout)
+            return {RHIErrorCode::InvalidState, 0, operation};
+        after = {};
+        after.owner = transfer.destination;
+        return {};
+    }
+    bool VulkanCommandList::ProvesOwnership(const RHIResourceOwnership& actual,
+                                            const RHIResourceOwnership& expected) const noexcept {
+        if (actual.IsReleased() != expected.IsReleased())
+            return false;
+        if (actual.IsReleased())
+            return actual.owner == expected.owner && actual.releasedTo == expected.releasedTo &&
+                   actual.releaseOldLayout == expected.releaseOldLayout &&
+                   actual.releaseNewLayout == expected.releaseNewLayout;
+        if (!expected.owner.HasValue())
+            return !actual.owner.HasValue() || m_Device.GetQueueInfo(actual.owner).family == m_QueueFamily;
+        if (!actual.owner.HasValue())
+            return m_Device.GetQueueInfo(expected.owner).family == m_QueueFamily;
+        return m_Device.GetQueueInfo(actual.owner).family == m_Device.GetQueueInfo(expected.owner).family;
+    }
 
     VulkanCommandList::~VulkanCommandList()
     {
@@ -29,7 +79,10 @@ namespace Catalpa {
         CAT_CORE_ASSERT(m_CommandBuffer == VK_NULL_HANDLE, "Vulkan command list already initialized!");
 
         const RHIStatus status = pool.AllocatePrimary(m_CommandBuffer);
-        if (status.IsSuccess()) m_State = RHICommandListState::Initial;
+        if (status.IsSuccess()) {
+            m_State = RHICommandListState::Initial;
+            m_QueueFamily = pool.GetQueueFamily();
+        }
         return status;
     }
 
@@ -81,6 +134,50 @@ namespace Catalpa {
 
         std::vector<RHIBufferStateUpdate> bufferUpdates(buffers.begin(), buffers.end());
         std::vector<RHITextureStateUpdate> textureUpdates(textures.begin(), textures.end());
+        m_RequiredGpuDependencies.clear();
+        m_RequiredGpuDependencies.reserve((buffers.size() + textures.size()) * 6);
+        m_LocalTextureOwnership.clear();
+        m_LocalTextureOwnership.reserve(textures.size());
+        const auto require = [&](RHICompletionPoint point) {
+            if (!point.HasValue())
+                return;
+            for (auto& current : m_RequiredGpuDependencies)
+                if (current.device == point.device && current.queue == point.queue) {
+                    current.sequence = std::max(current.sequence, point.sequence);
+                    return;
+                }
+            m_RequiredGpuDependencies.push_back(point);
+        };
+        // 已接受使用的writer/readers来自当前权威状态；提交接受后只能追加已预留身份。
+        for (auto& update : bufferUpdates) {
+            RHIBufferStateSnapshot snapshot;
+            if (const auto status = m_Device.GetBufferState(update.buffer, snapshot); !status.IsSuccess())
+                return status;
+            require(snapshot.state.frontier.writer);
+            if (update.writes || update.after.ownership.IsReleased())
+                for (auto point : snapshot.state.frontier.readers.GetPoints())
+                    require(point);
+            if (snapshot.state.ownership.IsReleased())
+                require(snapshot.state.ownership.releasePoint);
+            update.after.frontier = snapshot.state.frontier;
+            if (const auto status = update.after.frontier.readers.Reserve(4); !status.IsSuccess())
+                return status;
+        }
+        for (auto& update : textureUpdates) {
+            RHITextureStateSnapshot snapshot;
+            if (const auto status = m_Device.GetTextureState(update.view, snapshot); !status.IsSuccess())
+                return status;
+            require(snapshot.state.frontier.writer);
+            if (update.writes || update.after.ownership.IsReleased())
+                for (auto point : snapshot.state.frontier.readers.GetPoints())
+                    require(point);
+            if (snapshot.state.ownership.IsReleased())
+                require(snapshot.state.ownership.releasePoint);
+            m_LocalTextureOwnership.push_back({update.view, snapshot.state.ownership});
+            update.after.frontier = snapshot.state.frontier;
+            if (const auto status = update.after.frontier.readers.Reserve(4); !status.IsSuccess())
+                return status;
+        }
 
         // 声明不证明初始化；从当前权威快照建立独立账本，不能导入after.initialized。
         m_LocalBufferStates.clear();
@@ -132,9 +229,18 @@ namespace Catalpa {
                 [&](const auto& entry) { return entry.buffer == update.buffer; });
             if (local == m_LocalBufferStates.end())
                 return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::UnprovenInitialization" };
+            if (!ProvesOwnership(local->snapshot.state.ownership, update.after.ownership))
+                return {RHIErrorCode::InvalidState, 0, "VulkanCommandList/UnprovenBufferOwnership"};
             for (const auto& range : update.after.initialized)
                 if (!RangeContains(local->snapshot.state.initialized, range.offset, range.size))
                     return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::UnprovenInitialization" };
+        }
+        for (const auto& update : m_TextureStateUpdates) {
+            const auto local = std::find_if(m_LocalTextureOwnership.begin(), m_LocalTextureOwnership.end(),
+                                            [&](const auto& state) { return state.view == update.view; });
+            if (local == m_LocalTextureOwnership.end() ||
+                !ProvesOwnership(local->ownership, update.after.ownership))
+                return {RHIErrorCode::InvalidState, 0, "VulkanCommandList/UnprovenTextureOwnership"};
         }
         return VulkanResourceStateTracker::Validate(
             m_Device.GetResourceRegistry(), m_BufferStateUpdates, m_TextureStateUpdates, true);
@@ -191,10 +297,22 @@ namespace Catalpa {
         const auto& registry = m_Device.GetResourceRegistry();
         std::vector<VkImageMemoryBarrier2> nativeBarriers;
         nativeBarriers.reserve(barriers.size());
+        std::vector<RHIResourceOwnership> ownerships;
+        ownerships.reserve(barriers.size());
 
         for (const auto& desc : barriers) {
             VkImageMemoryBarrier2 native{};
             if (const RHIStatus status = CompileVulkanTextureBarrier(desc, registry, native); !status.IsSuccess()) return status;
+            const auto local = std::find_if(m_LocalTextureOwnership.begin(), m_LocalTextureOwnership.end(),
+                                            [&](const auto& entry) { return entry.view == desc.view; });
+            if (local == m_LocalTextureOwnership.end())
+                return {RHIErrorCode::InvalidState, 0, "VulkanCommandList/UndeclaredOwnership"};
+            RHIResourceOwnership after;
+            if (const auto status = ApplyOwnership(desc.transfer, local->ownership, after, desc.before.layout,
+                                                   desc.after.layout);
+                !status.IsSuccess())
+                return status;
+            ownerships.push_back(after);
 
             if (std::ranges::any_of(nativeBarriers, [image = native.image](const auto& existing) { return existing.image == image; }))
                 return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
@@ -219,6 +337,12 @@ namespace Catalpa {
         };
 
         vkCmdPipelineBarrier2(m_CommandBuffer, &dependencyInfo);
+        for (size_t i = 0; i < barriers.size(); ++i) {
+            const auto local =
+                std::find_if(m_LocalTextureOwnership.begin(), m_LocalTextureOwnership.end(),
+                             [&](const auto& entry) { return entry.view == barriers[i].view; });
+            local->ownership = ownerships[i];
+        }
         return {};
     }
 
@@ -434,10 +558,12 @@ namespace Catalpa {
     RHIStatus VulkanCommandList::WriteTimestamp(const std::shared_ptr<RHIQueryPool>& pool, uint32_t query, bool bottom)
     {
         const auto native = std::dynamic_pointer_cast<VulkanQueryPool>(pool);
-        if ((m_State != RHICommandListState::Recording && m_State != RHICommandListState::Rendering)
-            || !native || native->GetDeviceId() != m_Device.GetDeviceId() || query >= native->GetCount()
-            || std::find(m_RetainedQueries.begin(), m_RetainedQueries.end(), pool) == m_RetainedQueries.end())
+        if ((m_State != RHICommandListState::Recording && m_State != RHICommandListState::Rendering) ||
+            !native || native->GetDeviceId() != m_Device.GetDeviceId() || query >= native->GetCount())
             return { .code = RHIErrorCode::InvalidState, .operation = "VulkanCommandList::WriteTimestamp" };
+        // reset与end timestamp可分属不同graphics批次，池寿命各自由本命令保留。
+        if (std::find(m_RetainedQueries.begin(), m_RetainedQueries.end(), pool) == m_RetainedQueries.end())
+            m_RetainedQueries.push_back(pool);
         vkCmdWriteTimestamp2(m_CommandBuffer, bottom ? VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
             native->GetHandle(), query);
         return {};
@@ -460,6 +586,8 @@ namespace Catalpa {
         m_BufferStateUpdates.clear();
         m_LocalBufferStates.clear();
         m_TextureStateUpdates.clear();
+        m_LocalTextureOwnership.clear();
+        m_RequiredGpuDependencies.clear();
         m_ResourceStatePlanBound = false;
         m_ResourceStatePlanCommitted = false;
 
@@ -499,7 +627,7 @@ namespace Catalpa {
         auto& registry = m_Device.GetResourceRegistry();
         const auto* record = registry.ResolveGraphicsPipeline(pipeline);
 
-        if (!record)
+        if (!record || record->compute)
             return { .code = RHIErrorCode::InvalidDescription, .operation = "VulkanCommandList::BindGraphicsPipeline" };
 
         if (std::ranges::find(m_RetainedPipelines, pipeline) == m_RetainedPipelines.end()) {
@@ -516,6 +644,8 @@ namespace Catalpa {
         m_BoundBindingLayout = record->bindingLayout;
         m_GraphicsBindingsSet = m_BoundBindingCount == 0;
 
+        m_BoundCompute = false;
+        m_StorageBindings.clear();
         vkCmdBindPipeline(m_CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, record->pipeline);
 
         m_BoundPipelineLayout = record->layout;
@@ -544,7 +674,7 @@ namespace Catalpa {
             m_BoundPipelineLayout == VK_NULL_HANDLE)
             return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
-        if (m_PushConstantBytes == 0 || data.size() != m_PushConstantBytes)
+        if (m_BoundCompute || m_PushConstantBytes == 0 || data.size() != m_PushConstantBytes)
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
 
         vkCmdPushConstants(m_CommandBuffer, m_BoundPipelineLayout, m_PushConstantStages, 0, m_PushConstantBytes, data.data());
@@ -553,10 +683,16 @@ namespace Catalpa {
         return {};
     }
 
-    RHIStatus VulkanCommandList::SetGraphicsBindings(std::span<const RHIBinding> bindings)
-    {
+    RHIStatus VulkanCommandList::SetGraphicsBindings(std::span<const RHIBinding> bindings) {
+        if (m_BoundCompute)
+            return {RHIErrorCode::InvalidState, 0, "SetGraphicsBindings"};
+        return SetBindings(bindings);
+    }
+
+    RHIStatus VulkanCommandList::SetBindings(std::span<const RHIBinding> bindings) {
         constexpr const char* operation = "VulkanCommandList::SetGraphicsBindings";
         m_GraphicsBindingsSet = false;
+        m_StorageBindings.clear();
         if ((m_State != RHICommandListState::Recording && m_State != RHICommandListState::Rendering)
             || m_BoundPipelineLayout == VK_NULL_HANDLE || m_BoundBindingLayout == VK_NULL_HANDLE)
             return { .code = RHIErrorCode::InvalidState, .operation = operation };
@@ -605,10 +741,14 @@ namespace Catalpa {
                 LocalBufferState* local = nullptr;
                 if (const auto status = GetLocalBufferState(binding.buffer, local); !status.IsSuccess()) return status;
                 const auto localAccess = local->snapshot.state.access;
-                const bool coversStages = localAccess.stage == RHIPipelineStage::AllCommands
-                    || localAccess.stage == RHIPipelineStage::VertexFragmentShader
-                    || (localAccess.stage == RHIPipelineStage::VertexShader && expected->visibility == RHIShaderVisibility::Vertex)
-                    || (localAccess.stage == RHIPipelineStage::FragmentShader && expected->visibility == RHIShaderVisibility::Fragment);
+                const bool coversStages = localAccess.stage == RHIPipelineStage::AllCommands ||
+                                          localAccess.stage == RHIPipelineStage::VertexFragmentShader ||
+                                          (localAccess.stage == RHIPipelineStage::VertexShader &&
+                                           expected->visibility == RHIShaderVisibility::Vertex) ||
+                                          (localAccess.stage == RHIPipelineStage::FragmentShader &&
+                                           expected->visibility == RHIShaderVisibility::Fragment) ||
+                                          (localAccess.stage == RHIPipelineStage::ComputeShader &&
+                                           expected->visibility == RHIShaderVisibility::Compute);
                 if (localAccess.access != RHIResourceAccess::UniformRead || !coversStages)
                     return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
                 if (binding.size < expected->minimumBufferBytes) return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
@@ -617,16 +757,56 @@ namespace Catalpa {
                 type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
                 break;
             }
+            case RHIBindingType::StorageBuffer: {
+                const auto* record = registry.ResolveBuffer(binding.buffer);
+                LocalBufferState* local = nullptr;
+                if (!record || binding.texture.HasValue() || binding.sampler.HasValue() ||
+                    !HasBufferUsage(record->desc.usage, RHIBufferUsage::Storage) || binding.size == 0 ||
+                    binding.size < expected->minimumBufferBytes ||
+                    binding.size > m_Device.GetCapabilities().maxStorageBufferRange ||
+                    binding.offset % std::max<uint64_t>(
+                                         1, m_Device.GetCapabilities().minStorageBufferOffsetAlignment) !=
+                        0 ||
+                    !IsValidBufferRange(record->desc.size, binding.offset, binding.size))
+                    return {RHIErrorCode::InvalidDescription, 0, operation};
+                if (const auto status = GetLocalBufferState(binding.buffer, local); !status.IsSuccess())
+                    return status;
+                const auto access = local->snapshot.state.access;
+                const bool writesStorage = access.access == RHIResourceAccess::StorageWrite ||
+                                           access.access == RHIResourceAccess::StorageReadWrite;
+                const bool readsStorage = access.access == RHIResourceAccess::StorageRead ||
+                                          access.access == RHIResourceAccess::StorageReadWrite;
+                if ((!writesStorage && !readsStorage) ||
+                    (binding.initializesRange && (!m_BoundCompute || !writesStorage)) ||
+                    (access.stage != RHIPipelineStage::AllCommands &&
+                     (m_BoundCompute ? access.stage != RHIPipelineStage::ComputeShader
+                                     : (access.stage != RHIPipelineStage::VertexFragmentShader &&
+                                        !(access.stage == RHIPipelineStage::VertexShader &&
+                                          expected->visibility == RHIShaderVisibility::Vertex) &&
+                                        !(access.stage == RHIPipelineStage::FragmentShader &&
+                                          expected->visibility == RHIShaderVisibility::Fragment)))) ||
+                    ((readsStorage || !binding.initializesRange) &&
+                     !RangeContains(local->snapshot.state.initialized, binding.offset, binding.size)))
+                    return {RHIErrorCode::InvalidDescription, 0, operation};
+                buffers[i] = {record->buffer, binding.offset, binding.size};
+                type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                m_StorageBindings.push_back(binding);
+                break;
+            }
             default: return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
             }
-            writes[i] = {
-                .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-                .dstBinding = binding.binding,
-                .descriptorCount = 1,
-                .descriptorType = type,
-                .pImageInfo = binding.type == RHIBindingType::UniformBuffer ? nullptr : &images[i],
-                .pBufferInfo = binding.type == RHIBindingType::UniformBuffer ? &buffers[i] : nullptr
-            };
+            writes[i] = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                         .dstBinding = binding.binding,
+                         .descriptorCount = 1,
+                         .descriptorType = type,
+                         .pImageInfo = (binding.type == RHIBindingType::UniformBuffer ||
+                                        binding.type == RHIBindingType::StorageBuffer)
+                                           ? nullptr
+                                           : &images[i],
+                         .pBufferInfo = (binding.type == RHIBindingType::UniformBuffer ||
+                                         binding.type == RHIBindingType::StorageBuffer)
+                                            ? &buffers[i]
+                                            : nullptr};
         }
         if (requiresLinearFiltering && !texturesSupportLinearFiltering)
             return { .code = RHIErrorCode::Unsupported, .operation = operation };
@@ -642,16 +822,25 @@ namespace Catalpa {
             switch (binding.type) {
             case RHIBindingType::SampledTexture: status=RetainTextureView(binding.texture); break;
             case RHIBindingType::Sampler: status=RetainSampler(binding.sampler); break;
-            case RHIBindingType::UniformBuffer: status=RetainBuffer(binding.buffer); break;
+            case RHIBindingType::UniformBuffer:
+            case RHIBindingType::StorageBuffer:
+                status = RetainBuffer(binding.buffer);
+                break;
             default: return fail({ .code=RHIErrorCode::InvalidDescription,.operation=operation });
             }
             if (!status.IsSuccess()) return fail(status);
         }
         VkDescriptorSet descriptorSet=VK_NULL_HANDLE;
-        if (const auto status=m_Device.ObserveStatus(m_Descriptors.Allocate(m_BoundBindingLayout,descriptorSet));!status.IsSuccess()) return fail(status);
+        if (const auto status = m_Device.ObserveStatus(m_Descriptors.Allocate(
+                m_BoundBindingLayout, std::span(m_BoundBindings).first(m_BoundBindingCount), descriptorSet));
+            !status.IsSuccess())
+            return fail(status);
         for (auto& write:writes) write.dstSet=descriptorSet;
         vkUpdateDescriptorSets(m_Device.GetHandle(),static_cast<uint32_t>(bindings.size()),writes.data(),0,nullptr);
-        vkCmdBindDescriptorSets(m_CommandBuffer,VK_PIPELINE_BIND_POINT_GRAPHICS,m_BoundPipelineLayout,0,1,&descriptorSet,0,nullptr);
+        vkCmdBindDescriptorSets(m_CommandBuffer,
+                                m_BoundCompute ? VK_PIPELINE_BIND_POINT_COMPUTE
+                                               : VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                m_BoundPipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
         m_GraphicsBindingsSet=true;
         return {};
     }
@@ -660,10 +849,11 @@ namespace Catalpa {
     {
         constexpr const char* operation = "VulkanCommandList::Draw";
 
-        if (m_State != RHICommandListState::Rendering
-            || (m_BoundColorFormat == PixelFormat::Unknown && m_BoundDepthFormat == PixelFormat::Unknown)
-            || m_BoundDepthFormat != m_RenderingDepthFormat || (m_RenderingDepthReadOnly && m_BoundDepthWrite)
-            || m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet || !m_PushConstantsSet || !m_GraphicsBindingsSet)
+        if (m_State != RHICommandListState::Rendering || m_BoundCompute ||
+            (m_BoundColorFormat == PixelFormat::Unknown && m_BoundDepthFormat == PixelFormat::Unknown) ||
+            m_BoundDepthFormat != m_RenderingDepthFormat || (m_RenderingDepthReadOnly && m_BoundDepthWrite) ||
+            m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet || !m_PushConstantsSet ||
+            !m_GraphicsBindingsSet)
             return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
         if (m_VertexStride != 0) {
@@ -688,11 +878,11 @@ namespace Catalpa {
     {
         constexpr const char* operation = "VulkanCommandList::DrawIndexed";
 
-        if (m_State != RHICommandListState::Rendering
-            || (m_BoundColorFormat == PixelFormat::Unknown && m_BoundDepthFormat == PixelFormat::Unknown)
-            || m_BoundDepthFormat != m_RenderingDepthFormat || (m_RenderingDepthReadOnly && m_BoundDepthWrite)
-            || m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet || !m_PushConstantsSet || !m_GraphicsBindingsSet ||
-            !m_IndexBufferBound || (m_VertexStride != 0 && !m_VertexBufferBound))
+        if (m_State != RHICommandListState::Rendering || m_BoundCompute ||
+            (m_BoundColorFormat == PixelFormat::Unknown && m_BoundDepthFormat == PixelFormat::Unknown) ||
+            m_BoundDepthFormat != m_RenderingDepthFormat || (m_RenderingDepthReadOnly && m_BoundDepthWrite) ||
+            m_BoundColorFormat != m_RenderingColorFormat || !m_ViewportAndScissorSet || !m_PushConstantsSet ||
+            !m_GraphicsBindingsSet || !m_IndexBufferBound || (m_VertexStride != 0 && !m_VertexBufferBound))
             return { .code = RHIErrorCode::InvalidState, .operation = operation };
 
         const uint64_t firstByte = static_cast<uint64_t>(firstIndex) * m_IndexSize;
@@ -720,6 +910,8 @@ namespace Catalpa {
         const auto& registry = m_Device.GetResourceRegistry();
         std::vector<VkBufferMemoryBarrier2> nativeBarriers;
         nativeBarriers.reserve(barriers.size());
+        std::vector<RHIResourceOwnership> ownerships;
+        ownerships.reserve(barriers.size());
 
         for (const auto& desc : barriers) {
             VkBufferMemoryBarrier2 native{};
@@ -733,6 +925,11 @@ namespace Catalpa {
         for (const auto& desc : barriers) {
             LocalBufferState* local = nullptr;
             if (const auto status = GetLocalBufferState(desc.buffer, local); !status.IsSuccess()) return status;
+            RHIResourceOwnership after;
+            if (const auto status = ApplyOwnership(desc.transfer, local->snapshot.state.ownership, after);
+                !status.IsSuccess())
+                return status;
+            ownerships.push_back(after);
         }
 
         for (const auto& desc : barriers) {
@@ -750,10 +947,12 @@ namespace Catalpa {
 
         vkCmdPipelineBarrier2(m_CommandBuffer, &dependencyInfo);
         // 容量已在原生命令前准备；以下发布局部录制状态不再分配。
-        for (const auto& desc : barriers) {
+        for (size_t i = 0; i < barriers.size(); ++i) {
+            const auto& desc = barriers[i];
             const auto found = std::ranges::find_if(m_LocalBufferStates,
                 [&](const auto& entry) { return entry.buffer == desc.buffer; });
             found->snapshot.state.access = desc.after;
+            found->snapshot.state.ownership = ownerships[i];
         }
         return {};
     }

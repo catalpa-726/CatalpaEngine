@@ -3,6 +3,7 @@
 #include "RHI/RHIDevice.h"
 #include "VulkanHeaders.h"
 #include "VulkanQueue.h"
+#include <mutex>
 
 namespace Catalpa {
 
@@ -13,6 +14,7 @@ namespace Catalpa {
     class VulkanMemoryAllocator;
     class VulkanDebugUtils;
     class VulkanPipelineCache;
+    class VulkanAuxiliaryContext;
 
     class VulkanDevice : public RHIDevice {
     public:
@@ -43,6 +45,15 @@ namespace Catalpa {
 
         VkQueue GetPresentQueue() const { return m_PresentQueue; }
         VulkanQueue& GetGraphicsQueue() override { return *m_GraphicsQueue; }
+        RHIQueue* GetQueue(QueueId) override;
+        RHIQueue& GetQueue(RHIQueueClass) override;
+        RHIQueueInfo GetQueueInfo(QueueId) const override;
+        [[nodiscard]] RHIStatus PrepareAuxiliaryCommands(RHIFrameToken, QueueId, uint32_t,
+                                                         RHIFrameResources&) override;
+        VulkanAuxiliaryContext* ResolveAuxiliary(RHIFrameToken, RHICommandList*, QueueId);
+        [[nodiscard]] bool HasTimelineSemaphores() const noexcept {
+            return m_TimelineEnabled;
+        }
         uint32_t GetFrameCount() const override { return FramesInFlight; }
 
         [[nodiscard]] RHIStatus PrepareFrame(uint32_t slot, uint64_t timeoutNanoseconds, RHIFrameResources& frame, bool& ready) override;
@@ -52,7 +63,10 @@ namespace Catalpa {
 
         // 只登记失设备状态，不在当前调用栈内销毁资源。
         RHIStatus ObserveStatus(RHIStatus status);
-        const RHIStatus& GetFailure() const { return m_DeviceFailure; }
+        RHIStatus GetFailure() const {
+            std::lock_guard lock(m_StatusMutex);
+            return m_DeviceFailure;
+        }
 
         // 后端队列族与帧访问
         uint32_t GetGraphicsQueueFamily() const { return m_GraphicsQueueFamily; }
@@ -70,6 +84,10 @@ namespace Catalpa {
         const VulkanResourceRegistry& GetResourceRegistry() const { return *m_ResourceRegistry; }
 
         const RHICapabilities& GetCapabilities() const override { return m_Capabilities; }
+        bool SupportsScheduledBatches() const noexcept override {
+            return m_TimelineEnabled;
+        }
+        [[nodiscard]] RHIStatus GetMemoryBudgets(std::vector<RHIMemoryHeapBudget>&) const override;
         RHIFormatSupport GetFormatSupport(PixelFormat format) const override;
 
         VulkanMemoryAllocator& GetMemoryAllocator() { return *m_MemoryAllocator; }
@@ -78,6 +96,8 @@ namespace Catalpa {
         // 关闭前收尾与管线管理
         [[nodiscard]] RHIStatus WaitIdleAndDiscardFrameCommands() override;
 
+        [[nodiscard]] RHIStatus CreateComputePipeline(const RHIComputePipelineDesc&,
+                                                      ComputePipelineHandle&) override;
         [[nodiscard]] RHIStatus CreateGraphicsPipeline(const RHIGraphicsPipelineDesc& desc, GraphicsPipelineHandle& pipeline) override;
         void ReleaseGraphicsPipeline(GraphicsPipelineHandle pipeline) override;
 
@@ -109,10 +129,14 @@ namespace Catalpa {
 
         // 队列及其所属队列族
         std::unique_ptr<VulkanQueue> m_GraphicsQueue;
+        std::unique_ptr<VulkanQueue> m_ComputeQueue, m_TransferQueue;
         VkQueue m_PresentQueue = VK_NULL_HANDLE;
 
         uint32_t m_GraphicsQueueFamily = VK_QUEUE_FAMILY_IGNORED;
         uint32_t m_PresentQueueFamily = VK_QUEUE_FAMILY_IGNORED;
+        std::array<std::vector<std::unique_ptr<VulkanAuxiliaryContext>>, FramesInFlight> m_Auxiliary;
+        std::vector<RHIQueueInfo> m_QueueInfos;
+        bool m_TimelineEnabled = false;
 
         // 帧资源先于登记表和逻辑设备释放
         std::array<std::unique_ptr<VulkanFrameContext>, FramesInFlight> m_Frames{};
@@ -126,6 +150,7 @@ namespace Catalpa {
         // 已启用能力与终止性设备状态
         RHICapabilities m_Capabilities{};
         RHIStatus m_DeviceFailure{};
+        mutable std::mutex m_StatusMutex;
     };
 
 }

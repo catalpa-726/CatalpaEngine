@@ -1,4 +1,12 @@
 #include "catpch.h"
+#include "Animation/AnimationAssetLoader.h"
+#include "Physics/CollisionAssetLoader.h"
+#include "Navigation/NavMeshAssetLoader.h"
+#include "Audio/AudioAssetLoader.h"
+#include "UI/UIDocumentAsset.h"
+#include "Particles/ParticleEffect.h"
+#include "Terrain/TerrainAsset.h"
+#include "UI/FontAssetLoader.h"
 #include "Runtime/RuntimeRegistration.h"
 #include "ECS/ComponentRegistry.h"
 #include "Core/Math/TransformMath.h"
@@ -177,15 +185,17 @@ namespace Catalpa {
     bool RegisterRuntimeAssetLoaders(AssetManager& manager,std::string& error)
     {
         // 只供新建manager的启动组合使用；失败即由宿主丢弃未发布manager，不伪称已注册全部领域。
-        return ShaderLibrary::RegisterAssetLoader(manager,error)
-            && RegisterGeometryAssetLoaders(manager,error)
-            && RegisterImageAssetLoader(manager,error)
-            && RegisterMaterialAssetLoaders(manager,error)
-            && RegisterEnvironmentAssetLoader(manager,error)
-            && RegisterSceneAssetLoader(manager,error)
-            && RegisterPrefabAssetLoader(manager,error)
-            && RegisterScriptAssetLoader(manager,error)
-            && RegisterBehaviorGraphAssetLoader(manager,error);
+        return FontAssetLoader::Register(manager, error) &&
+               ShaderLibrary::RegisterAssetLoader(manager, error) &&
+               RegisterGeometryAssetLoaders(manager, error) && RegisterImageAssetLoader(manager, error) &&
+               RegisterMaterialAssetLoaders(manager, error) &&
+               RegisterEnvironmentAssetLoader(manager, error) && RegisterSceneAssetLoader(manager, error) &&
+               RegisterPrefabAssetLoader(manager, error) && RegisterScriptAssetLoader(manager, error) &&
+               RegisterBehaviorGraphAssetLoader(manager, error) &&
+               RegisterAnimationAssetLoaders(manager, error) && RegisterPhysicsAssetLoaders(manager, error) &&
+               RegisterNavigationAssetLoader(manager, error) && AudioAssetLoader::Register(manager, error) &&
+               UIDocumentLoader::Register(manager, error) && RegisterParticleLoader(manager, error) &&
+               RegisterTerrainAssetLoader(manager, error);
     }
     AssetId BuiltinMaterialId(BuiltinMaterialKind kind,bool definition) noexcept
     {

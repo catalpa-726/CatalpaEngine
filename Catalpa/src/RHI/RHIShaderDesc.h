@@ -1,8 +1,8 @@
 #pragma once
 #include "Shaders/ShaderAsset.h"
 namespace Catalpa {
-    enum class RHIShaderStage { Vertex, Fragment };
-    enum class RHIShaderVisibility { None, Vertex, Fragment, VertexFragment };
+    enum class RHIShaderStage { Vertex, Fragment, Compute };
+    enum class RHIShaderVisibility { None, Vertex, Fragment, VertexFragment, Compute };
     // 固定CPU资产版本拥有最终字节码及唯一元数据；入口字符串借用至同步创建结束。
     struct RHIShaderDesc {
         AssetVersionRef<ShaderAsset> asset;

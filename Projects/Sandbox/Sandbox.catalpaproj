@@ -4,7 +4,8 @@
   "name": "Sandbox",
   "contentRoot": "Content",
   "externalSourceRoots": {
-    "archive": "../../CatalpaBox/assets"
+    "archive": "../../CatalpaBox/assets",
+    "enginefonts": "../../Catalpa/Resources/Fonts"
   },
   "derivedDataRoot": "DerivedDataCache",
   "cookedRoot": "Cooked",

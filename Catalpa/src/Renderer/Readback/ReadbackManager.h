@@ -20,6 +20,7 @@ namespace Catalpa {
             std::shared_ptr<void> keepAlive, std::span<const RenderInstanceId> identities, uint64_t& ticket);
         [[nodiscard]] RHIStatus AddPasses(RenderGraph&);
         void OnSubmitted(RHICompletionPoint) noexcept;
+        void OnAccepted(std::span<const RHICompletionPoint>) noexcept;
         void OnCancelled() noexcept;
         [[nodiscard]] bool Poll(uint64_t ticket, PickingResult& output);
         void Cancel(uint64_t ticket) noexcept;

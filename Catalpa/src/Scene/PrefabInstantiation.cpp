@@ -4,6 +4,7 @@
 #include "Scene/SceneSerializer.h"
 #include "Assets/AssetManager.h"
 #include "Scene/PrefabAuthorData.h"
+#include "Scene/DomainComponents.h"
 #include "Core/PlatformServices.h"
 #include "Lighting/EnvironmentAsset.h"
 #include "Scripting/ScriptAsset.h"
@@ -46,6 +47,8 @@ namespace Catalpa {
                 copy.parent = n.parent.HasValue() ? mapping.at(n.parent) : parent;
                 if (copy.script) RemapValues(copy.script->properties, mapping);
                 if (copy.behavior) RemapValues(copy.behavior->variables, mapping);
+                if (!RemapDomainEntityReferences(copy.dynamicComponents, mapping, error))
+                    return false;
                 copy.prefab.reset();
                 if (copy.id == root) {
                     AuthorJson::Json baseline = AuthorJson::Json::object();
@@ -174,6 +177,8 @@ namespace Catalpa {
             value.script = n.script;
             value.behavior = n.behavior;
             value.prefab = n.prefab;
+            value.dynamicComponents = n.dynamicComponents;
+            value.dynamicDependencies = n.dynamicDependencies;
             if (n.mesh) {
                 if (!SceneSerializer::ResolveMesh(*n.mesh, assets, value.mesh.emplace(), error)) return false;
             }

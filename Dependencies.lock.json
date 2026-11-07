@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "scope": "Verified GLM, EnTT, enkiTS and SPIRV-Reflect source archives, the compiled files and license of user-provided ImGuizmo, plus an observed external Vulkan SDK toolchain; the full existing dependency inventory remains incomplete (B01). User-provided Lua, imgui-node-editor and nativefiledialog-extended have local version/build-input records only. S14-S17 user-provided libraries have local version/license evidence and Premake adapters only; no full archive verification. GameNetworkingSockets is not supplied or integrated.",
+  "scope": "Verified GLM, EnTT, enkiTS and SPIRV-Reflect source archives, the compiled files and license of user-provided ImGuizmo, plus an observed external Vulkan SDK toolchain; the full existing dependency inventory remains incomplete (B01). User-provided Lua, imgui-node-editor and nativefiledialog-extended have local version/build-input records only. S14-S17 user-provided libraries retain local version/license evidence, with real runtime/tool consumers recorded below; archive/commit provenance remains unverified. No new upstream acquisition or upgrade was performed. GameNetworkingSockets is not supplied or integrated.",
   "acquiredOn": "2026-11-04",
   "sourceTreeHashAlgorithm": "sha256 of sorted UTF-8 records: relative POSIX path + NUL + lowercase file sha256 + LF; includes every extracted archive file.",
   "dependencies": [
@@ -352,7 +352,10 @@
         "buildHelper": "Script/Build/StageDependencies.lua",
         "mode": "static-library",
         "upstreamSourceModified": false,
-        "scope": "Core library only; no samples or upstream executables"
+        "scope": "Source-only static integration; private SDK types stay inside owning runtime/tool implementations",
+        "consumers": [
+          "Tools/AssetPipeline/Cookers/ModelLodBuilder.cpp"
+        ]
       },
       "licenseEvidence": [
         {
@@ -360,7 +363,7 @@
           "sha256": "2c420c79ff65dea863ce1990a173ebd1e6e5778116d498e54738ae5002799509"
         }
       ],
-      "validation": "Local source/layout and build-list inspection only. No project generation, compilation or execution."
+      "validation": "Source and call-path review only for this implementation batch. No new MSVC, GPU, device or timing validation was performed."
     },
     {
       "name": "zstd",
@@ -385,7 +388,10 @@
         "buildHelper": "Script/Build/StageDependencies.lua",
         "mode": "static-library",
         "upstreamSourceModified": false,
-        "scope": "Core library only; no samples or upstream executables"
+        "scope": "Source-only static integration; private SDK types stay inside owning runtime/tool implementations",
+        "consumers": [
+          "Catalpa/src/Assets/AssetCompression.cpp"
+        ]
       },
       "licenseEvidence": [
         {
@@ -397,7 +403,7 @@
           "sha256": "7055266497633c9025b777c78eb7235af13922117480ed5c674677adc381c9d8"
         }
       ],
-      "validation": "Local source/layout and build-list inspection only. No project generation, compilation or execution."
+      "validation": "Source and call-path review only for this implementation batch. No new MSVC, GPU, device or timing validation was performed."
     },
     {
       "name": "KTX-Software",
@@ -417,7 +423,8 @@
         "buildHelper": "Script/Build/StageDependencies.lua",
         "mode": "static-library",
         "upstreamSourceModified": false,
-        "scope": "KTX read/transcode only; upstream Basis encoder remains unintegrated"
+        "scope": "Prepared optional adapter; current production uses explicit BC1/zstd and the engine animation evaluator; no runtime use is claimed",
+        "consumers": []
       },
       "licenseEvidence": [
         {
@@ -447,7 +454,11 @@
         "buildHelper": "Script/Build/StageDependencies.lua",
         "mode": "static-library",
         "upstreamSourceModified": false,
-        "scope": "Core library only; no samples or upstream executables"
+        "scope": "Source-only static integration; private SDK types stay inside owning runtime/tool implementations",
+        "consumers": [
+          "Catalpa/src/UI/FontAssetLoader.cpp",
+          "Catalpa/third_party/RmlUi/Source/Core/FontEngineDefault"
+        ]
       },
       "licenseEvidence": [
         {
@@ -455,7 +466,7 @@
           "sha256": "84f47dc7f0887dd56b05f2f218060581c055e443bd7af18e46677bec3dcc2473"
         }
       ],
-      "validation": "Local source/layout and build-list inspection only. No project generation, compilation or execution."
+      "validation": "Source and call-path review only for this implementation batch. No new MSVC, GPU, device or timing validation was performed."
     },
     {
       "name": "ozz-animation",
@@ -478,7 +489,8 @@
         "buildHelper": "Script/Build/StageDependencies.lua",
         "mode": "static-library",
         "upstreamSourceModified": false,
-        "scope": "Core library only; no samples or upstream executables"
+        "scope": "Prepared optional adapter; current production uses explicit BC1/zstd and the engine animation evaluator; no runtime use is claimed",
+        "consumers": []
       },
       "licenseEvidence": [
         {
@@ -506,7 +518,10 @@
         "buildHelper": "Script/Build/StageDependencies.lua",
         "mode": "static-library",
         "upstreamSourceModified": false,
-        "scope": "Core library only; no samples or upstream executables"
+        "scope": "Source-only static integration; private SDK types stay inside owning runtime/tool implementations",
+        "consumers": [
+          "Catalpa/src/Physics/Jolt/JoltPhysicsBackend.cpp"
+        ]
       },
       "licenseEvidence": [
         {
@@ -514,7 +529,7 @@
           "sha256": "8d1c7e0303333dfdafcc6583c620eb163e9c6c53c7cebcb53db78eaa9807e76c"
         }
       ],
-      "validation": "Local source/layout and build-list inspection only. No project generation, compilation or execution."
+      "validation": "Source and call-path review only for this implementation batch. No new MSVC, GPU, device or timing validation was performed."
     },
     {
       "name": "miniaudio",
@@ -541,7 +556,11 @@
         "buildHelper": "Script/Build/StageDependencies.lua",
         "mode": "static-library",
         "upstreamSourceModified": false,
-        "scope": "Core library only; no samples or upstream executables"
+        "scope": "Source-only static integration; private SDK types stay inside owning runtime/tool implementations",
+        "consumers": [
+          "Catalpa/src/Audio/Miniaudio/MiniaudioBackend.cpp",
+          "Tools/AssetPipeline/Importers/AudioImporter.cpp"
+        ]
       },
       "licenseEvidence": [
         {
@@ -549,7 +568,7 @@
           "sha256": "cf00884e3bae1ec7b49e96bc014079f5b4c803987586b894ac431779927c67b3"
         }
       ],
-      "validation": "Local source/layout and build-list inspection only. No project generation, compilation or execution."
+      "validation": "Source and call-path review only for this implementation batch. No new MSVC, GPU, device or timing validation was performed."
     },
     {
       "name": "RmlUi",
@@ -570,7 +589,10 @@
         "buildHelper": "Script/Build/StageDependencies.lua",
         "mode": "static-library",
         "upstreamSourceModified": false,
-        "scope": "Core library only; no samples or upstream executables"
+        "scope": "Source-only static integration; private SDK types stay inside owning runtime/tool implementations",
+        "consumers": [
+          "Catalpa/src/UI/UIRuntime.cpp"
+        ]
       },
       "licenseEvidence": [
         {
@@ -578,7 +600,7 @@
           "sha256": "02c6fa90f6a2c1cf69124014fbaaf524affc71ebf76dd4176321bc50a5b0746c"
         }
       ],
-      "validation": "Local source/layout and build-list inspection only. No project generation, compilation or execution."
+      "validation": "Source and call-path review only for this implementation batch. No new MSVC, GPU, device or timing validation was performed."
     },
     {
       "name": "recastnavigation",
@@ -603,7 +625,11 @@
         "buildHelper": "Script/Build/StageDependencies.lua",
         "mode": "static-library",
         "upstreamSourceModified": false,
-        "scope": "Core library only; no samples or upstream executables"
+        "scope": "Source-only static integration; private SDK types stay inside owning runtime/tool implementations",
+        "consumers": [
+          "Tools/AssetPipeline/Navigation/RecastNavMeshBaker.cpp",
+          "Catalpa/src/Navigation/Detour/DetourNavigationBackend.cpp"
+        ]
       },
       "licenseEvidence": [
         {
@@ -611,7 +637,7 @@
           "sha256": "ffad87821cce7cfd3be00b63ffadd01b04e83a4c6a0bcc68f06362ffd42d705e"
         }
       ],
-      "validation": "Local source/layout and build-list inspection only. No project generation, compilation or execution."
+      "validation": "Source and call-path review only for this implementation batch. No new MSVC, GPU, device or timing validation was performed."
     }
   ],
   "externalToolchains": [

@@ -35,6 +35,12 @@ namespace Catalpa {
         // 录制状态与提交登记
         RHICommandListState GetState() const override { return m_State; }
         VkCommandBuffer GetHandle() const { return m_CommandBuffer; }
+        uint32_t GetQueueFamily() const noexcept {
+            return m_QueueFamily;
+        }
+        std::span<const RHICompletionPoint> GetRequiredGpuDependencies() const noexcept {
+            return m_RequiredGpuDependencies;
+        }
 
         // 仅在实际提交成功后调用。
         void MarkSubmitted();
@@ -55,6 +61,11 @@ namespace Catalpa {
 
         // 校验完整绑定布局，分配新 set，并保留其引用资源。
         [[nodiscard]] RHIStatus SetGraphicsBindings(std::span<const RHIBinding> bindings) override;
+        [[nodiscard]] RHIStatus BindComputePipeline(ComputePipelineHandle pipeline) override;
+        [[nodiscard]] RHIStatus SetComputeBindings(std::span<const RHIBinding> bindings) override;
+        [[nodiscard]] RHIStatus SetComputePushConstants(std::span<const std::byte> data) override;
+        [[nodiscard]] RHIStatus Dispatch(uint32_t x, uint32_t y, uint32_t z) override;
+        [[nodiscard]] RHIStatus DrawIndexedIndirect(BufferHandle buffer, uint64_t offset) override;
         [[nodiscard]] RHIStatus Draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0) override;
 
         [[nodiscard]] RHIStatus PipelineBarrier(std::span<const RHIBufferBarrier> barriers) override;
@@ -70,12 +81,18 @@ namespace Catalpa {
         void EndDebugLabel() override;
 
     private:
-        struct LocalBufferState {
-            BufferHandle buffer{};
-            RHIBufferStateSnapshot snapshot;
-        };
+      [[nodiscard]] RHIStatus SetBindings(std::span<const RHIBinding> bindings);
+      struct LocalBufferState {
+          BufferHandle buffer{};
+          RHIBufferStateSnapshot snapshot;
+      };
         // 首次从权威快照导入；以后只由实际录制的barrier/copy更新，绝不使用整图最终状态。
         [[nodiscard]] RHIStatus GetLocalBufferState(BufferHandle buffer, LocalBufferState*& state);
+        [[nodiscard]] RHIStatus
+        ApplyOwnership(const RHIQueueTransfer&, const RHIResourceOwnership&, RHIResourceOwnership&,
+                       RHITextureLayout oldLayout = RHITextureLayout::Undefined,
+                       RHITextureLayout newLayout = RHITextureLayout::Undefined) const;
+        bool ProvesOwnership(const RHIResourceOwnership&, const RHIResourceOwnership&) const noexcept;
 
         // 录制期资源引用与状态复位
         [[nodiscard]] RHIStatus RetainTextureView(TextureViewHandle handle);
@@ -114,9 +131,11 @@ namespace Catalpa {
         // 帧复用与队列提交负责内部状态变更
         friend class VulkanFrameContext;
         friend class VulkanQueue;
+        friend class VulkanAuxiliaryContext;
 
         // 原生命令缓冲及录制状态
         VkCommandBuffer m_CommandBuffer = VK_NULL_HANDLE;
+        uint32_t m_QueueFamily = VK_QUEUE_FAMILY_IGNORED;
         RHICommandListState m_State = RHICommandListState::Uninitialized;
 
         uint32_t m_DebugLabelDepth = 0;
@@ -139,6 +158,8 @@ namespace Catalpa {
         std::array<RHIBindingLayoutEntry, RHIMaxBindingsPerSet> m_BoundBindings{};
         size_t m_BoundBindingCount = 0;
         bool m_GraphicsBindingsSet = false;
+        bool m_BoundCompute = false;
+        std::vector<RHIBinding> m_StorageBindings;
 
         // 当前管线、渲染附件与动态状态
         PixelFormat m_BoundColorFormat = PixelFormat::Unknown;
@@ -152,6 +173,12 @@ namespace Catalpa {
         std::vector<BufferHandle> m_RetainedBuffers;
         // 命令局部访问/初始化账本，不推导依赖、不发布全局已接受状态。
         std::vector<LocalBufferState> m_LocalBufferStates;
+        struct LocalTextureOwnership {
+            TextureViewHandle view;
+            RHIResourceOwnership ownership;
+        };
+        std::vector<LocalTextureOwnership> m_LocalTextureOwnership;
+        std::vector<RHICompletionPoint> m_RequiredGpuDependencies;
 
         std::vector<RHIBufferStateUpdate> m_BufferStateUpdates;
         std::vector<RHITextureStateUpdate> m_TextureStateUpdates;

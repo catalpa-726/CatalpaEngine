@@ -1,0 +1,6 @@
+<rml>
+<head><title>Catalpa game HUD</title><link type="text/rcss" href="Hud.rcss" /></head>
+<body data-model="catalpa">
+  <div id="panel"><div id="status">{{status}}</div><button id="action">Action</button><input id="name" type="text" data-value="name" maxlength="256" /></div>
+</body>
+</rml>

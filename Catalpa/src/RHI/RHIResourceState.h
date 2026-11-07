@@ -7,9 +7,24 @@
 #include "RHITypes.h"
 #include "RHITextureDesc.h"
 #include "Images/PixelFormat.h"
+#include "RHIQueueTypes.h"
+#include "RHICompletionSet.h"
 
 // 定义资源状态快照、待提交更新，以及 Buffer 初始化区间的公共操作
 namespace Catalpa {
+    struct RHIResourceOwnership {
+        QueueId owner, releasedTo;
+        RHICompletionPoint releasePoint;
+        RHITextureLayout releaseOldLayout = RHITextureLayout::Undefined,
+                         releaseNewLayout = RHITextureLayout::Undefined;
+        [[nodiscard]] bool IsReleased() const noexcept {
+            return releasedTo.HasValue();
+        }
+    };
+    struct RHIResourceFrontier {
+        RHICompletionPoint writer;
+        RHICompletionSet readers;
+    };
 
     // 字节区间；initialized 中保持有序、互不重叠且不相邻。
     struct RHIBufferRange {
@@ -22,6 +37,8 @@ namespace Catalpa {
         RHIBufferAccess access{};
         std::vector<RHIBufferRange> initialized;
         RHICompletionPoint lastUse{};
+        RHIResourceOwnership ownership;
+        RHIResourceFrontier frontier;
     };
 
     // 布局按整个图像跟踪；初始化区间按 layer * mipLevels + mip 跟踪。
@@ -30,6 +47,9 @@ namespace Catalpa {
         RHITextureAccess access{};
         bool initialized = false;
         std::vector<RHIBufferRange> initializedSubresources;
+        RHICompletionPoint lastUse{};
+        RHIResourceOwnership ownership;
+        RHIResourceFrontier frontier;
     };
 
     struct RHIBufferStateSnapshot {
@@ -52,12 +72,14 @@ namespace Catalpa {
         BufferHandle buffer{};
         uint64_t expectedRevision = 0;
         RHIBufferState after{};
+        bool writes = true;
     };
 
     struct RHITextureStateUpdate {
         TextureViewHandle view{};
         uint64_t expectedRevision = 0;
         RHITextureState after{};
+        bool writes = true;
     };
 
     // 用减法检查边界，避免 offset + size 溢出。

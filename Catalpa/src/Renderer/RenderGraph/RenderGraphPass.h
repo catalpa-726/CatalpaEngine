@@ -26,6 +26,24 @@ namespace Catalpa {
         RHIShaderVisibility visibility = RHIShaderVisibility::VertexFragment;
     };
 
+    struct RGStorageBufferBinding {
+        RGBuffer buffer{};
+        uint32_t binding = 0;
+        uint64_t offset = 0, size = 0;
+        RGAccessMode mode = RGAccessMode::Read;
+        bool initializesRange = false;
+    };
+
+    struct RGComputeDesc {
+        ComputePipelineHandle pipeline{};
+        std::array<uint32_t, 3> groups{1, 1, 1};
+        std::vector<std::byte> pushConstants;
+        std::vector<RGStorageBufferBinding> storageBuffers;
+        std::vector<RGUniformBufferBinding> uniformBuffers;
+        std::vector<RGSampledTextureBinding> sampledTextures;
+        bool sideEffect = false;
+    };
+
     // 单顶点流/索引流；color与depth至少提供一个，可声明真正depth-only绘制。
     struct RGIndexedDrawDesc {
         RGBuffer vertices{};
@@ -56,6 +74,10 @@ namespace Catalpa {
         // 非零时使用非索引 Draw；无顶点布局可由 SV_VertexID 生成全屏三角形。
         uint32_t vertexCount = 0;
         uint32_t firstVertex = 0;
+        std::vector<RGStorageBufferBinding> storageBuffers;
+        RGBuffer indirect{};
+        uint64_t indirectOffset = 0;
+        uint32_t sourceInstance = UINT32_MAX;
     };
 
 }

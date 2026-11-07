@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "maxVoices": 64,
+  "maxCommands": 256,
+  "allowNullFallback": true,
+  "forceNull": false
+}

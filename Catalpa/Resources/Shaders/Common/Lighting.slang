@@ -79,3 +79,13 @@ public float3 lightIncident(LightData light, float3 position, out float3 directi
     // 先乘受检强度再两次除距离，避免1/r²先下溢而丢掉仍可表示的低照度。
     return ((light.colorIntensity.rgb * light.colorIntensity.a) * inverseDistance) * inverseDistance * attenuation;
 }
+
+// 每tile32灯与CPU正式容量一致；不支持compute时由CPU显式填充同格式列表。
+[[vk::binding(24,0)]] public ByteAddressBuffer culledLights;
+public uint tileLightBase(float2 pixel) {
+    uint columns=culledLights.Load(0),rows=culledLights.Load(4);
+    uint2 tile=min(uint2(max(pixel,0))/16,uint2(columns,rows)-1);
+    return 16+(tile.y*columns+tile.x)*33*4;
+}
+public uint tileLightCount(float2 pixel) {return min(culledLights.Load(tileLightBase(pixel)),32u);}
+public uint tileLightIndex(float2 pixel,uint index) {return culledLights.Load(tileLightBase(pixel)+4+index*4);}

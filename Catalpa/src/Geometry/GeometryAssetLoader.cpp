@@ -1,4 +1,6 @@
 #include "catpch.h"
+#include "Geometry/MeshLod.h"
+#include "Animation/AnimationAssetLoader.h"
 #include "Geometry/GeometryAssetLoader.h"
 #include "Assets/AssetManager.h"
 #include "Materials/MaterialInstance.h"
@@ -94,6 +96,21 @@ namespace Catalpa {
             }
             w.U32(static_cast<uint32_t>(model.meshes.size()));
             for (const auto& mesh : model.meshes) { w.U32(mesh.node); w.String(mesh.mesh.id.ToString()); w.U32(static_cast<uint32_t>(mesh.materials.size())); for (auto material : mesh.materials) w.String(material.id.ToString()); }
+            // 可选尾部扩展保持既有无动画模型兼容，读端仍拒绝未知标记与尾随字节。
+            w.U32(0x314C444D);
+            w.U32(1);
+            w.String(model.skeleton.HasValue() ? model.skeleton.id.ToString() : std::string{});
+            w.U32(uint32_t(model.animations.size()));
+            for (auto clip : model.animations)
+                w.String(clip.id.ToString());
+            for (const auto& mesh : model.meshes) {
+                w.String(mesh.skin.HasValue() ? mesh.skin.id.ToString() : std::string{});
+                w.U32(uint32_t(mesh.lods.size()));
+                for (size_t lod = 0; lod < mesh.lods.size(); ++lod) {
+                    w.String(mesh.lods[lod].id.ToString());
+                    w.F32(mesh.lodErrors[lod]);
+                }
+            }
             return Finish(w, output, error);
         } catch (const std::exception& exception) { error = exception.what(); return false; }
     }
@@ -124,19 +141,146 @@ namespace Catalpa {
                 mesh.materials.resize(materials);
                 for (auto& material : mesh.materials) if (!r.String(id, 36) || !AssetId::TryParse(id, material.id)) { error = "Invalid model material ID"; return false; }
             }
+            if (!r.AtEnd()) {
+                uint32_t marker, version;
+                std::string id;
+                if (!r.U32(marker) || marker != 0x314C444D || !r.U32(version) || version != 1 ||
+                    !r.String(id, 36)) {
+                    error = "Invalid model extension";
+                    return false;
+                }
+                if (!id.empty() && !AssetId::TryParse(id, model.skeleton.id)) {
+                    error = "Invalid model skeleton";
+                    return false;
+                }
+                if (!r.U32(count) || count > 1024 ||
+                    !charge(size_t(count) *
+                            (sizeof(AssetHandle<AnimationClip>) + sizeof(AssetVersionRef<AnimationClip>)))) {
+                    error = "Model clip budget";
+                    return false;
+                }
+                model.animations.resize(count);
+                for (auto& clip : model.animations)
+                    if (!r.String(id, 36) || !AssetId::TryParse(id, clip.id)) {
+                        error = "Invalid model clip";
+                        return false;
+                    }
+                for (auto& mesh : model.meshes) {
+                    if (!r.String(id, 36) || (!id.empty() && !AssetId::TryParse(id, mesh.skin.id)) ||
+                        !r.U32(count) || count > 8) {
+                        error = "Invalid model skin/LOD";
+                        return false;
+                    }
+                    if (!charge(size_t(count) * (sizeof(AssetHandle<MeshAsset>) + sizeof(float) +
+                                                 sizeof(AssetVersionRef<MeshAsset>))))
+                        return false;
+                    mesh.lods.resize(count);
+                    mesh.lodErrors.resize(count);
+                    for (size_t lod = 0; lod < count; ++lod)
+                        if (!r.String(id, 36) || !AssetId::TryParse(id, mesh.lods[lod].id) ||
+                            !r.F32(mesh.lodErrors[lod])) {
+                            error = "Invalid model LOD";
+                            return false;
+                        }
+                }
+            }
+            const auto fixed = [&]<class T>(AssetId id, AssetVersionRef<T>& output) {
+                const auto value = context.FindDependency<T>(id, [&] {
+                    for (const auto& d : context.dependencies)
+                        if (d.id == id)
+                            return d.version;
+                    return uint64_t(0);
+                }());
+                if (!value) {
+                    error = "Model fixed dependency missing/type mismatch: " + id.ToString();
+                    return false;
+                }
+                for (const auto& d : context.dependencies)
+                    if (d.id == id)
+                        return AssetVersionRef<T>::TryCreate(id, d.version, value, output, error);
+                return false;
+            };
+            if (model.skeleton.HasValue() && !fixed(model.skeleton.id, model.skeletonVersion))
+                return false;
+            for (auto clip : model.animations) {
+                AssetVersionRef<AnimationClip> version;
+                if (!fixed(clip.id, version))
+                    return false;
+                model.animationVersions.push_back(std::move(version));
+            }
+            std::set<AssetId> seenSkins, seenLods;
+            for (const auto& mesh : model.meshes) {
+                if (mesh.skin.HasValue() && seenSkins.insert(mesh.skin.id).second) {
+                    AssetVersionRef<MeshSkinBinding> version;
+                    if (!fixed(mesh.skin.id, version))
+                        return false;
+                    model.skinVersions.push_back(std::move(version));
+                }
+                for (auto lod : mesh.lods)
+                    if (seenLods.insert(lod.id).second) {
+                        AssetVersionRef<MeshAsset> version;
+                        if (!fixed(lod.id, version))
+                            return false;
+                        model.lodVersions.push_back(std::move(version));
+                    }
+            }
             if (!r.AtEnd() || !ValidateModelAsset(model, error)) { if (error.empty()) error = "Trailing model payload"; return false; }
             std::vector<AssetVersionRef<MeshAsset>> meshes;
             for (const auto& dependency : context.dependencies) if (dependency.cppType == std::type_index(typeid(MeshAsset))) {
                 AssetVersionRef<MeshAsset> value; if (!AssetVersionRef<MeshAsset>::TryCreate(dependency.id, dependency.version, std::static_pointer_cast<const MeshAsset>(dependency.value), value, error)) return false; meshes.push_back(std::move(value));
             }
             if (!ValidateModelMeshBindings(model, meshes, error)) return false;
+            const auto sameSkeleton = [&](const AssetVersionRef<SkeletonAsset>& value) {
+                return value.HasValue() && model.skeletonVersion.HasValue() &&
+                       value.GetId() == model.skeletonVersion.GetId() &&
+                       value.GetVersion() == model.skeletonVersion.GetVersion() &&
+                       value.Get() == model.skeletonVersion.Get();
+            };
+            for (const auto& clip : model.animationVersions)
+                if (!sameSkeleton(clip.Get()->skeletonVersion)) {
+                    error = "Model clip references a different fixed skeleton";
+                    return false;
+                }
+            for (const auto& instance : model.meshes) {
+                AssetVersionRef<MeshAsset> base;
+                if (!fixed(instance.mesh.id, base))
+                    return false;
+                if (instance.skin.HasValue()) {
+                    const auto skin =
+                        std::find_if(model.skinVersions.begin(), model.skinVersions.end(),
+                                     [&](const auto& value) { return value.GetId() == instance.skin.id; });
+                    if (skin == model.skinVersions.end() || !sameSkeleton(skin->Get()->skeletonVersion) ||
+                        skin->Get()->meshVersion.GetId() != base.GetId() ||
+                        skin->Get()->meshVersion.GetVersion() != base.GetVersion() ||
+                        skin->Get()->meshVersion.Get() != base.Get()) {
+                        error = "Model skin references another mesh or skeleton version";
+                        return false;
+                    }
+                }
+                std::vector<AssetVersionRef<MeshAsset>> levels;
+                for (const auto id : instance.lods) {
+                    AssetVersionRef<MeshAsset> level;
+                    if (!fixed(id.id, level))
+                        return false;
+                    levels.push_back(std::move(level));
+                }
+                if (!ValidateMeshLodChain(base, levels, instance.lodErrors, error))
+                    return false;
+            }
             for (const auto& mesh : model.meshes) for (auto material : mesh.materials) {
                 const auto found = std::find_if(context.dependencies.begin(), context.dependencies.end(), [&](const auto& d) { return d.id == material.id && d.cppType == std::type_index(typeid(MaterialInstance)); });
                 if (found == context.dependencies.end()) { error = "Model material dependency is missing or has the wrong type"; return false; }
             }
             size_t resident = sizeof(ModelAsset) + model.nodes.capacity() * sizeof(ModelNode) + model.meshes.capacity() * sizeof(ModelMeshInstance);
             for (const auto& node : model.nodes) resident += node.name.capacity() + 1;
-            for (const auto& mesh : model.meshes) resident += mesh.materials.capacity() * sizeof(AssetHandle<MaterialInstance>);
+            for (const auto& mesh : model.meshes)
+                resident += mesh.materials.capacity() * sizeof(AssetHandle<MaterialInstance>) +
+                            mesh.lods.capacity() * sizeof(AssetHandle<MeshAsset>) +
+                            mesh.lodErrors.capacity() * sizeof(float);
+            resident += model.animations.capacity() * sizeof(AssetHandle<AnimationClip>) +
+                        model.animationVersions.capacity() * sizeof(AssetVersionRef<AnimationClip>) +
+                        model.skinVersions.capacity() * sizeof(AssetVersionRef<MeshSkinBinding>) +
+                        model.lodVersions.capacity() * sizeof(AssetVersionRef<MeshAsset>);
             if (resident > context.maxResidentBytes || context.cancellation.IsCancellationRequested()) { error = "Model exceeds budget or was cancelled"; return false; }
             output = MakeAssetLoadResult<ModelAsset>(std::make_shared<const ModelAsset>(std::move(model)), resident); error.clear(); return true;
         } catch (const std::exception& exception) { error = exception.what(); return false; }
@@ -145,7 +289,14 @@ namespace Catalpa {
         AssetLoader mesh, model;
         if (!AssetType::TryParse("mesh", mesh.type) || !AssetType::TryParse("model", model.type)) { error = "Cannot create geometry type keys"; return false; }
         mesh.cppType = std::type_index(typeid(MeshAsset)); model.cppType = std::type_index(typeid(ModelAsset));
-        mesh.decode = [](const AssetContainer& c, const AssetDecodeContext& x, AssetLoadResult& out, std::string& message) { if (c.payloadVersion != 1) { message = "Unsupported mesh payload version (LOD/skin not yet supported)"; return false; } return GeometryAssetLoader::DecodeMesh(c.payload, x, out, message); };
+        mesh.decode = [](const AssetContainer& c, const AssetDecodeContext& x, AssetLoadResult& out,
+                         std::string& message) {
+            if (c.payloadVersion != 1) {
+                message = "Unsupported mesh payload version";
+                return false;
+            }
+            return GeometryAssetLoader::DecodeMesh(c.payload, x, out, message);
+        };
         model.decode = [](const AssetContainer& c, const AssetDecodeContext& x, AssetLoadResult& out, std::string& message) { if (c.payloadVersion != 1) { message = "Unsupported model payload version"; return false; } return GeometryAssetLoader::DecodeModel(c.payload, x, out, message); };
         return manager.RegisterLoader(std::move(mesh), error) && manager.RegisterLoader(std::move(model), error);
     }

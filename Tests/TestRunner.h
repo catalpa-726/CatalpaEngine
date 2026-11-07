@@ -78,4 +78,21 @@ namespace Catalpa::Tests {
     void RunMaterialGraphTests(TestContext&);
     void RunScriptingTests(TestContext&);
     int RunS10S13Tests();
+    void RunDeliveryContractsTests(TestContext&);
+    void RunAssetInspectionTests(TestContext&);
+    void RunLoopbackContractsTests(TestContext&);
+    void RunDynamicPhaseContractsTests(TestContext&);
+    void RunAnimationContractsTests(TestContext&);
+    void RunParticleContractsTests(TestContext&);
+    void RunOptimizationContractsTests(TestContext&);
+    void RunPhysicsNavigationTests(TestContext&);
+    void RunTerrainTests(TestContext&);
+    void RunAudioDomainTests(TestContext&);
+    void RunUIDomainTests(TestContext&);
+    void RunScriptLifecycleTests(TestContext&);
+    void RunReplicationContractsTests(TestContext&);
+    int RunS14S17Tests();
+    void RunAdvancedSchedulingTests(TestContext&);
+    void RunAssetChangeTests(TestContext&);
+    int RunS14FoundationTests(); // 仅已接通的交付/语言/调度/Loopback 契约，不代表 S14-S17 全部完成。
 }

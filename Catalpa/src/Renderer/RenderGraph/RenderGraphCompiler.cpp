@@ -2,6 +2,7 @@
 #include "RenderGraphCompiler.h"
 #include "RenderGraphBuilder.h"
 #include "RHI/RHITextureDesc.h"
+#include "RHI/RHIDevice.h"
 
 namespace Catalpa {
     namespace {
@@ -28,7 +29,8 @@ namespace Catalpa {
         schedule = {};
         constexpr const char* operation = "RenderGraphCompiler::BuildSchedule";
         constexpr uint32_t noPass = std::numeric_limits<uint32_t>::max();
-        if (resources.size() >= noPass || passes.size() >= noPass)
+        constexpr size_t maxPasses = 262144, maxResources = 131072, maxEdges = 4194304;
+        if (resources.size() > maxResources || passes.size() > maxPasses)
             return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
 
         // 区间前沿保留最近写者和其后的全部读者；局部覆盖不会丢失未覆盖范围的版本。
@@ -66,11 +68,15 @@ namespace Catalpa {
             }
         }
         RGCompiledSchedule result;
+        std::set<std::tuple<uint32_t, uint32_t, RGDependencyKind>> edgeKeys;
         const auto addEdge = [&](uint32_t before, uint32_t after, RGDependencyKind kind) {
             if (before == noPass || before == after) return;
             const RGDependency edge{ .before = before, .after = after, .kind = kind };
-            if (std::find(result.dependencies.begin(), result.dependencies.end(), edge) == result.dependencies.end())
+            if (edgeKeys.emplace(before, after, kind).second) {
+                if (result.dependencies.size() >= maxEdges)
+                    throw std::length_error("RenderGraphCompiler/DependencyBudget");
                 result.dependencies.push_back(edge);
+            }
         };
         const auto validAccess = [&](const RGResourceAccess& access) {
             return access.resource < resources.size() && access.size != 0
@@ -124,7 +130,8 @@ namespace Catalpa {
                         segment.readers.clear();
                         if (access.initialization == RGWriteInitialization::Initialize) segment.initialized = true;
                         else if (access.initialization == RGWriteInitialization::Discard) segment.initialized = false;
-                    } else if (std::find(segment.readers.begin(), segment.readers.end(), p) == segment.readers.end()) {
+                    } else if (segment.readers.empty() || segment.readers.back() != p) {
+                        // 声明按pass递增处理；重复只读绑定只能重复当前末尾读者，无需扫描全部历史。
                         segment.readers.push_back(p);
                     }
                 }
@@ -149,34 +156,46 @@ namespace Catalpa {
                 if (segment.writer != noPass) live[segment.writer] = 1;
             }
         }
+        std::vector<std::vector<uint32_t>> outgoing(passes.size()), dataSources(passes.size());
+        std::vector<size_t> indegree(passes.size(), 0);
+        for (const auto& edge : result.dependencies) {
+            outgoing[edge.before].push_back(edge.after);
+            ++indegree[edge.after];
+            if (edge.kind == RGDependencyKind::RAW || edge.kind == RGDependencyKind::Explicit)
+                dataSources[edge.after].push_back(edge.before);
+        }
         // 只有真实数据来源及显式依赖延续存活；WAR/WAW 是顺序约束，不能复活被全覆盖的旧写者。
-        bool changed = true;
-        while (changed) {
-            changed = false;
-            for (const auto& edge : result.dependencies) {
-                if ((edge.kind == RGDependencyKind::RAW || edge.kind == RGDependencyKind::Explicit)
-                    && live[edge.after] && !live[edge.before]) {
-                    live[edge.before] = 1;
-                    changed = true;
+        std::vector<uint32_t> pending;
+        pending.reserve(passes.size());
+        for (uint32_t p = 0; p < passes.size(); ++p)
+            if (live[p])
+                pending.push_back(p);
+        while (!pending.empty()) {
+            const auto pass = pending.back();
+            pending.pop_back();
+            for (const auto source : dataSources[pass])
+                if (!live[source]) {
+                    live[source] = 1;
+                    pending.push_back(source);
                 }
-            }
         }
         // 全声明图稳定拓扑后只过滤死 pass，保留跨死写者传递的 WAR/WAW 顺序，也不隐藏循环。
         const auto sort = [&](std::vector<uint32_t>& order) {
-            std::vector<size_t> indegree(passes.size(), 0);
-            std::vector<uint8_t> done(passes.size(), 0);
-            for (const auto& edge : result.dependencies) ++indegree[edge.after];
-            for (size_t iteration = 0; iteration < passes.size(); ++iteration) {
-                uint32_t next = noPass;
-                for (uint32_t p = 0; p < passes.size(); ++p)
-                    if (!done[p] && indegree[p] == 0) { next = p; break; }
-                if (next == noPass) return false;
-                done[next] = 1;
+            // 最小索引ready集合保持原有稳定顺序；每条边只释放一次，不再逐pass扫描全图。
+            std::set<uint32_t> ready;
+            for (uint32_t p = 0; p < passes.size(); ++p)
+                if (indegree[p] == 0)
+                    ready.insert(p);
+            order.reserve(passes.size());
+            while (!ready.empty()) {
+                const uint32_t next = *ready.begin();
+                ready.erase(ready.begin());
                 order.push_back(next);
-                for (const auto& edge : result.dependencies)
-                    if (edge.before == next) --indegree[edge.after];
+                for (const auto after : outgoing[next])
+                    if (--indegree[after] == 0)
+                        ready.insert(after);
             }
-            return true;
+            return order.size() == passes.size();
         };
         std::vector<uint32_t> validationOrder;
         if (!sort(validationOrder))
@@ -233,7 +252,177 @@ namespace Catalpa {
         }
         if (const auto status = BuildSchedule(resources, declarations, builder.m_Dependencies, outputs, compiled.m_Schedule);
             !status.IsSuccess()) return status;
+        // 别名只用于图私有device buffer。旧资源的末端使用必须先于新资源的入口使用；
+        // 通过真实DAG边证明，不能把某个线性拓扑序误当成跨queue完成顺序。
+        struct AliasSlot
+        {
+            RHIBufferDesc desc;
+            std::vector<uint32_t> exits;
+            BufferHandle buffer;
+        };
+        struct AliasLifetime
+        {
+            std::vector<uint32_t> uses, entries, exits;
+        };
+        std::vector<AliasSlot> slots;
+        std::vector<AliasLifetime> lifetimes(m_Buffers.size());
+        std::vector<RGDependency> aliasEdges = builder.m_Dependencies;
+        for (auto pass : compiled.m_Schedule.passOrder)
+            for (const auto& access : declarations[pass].accesses)
+                if (access.resource < m_Buffers.size() && m_Buffers[access.resource].transient) {
+                    auto& list = lifetimes[access.resource].uses;
+                    // 一个pass只遍历一次，同pass重复绑定仅可能位于当前末项。
+                    if (list.empty() || list.back() != pass)
+                        list.push_back(pass);
+                }
+        const bool hasTransient = std::any_of(lifetimes.begin(), lifetimes.end(),
+                                              [](const auto& value) { return !value.uses.empty(); });
+        std::vector<std::vector<uint32_t>> forward, reverse;
+        std::vector<uint8_t> visited, targets;
+        std::vector<uint32_t> stack;
+        if (hasTransient) {
+            forward.resize(declarations.size());
+            reverse.resize(declarations.size());
+            for (const auto& edge : compiled.m_Schedule.dependencies) {
+                forward[edge.before].push_back(edge.after);
+                reverse[edge.after].push_back(edge.before);
+            }
+            visited.resize(declarations.size());
+            targets.resize(declarations.size());
+            stack.reserve(declarations.size());
+        }
+        const auto boundary = [&](const std::vector<uint32_t>& uses,
+                                  const std::vector<std::vector<uint32_t>>& graph,
+                                  std::vector<uint32_t>& output) {
+            std::fill(visited.begin(), visited.end(), 0);
+            stack.clear();
+            // 从所有使用的下一跳开始：只有经至少一条边到达的使用才有另一个使用祖先。
+            for (auto use : uses)
+                for (auto next : graph[use])
+                    if (!visited[next]) {
+                        visited[next] = 1;
+                        stack.push_back(next);
+                    }
+            while (!stack.empty()) {
+                const auto node = stack.back();
+                stack.pop_back();
+                for (auto next : graph[node])
+                    if (!visited[next]) {
+                        visited[next] = 1;
+                        stack.push_back(next);
+                    }
+            }
+            for (auto use : uses)
+                if (!visited[use])
+                    output.push_back(use);
+        };
+        for (auto& lifetime : lifetimes)
+            if (!lifetime.uses.empty()) {
+                boundary(lifetime.uses, forward, lifetime.entries);
+                boundary(lifetime.uses, reverse, lifetime.exits);
+            }
+        // 一次多源DFS检查新入口是否能到达旧出口；新旧全部使用的笛卡尔积不再逐对搜索。
+        const auto reachesOldExit = [&](const std::vector<uint32_t>& entries,
+                                        const std::vector<uint32_t>& exits) {
+            std::fill(visited.begin(), visited.end(), 0);
+            std::fill(targets.begin(), targets.end(), 0);
+            for (auto exit : exits)
+                targets[exit] = 1;
+            stack.clear();
+            for (auto entry : entries)
+                if (!visited[entry]) {
+                    visited[entry] = 1;
+                    stack.push_back(entry);
+                }
+            while (!stack.empty()) {
+                const auto node = stack.back();
+                stack.pop_back();
+                if (targets[node])
+                    return true;
+                for (auto next : forward[node])
+                    if (!visited[next]) {
+                        visited[next] = 1;
+                        stack.push_back(next);
+                    }
+            }
+            return false;
+        };
+        constexpr size_t maxDependencyEdges = 4194304;
+        const size_t aliasEdgeBudget = maxDependencyEdges - compiled.m_Schedule.dependencies.size();
+        size_t addedAliasEdges = 0;
+        std::vector<std::pair<uint32_t, uint32_t>> assignment;
+        for (uint32_t resource = 0; resource < m_Buffers.size(); ++resource) {
+            auto& value = m_Buffers[resource];
+            const auto& lifetime = lifetimes[resource];
+            if (!value.transient || lifetime.uses.empty())
+                continue;
+            value.handle = {};
+            value.snapshot.state = {};
+            uint32_t selected = UINT32_MAX;
+            for (uint32_t slot = 0; slot < slots.size(); ++slot) {
+                const auto& previous = slots[slot];
+                if (previous.desc.size != value.snapshot.desc.size ||
+                    previous.desc.usage != value.snapshot.desc.usage ||
+                    previous.desc.memory != value.snapshot.desc.memory)
+                    continue;
+                const size_t available = aliasEdgeBudget - addedAliasEdges;
+                // 别名是可选优化。边证明超预算就保持独立分配，不制造平方规模的临时边集。
+                if (lifetime.entries.size() && previous.exits.size() > available / lifetime.entries.size())
+                    continue;
+                if (!reachesOldExit(lifetime.entries, previous.exits)) {
+                    selected = slot;
+                    break;
+                }
+            }
+            if (selected == UINT32_MAX) {
+                selected = uint32_t(slots.size());
+                slots.push_back({value.snapshot.desc, lifetime.exits, {}});
+            }
+            else {
+                auto& previous = slots[selected];
+                for (auto prior : previous.exits)
+                    for (auto next : lifetime.entries) {
+                        aliasEdges.push_back({prior, next, RGDependencyKind::Explicit});
+                        forward[prior].push_back(next);
+                        ++addedAliasEdges;
+                    }
+                previous.exits = lifetime.exits;
+                ++compiled.m_Schedule.aliasedLogicalBufferCount;
+            }
+            assignment.emplace_back(resource, selected);
+        }
+        const auto aliasCount = compiled.m_Schedule.aliasedLogicalBufferCount;
+        if (!slots.empty()) {
+            if (const auto status =
+                    BuildSchedule(resources, declarations, aliasEdges, outputs, compiled.m_Schedule);
+                !status.IsSuccess())
+                return status;
+            compiled.m_Schedule.aliasedLogicalBufferCount = aliasCount;
+            compiled.m_Schedule.transientAllocationCount = uint32_t(slots.size());
+            auto storage = std::make_shared<RGTransientStorage>(builder.m_Device);
+            storage->buffers.reserve(slots.size());
+            uint64_t total = 0;
+            for (auto& slot : slots) {
+                if (slot.desc.size > 128 * 1024 * 1024 - total)
+                    return {RHIErrorCode::OutOfMemory, 0, "RenderGraph/128MiBTransientPayloadBudget"};
+                total += slot.desc.size;
+                if (const auto status = builder.m_Device.CreateBuffer(slot.desc, slot.buffer);
+                    !status.IsSuccess())
+                    return status;
+                storage->buffers.push_back(slot.buffer);
+            }
+            for (const auto [resource, slot] : assignment) {
+                auto& value = m_Buffers[resource];
+                value.handle = slots[slot].buffer;
+                if (const auto status = builder.m_Device.GetBufferState(value.handle, value.snapshot);
+                    !status.IsSuccess())
+                    return status;
+            }
+            compiled.m_Transient = std::move(storage);
+        }
         compiled.m_Queries = builder.m_Queries;
+        if (m_Present.HasValue())
+            compiled.m_PresentView = m_Textures[m_Present.slot.index].handle;
 
         if (m_Passes.size() >= compiled.m_Steps.max_size())
             return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
@@ -300,12 +489,137 @@ namespace Catalpa {
             return {};
         };
 
+        // 捕获被该step实际引用的最终数据状态；不把整张图的最终初始化倒灌给前一批。
+        const auto captureStep = [&](RenderGraphPlan::Step& step) {
+            if (step.sourcePass != UINT32_MAX)
+                for (const auto& access : declarations[step.sourcePass].accesses)
+                    if (access.resource < m_Buffers.size()) {
+                        const auto i = access.resource;
+                        const auto handle = m_Buffers[i].handle;
+                        const auto found = std::find_if(step.bufferStates.begin(), step.bufferStates.end(),
+                                                        [&](const auto& u) { return u.buffer == handle; });
+                        if (found == step.bufferStates.end())
+                            step.bufferStates.push_back({.buffer = handle,
+                                                         .after = buffers[i],
+                                                         .writes = access.mode != RGAccessMode::Read});
+                        else
+                            found->writes = found->writes || access.mode != RGAccessMode::Read;
+                    }
+            const auto addBuffer = [&](BufferHandle handle) {
+                if (!handle.HasValue() || std::any_of(step.bufferStates.begin(), step.bufferStates.end(),
+                                                      [&](const auto& u) { return u.buffer == handle; }))
+                    return;
+                for (uint32_t i = 0; i < m_Buffers.size(); ++i)
+                    if (m_Buffers[i].handle == handle) {
+                        bool writes = false;
+                        if (step.sourcePass != UINT32_MAX)
+                            for (const auto& access : declarations[step.sourcePass].accesses)
+                                if (access.resource == i && access.mode != RGAccessMode::Read)
+                                    writes = true;
+                        step.bufferStates.push_back(
+                            {.buffer = handle, .after = buffers[i], .writes = writes});
+                        return;
+                    }
+            };
+            const auto addTexture = [&](TextureViewHandle handle) {
+                if (!handle.HasValue() || std::any_of(step.textureStates.begin(), step.textureStates.end(),
+                                                      [&](const auto& u) { return u.view == handle; }))
+                    return;
+                for (uint32_t i = 0; i < m_Textures.size(); ++i)
+                    if (m_Textures[i].handle == handle) {
+                        bool writes = false;
+                        if (step.sourcePass != UINT32_MAX)
+                            for (const auto& access : declarations[step.sourcePass].accesses)
+                                if (access.resource == m_Buffers.size() + i &&
+                                    access.mode != RGAccessMode::Read)
+                                    writes = true;
+                        step.textureStates.push_back(
+                            {.view = handle, .after = textures[i], .writes = writes});
+                        return;
+                    }
+            };
+            for (const auto& barrier : step.bufferBarriers)
+                addBuffer(barrier.buffer);
+            for (const auto& barrier : step.textureBarriers)
+                addTexture(barrier.view);
+            for (const auto& binding : step.bindings) {
+                addBuffer(binding.buffer);
+                addTexture(binding.texture);
+            }
+            addBuffer(step.vertices);
+            addBuffer(step.indices);
+            addBuffer(step.indirect);
+        };
         for (const uint32_t passIndex : compiled.m_Schedule.passOrder) {
             const auto& pass = m_Passes[passIndex];
             RenderGraphPlan::Step step;
             step.name = pass.name;
+            step.sourcePass = passIndex;
+            if (pass.kind == PassKind::Compute)
+                step.queue = RHIQueueClass::Compute;
+            else if (pass.kind == PassKind::Copy || pass.kind == PassKind::TextureUpload ||
+                     pass.kind == PassKind::TextureReadback)
+                step.queue = RHIQueueClass::Transfer;
 
-            if (pass.kind == PassKind::Copy) {
+            if (pass.kind == PassKind::Compute) {
+                step.kind = RenderGraphPlan::StepKind::Compute;
+                step.compute = pass.compute;
+                for (const auto& binding : pass.compute.storageBuffers) {
+                    const uint32_t index = binding.buffer.slot.index;
+                    const bool read = binding.mode != RGAccessMode::Write || !binding.initializesRange;
+                    if (read && !RangeContains(buffers[index].initialized, binding.offset, binding.size))
+                        return {RHIErrorCode::InvalidState, 0, "Compute/UninitializedRead"};
+                    const auto access = binding.mode == RGAccessMode::Read ? RHIResourceAccess::StorageRead
+                                        : binding.mode == RGAccessMode::Write
+                                            ? RHIResourceAccess::StorageWrite
+                                            : RHIResourceAccess::StorageReadWrite;
+                    addBufferAccess(step, index, {RHIPipelineStage::ComputeShader, access});
+                    step.bindings.push_back({.binding = binding.binding,
+                                             .type = RHIBindingType::StorageBuffer,
+                                             .buffer = m_Buffers[index].handle,
+                                             .offset = binding.offset,
+                                             .size = binding.size,
+                                             .initializesRange = binding.initializesRange});
+                    if (binding.initializesRange)
+                        MarkInitialized(buffers[index].initialized, binding.offset, binding.size);
+                }
+                for (const auto& binding : pass.compute.uniformBuffers) {
+                    const uint32_t index = binding.buffer.slot.index;
+                    if (!RangeContains(buffers[index].initialized, binding.offset, binding.size))
+                        return {RHIErrorCode::InvalidState, 0, "Compute/UniformRead"};
+                    addBufferAccess(step, index,
+                                    {RHIPipelineStage::ComputeShader, RHIResourceAccess::UniformRead});
+                    step.bindings.push_back({.binding = binding.binding,
+                                             .type = RHIBindingType::UniformBuffer,
+                                             .buffer = m_Buffers[index].handle,
+                                             .offset = binding.offset,
+                                             .size = binding.size});
+                }
+                for (const auto& binding : pass.compute.sampledTextures) {
+                    const uint32_t index = binding.texture.slot.index;
+                    if (!textures[index].initialized)
+                        return {RHIErrorCode::InvalidState, 0, "Compute/TextureRead"};
+                    const RHITextureAccess after{RHIPipelineStage::ComputeShader,
+                                                 RHIResourceAccess::SampledRead,
+                                                 RHITextureLayout::ShaderReadOnly};
+                    step.textureBarriers.push_back(
+                        {.view = m_Textures[index].handle,
+                         .range = fullTextureRange(index),
+                         .before = ConservativeTextureBefore(textures[index].access.layout),
+                         .after = after});
+                    textures[index].access = after;
+                    textureUsed[index] = 1;
+                    step.bindings.push_back({.binding = binding.textureBinding,
+                                             .type = RHIBindingType::SampledTexture,
+                                             .texture = m_Textures[index].handle});
+                    if (std::none_of(step.bindings.begin(), step.bindings.end(), [&](const auto& value) {
+                            return value.binding == binding.samplerBinding;
+                        }))
+                        step.bindings.push_back({.binding = binding.samplerBinding,
+                                                 .type = RHIBindingType::Sampler,
+                                                 .sampler = binding.sampler});
+                }
+            } else if (pass.kind == PassKind::Copy) {
                 const uint32_t source = pass.source.slot.index;
                 const uint32_t destination = pass.destination.slot.index;
 
@@ -336,8 +650,7 @@ namespace Catalpa {
                 }
 
                 MarkInitialized(buffers[destination].initialized, pass.copy.destinationOffset, pass.copy.size);
-            }
-            else if (pass.kind == PassKind::TextureUpload) {
+            } else if (pass.kind == PassKind::TextureUpload) {
                 const uint32_t source = pass.source.slot.index;
                 const uint32_t destination = pass.destinationTexture.slot.index;
 
@@ -375,8 +688,7 @@ namespace Catalpa {
                 destinationState.initialized = RangeContains(destinationState.initializedSubresources, 0,
                     uint64_t(m_Textures[destination].snapshot.mipLevels) * m_Textures[destination].snapshot.arrayLayers);
                 textureUsed[destination] = 1;
-            }
-            else if (pass.kind == PassKind::TextureReadback) {
+            } else if (pass.kind == PassKind::TextureReadback) {
                 const uint32_t source = pass.sourceTexture.slot.index;
                 const uint32_t destination = pass.destination.slot.index;
                 const auto& region = pass.readbackCopy;
@@ -394,8 +706,7 @@ namespace Catalpa {
                 textureUsed[source] = 1;
                 addBufferAccess(step, destination, { RHIPipelineStage::Transfer, RHIResourceAccess::TransferWrite });
                 MarkInitialized(buffers[destination].initialized, region.bufferOffset, pass.textureBytes);
-            }
-            else if (pass.kind == PassKind::Clear) {
+            } else if (pass.kind == PassKind::Clear) {
                 const uint32_t color = pass.clearTexture.slot.index;
                 step.kind = RenderGraphPlan::StepKind::Clear;
                 const bool depthClear = GetPixelFormatInfo(m_Textures[color].snapshot.format).isDepth;
@@ -409,8 +720,7 @@ namespace Catalpa {
                     : RHITextureAccess{ RHIPipelineStage::ColorAttachmentOutput, RHIResourceAccess::ColorWrite, RHITextureLayout::ColorAttachment };
                 if (const auto status = addAttachmentAccess(step, color, RHILoadOp::Clear, RHIStoreOp::Store, clearAccess);
                     !status.IsSuccess()) return status;
-            }
-            else {
+            } else {
                 const auto& draw = pass.draw;
                 const bool indexed = draw.vertexCount == 0;
                 const uint32_t vertices = draw.vertices.slot.index;
@@ -480,6 +790,24 @@ namespace Catalpa {
                         .access = RHIResourceAccess::UniformRead
                     });
                 }
+                if (draw.indirect.HasValue()) {
+                    step.indirect = m_Buffers[draw.indirect.slot.index].handle;
+                    addBufferAccess(step, draw.indirect.slot.index,
+                                    {RHIPipelineStage::DrawIndirect, RHIResourceAccess::IndirectRead});
+                }
+                for (const auto& binding : draw.storageBuffers) {
+                    const uint32_t index = binding.buffer.slot.index;
+                    if (binding.mode != RGAccessMode::Read ||
+                        !RangeContains(buffers[index].initialized, binding.offset, binding.size))
+                        return {RHIErrorCode::InvalidDescription, 0, "Draw/StorageRead"};
+                    addBufferAccess(step, index,
+                                    {RHIPipelineStage::FragmentShader, RHIResourceAccess::StorageRead});
+                    step.bindings.push_back({.binding = binding.binding,
+                                             .type = RHIBindingType::StorageBuffer,
+                                             .buffer = m_Buffers[index].handle,
+                                             .offset = binding.offset,
+                                             .size = binding.size});
+                }
                 if (indexed && vertices == indices) {
                     addBufferAccess(step, vertices, { .stage = RHIPipelineStage::VertexInput, .access = RHIResourceAccess::VertexIndexRead });
                 } else {
@@ -506,12 +834,17 @@ namespace Catalpa {
                 }
             }
 
+            captureStep(step);
             compiled.m_Steps.push_back(std::move(step));
-            if (pass.kind == PassKind::TextureReadback) {
+            if (pass.kind == PassKind::TextureReadback ||
+                (pass.kind == PassKind::Copy &&
+                 m_Buffers[pass.destination.slot.index].snapshot.desc.memory == RHIMemoryDomain::Readback)) {
                 RenderGraphPlan::Step host;
                 host.name = "Readback host visibility";
                 host.kind = RenderGraphPlan::StepKind::Transition;
+                host.queue = RHIQueueClass::Transfer;
                 addBufferAccess(host, pass.destination.slot.index, { RHIPipelineStage::Host, RHIResourceAccess::HostRead });
+                captureStep(host);
                 compiled.m_Steps.push_back(std::move(host));
             }
         }
@@ -519,30 +852,31 @@ namespace Catalpa {
         if (m_Present.HasValue()) {
             const uint32_t present = m_Present.slot.index;
             auto& presentState = textures[present];
-    
+
             if (!presentState.initialized)
                 return { .code = RHIErrorCode::InvalidState, .operation = "RenderGraph::UninitializedPresent" };
-    
+
             RenderGraphPlan::Step presentStep;
             presentStep.name = "Present";
             presentStep.kind = RenderGraphPlan::StepKind::Transition;
             presentStep.color = m_Textures[present].handle;
             presentStep.extent = m_Textures[present].snapshot.extent;
-    
+
             const RHITextureAccess presentAccess{ .layout = RHITextureLayout::Present };
-    
+
             presentStep.textureBarriers.push_back({
                 .view = presentStep.color,
                 .before = ConservativeTextureBefore(presentState.access.layout),
                 .after = presentAccess
                 });
-    
+
             presentState.access = presentAccess;
-    
+
             // 当前交换链 clipped = VK_TRUE，不承诺下一次 Acquire 后可以 Load 旧内容。
             presentState.initialized = false;
             presentState.initializedSubresources.clear();
             textureUsed[present] = 1;
+            captureStep(presentStep);
             compiled.m_Steps.push_back(std::move(presentStep));
         }
 
@@ -558,6 +892,7 @@ namespace Catalpa {
                 .before = ConservativeTextureBefore(state.access.layout), .after = after });
             state.access = after;
             textureUsed[index] = 1;
+            captureStep(exportStep);
             compiled.m_Steps.push_back(std::move(exportStep));
         }
 
@@ -573,6 +908,7 @@ namespace Catalpa {
                 .before = ConservativeTextureBefore(state.access.layout), .after = after });
             state.access = after;
             textureUsed[index] = 1;
+            captureStep(exportStep);
             compiled.m_Steps.push_back(std::move(exportStep));
         }
 
@@ -586,11 +922,18 @@ namespace Catalpa {
 
             buffers[i].revision = revision + 1;
 
-            compiled.m_BufferUpdates.push_back({
-                .buffer = m_Buffers[i].handle,
-                .expectedRevision = revision,
-                .after = std::move(buffers[i])
-                });
+            if (std::any_of(compiled.m_BufferUpdates.begin(), compiled.m_BufferUpdates.end(),
+                            [&](const auto& u) { return u.buffer == m_Buffers[i].handle; }))
+                continue;
+            RHIBufferState finalState = buffers[i];
+            for (const auto& step : compiled.m_Steps)
+                for (const auto& value : step.bufferStates)
+                    if (value.buffer == m_Buffers[i].handle)
+                        finalState = value.after;
+            finalState.revision = revision + 1;
+            compiled.m_BufferUpdates.push_back({.buffer = m_Buffers[i].handle,
+                                                .expectedRevision = revision,
+                                                .after = std::move(finalState)});
         }
 
         for (size_t i = 0; i < m_Textures.size(); ++i) {

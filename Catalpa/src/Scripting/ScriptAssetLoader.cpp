@@ -4,6 +4,19 @@
 #include "Assets/AssetManager.h"
 
 namespace Catalpa {
+    namespace {
+        template <class Map> size_t ModuleMapHeap(const Map& values) {
+            size_t bytes = 4 * sizeof(void*);
+            for (const auto& [name, value] : values)
+                bytes += sizeof(typename Map::value_type) + 4 * sizeof(void*) + name.capacity() + 1;
+            return bytes;
+        }
+        size_t ScriptResidentBytes(const ScriptAsset& value) {
+            // 只计本版本的源码与两张模块表；被固定引用的模块资产由其自己的版本额度保活。
+            return sizeof(value) + value.source.capacity() + 1 + ModuleMapHeap(value.modules) +
+                   ModuleMapHeap(value.moduleVersions);
+        }
+    } // namespace
     bool ReadScriptAsset(std::string_view text, ScriptAsset& output, std::string& error) try {
         using namespace AuthorJson;
         const auto v = Parse(text, 4 * 1024 * 1024);
@@ -57,7 +70,13 @@ namespace Catalpa {
                 if(!AssetVersionRef<ScriptAsset>::TryCreate(id,dependency->version,std::static_pointer_cast<const ScriptAsset>(dependency->value),fixed,error)) return false;
                 asset->moduleVersions.emplace(name,std::move(fixed));
             }
-            output = MakeAssetLoadResult<ScriptAsset>(asset, c.payload.size() * 3 + sizeof(ScriptAsset));
+            const size_t resident = ScriptResidentBytes(*asset);
+            if (resident > context.maxResidentBytes) {
+                error = "Script module tables exceed resident budget";
+                return false;
+            }
+            output = MakeAssetLoadResult<ScriptAsset>(asset, resident);
+            error.clear();
             return true;
         };
         return manager.RegisterLoader(std::move(loader), error);

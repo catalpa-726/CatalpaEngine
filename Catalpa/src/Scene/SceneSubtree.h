@@ -1,4 +1,6 @@
 #pragma once
+#include "Core/Serialization/Archive.h"
+#include "Assets/AssetLoadResult.h"
 #include "Scene/Components/IdentityComponent.h"
 #include "Scene/Components/TransformComponent.h"
 #include "Scene/Components/CameraComponent.h"
@@ -27,6 +29,8 @@ namespace Catalpa {
             std::optional<ScriptComponent> script;
             std::optional<BehaviorGraphComponent> behavior;
             std::optional<PrefabInstanceComponent> prefab;
+            ArchiveValue::Object dynamicComponents;
+            std::vector<AssetDependencyValue> dynamicDependencies;
             bool SameAuthorData(const Node&) const;
         };
 

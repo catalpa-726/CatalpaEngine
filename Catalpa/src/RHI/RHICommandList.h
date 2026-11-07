@@ -51,6 +51,23 @@ namespace Catalpa {
         // 录制管线绑定，并保留其命令引用。
         [[nodiscard]] virtual RHIStatus BindGraphicsPipeline(GraphicsPipelineHandle pipeline) = 0;
 
+        [[nodiscard]] virtual RHIStatus BindComputePipeline(ComputePipelineHandle) {
+            return {.code = RHIErrorCode::Unsupported, .operation = "RHICommandList::BindComputePipeline"};
+        }
+        [[nodiscard]] virtual RHIStatus SetComputeBindings(std::span<const RHIBinding>) {
+            return {.code = RHIErrorCode::Unsupported, .operation = "RHICommandList::SetComputeBindings"};
+        }
+        [[nodiscard]] virtual RHIStatus SetComputePushConstants(std::span<const std::byte>) {
+            return {.code = RHIErrorCode::Unsupported,
+                    .operation = "RHICommandList::SetComputePushConstants"};
+        }
+        [[nodiscard]] virtual RHIStatus Dispatch(uint32_t, uint32_t, uint32_t) {
+            return {.code = RHIErrorCode::Unsupported, .operation = "RHICommandList::Dispatch"};
+        }
+        [[nodiscard]] virtual RHIStatus DrawIndexedIndirect(BufferHandle, uint64_t) {
+            return {.code = RHIErrorCode::Unsupported, .operation = "RHICommandList::DrawIndexedIndirect"};
+        }
+
         // 写入当前图形管线的完整参数块，偏移固定为 0。
         // 每次成功绑定含参数块的管线后，必须重新写入。
         // 数据只在本次调用期间借用，字节数须与管线声明完全一致。

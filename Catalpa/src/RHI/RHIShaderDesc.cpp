@@ -4,9 +4,15 @@ namespace Catalpa {
     bool ValidateRHIShader(const RHIShaderDesc& desc, std::string& error)
     {
         if (!desc.asset.HasValue() || !desc.entryPoint || !*desc.entryPoint) { error = "Shader requires a fixed asset version and entry"; return false; }
-        if (desc.stage != RHIShaderStage::Vertex && desc.stage != RHIShaderStage::Fragment) { error = "Unsupported graphics shader stage"; return false; }
+        if (desc.stage != RHIShaderStage::Vertex && desc.stage != RHIShaderStage::Fragment &&
+            desc.stage != RHIShaderStage::Compute) {
+            error = "Unsupported graphics shader stage";
+            return false;
+        }
         if (!ValidateShaderAsset(*desc.asset.Get(), error)) return false;
-        const auto stage = desc.stage == RHIShaderStage::Vertex ? ShaderStage::Vertex : ShaderStage::Fragment;
+        const auto stage = desc.stage == RHIShaderStage::Vertex     ? ShaderStage::Vertex
+                           : desc.stage == RHIShaderStage::Fragment ? ShaderStage::Fragment
+                                                                    : ShaderStage::Compute;
         if (!FindShaderEntry(desc.asset.Get()->metadata, desc.entryPoint, stage)) { error = "Shader entry/stage is absent from final metadata"; return false; }
         return true;
     }
@@ -52,6 +58,9 @@ namespace Catalpa {
                 RHIBindingType type{};
                 switch (binding.kind) {
                 case ShaderResourceKind::UniformBuffer: type = RHIBindingType::UniformBuffer; break;
+                case ShaderResourceKind::StorageBuffer:
+                    type = RHIBindingType::StorageBuffer;
+                    break;
                 case ShaderResourceKind::SampledImage: type = RHIBindingType::SampledTexture; break;
                 case ShaderResourceKind::Sampler: type = RHIBindingType::Sampler; break;
                 default: error = "Shader resource kind is unsupported by this RHI"; return false;

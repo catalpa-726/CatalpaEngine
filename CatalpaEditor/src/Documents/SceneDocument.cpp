@@ -85,3 +85,24 @@ namespace Catalpa::Editor {
         snapshot.ForEachIdentity([&](PersistentEntityId id) { TrackCreated(id); });
     }
 }
+
+namespace Catalpa::Editor {
+    bool SceneDocument::AdoptPlayScene(SceneHandle candidate, std::string& error) {
+        if (!Playing() || candidate == m_Handle || candidate == m_Play || !m_Scenes.GetScene(candidate)) {
+            error = "Invalid replacement Play scene";
+            return false;
+        }
+        const auto previous = m_Play;
+        auto status = m_Scenes.SetActive(candidate);
+        if (status.IsSuccess())
+            status = m_Scenes.Unload(previous);
+        if (!status.IsSuccess()) {
+            (void)m_Scenes.SetActive(previous);
+            error = status.message;
+            return false;
+        }
+        m_Play = candidate;
+        error.clear();
+        return true;
+    }
+} // namespace Catalpa::Editor

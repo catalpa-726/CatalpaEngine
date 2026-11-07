@@ -2,6 +2,7 @@
 
 #include "RHIHandle.h"
 #include "RHIResourceAccess.h"
+#include "RHIQueueTypes.h"
 
 namespace Catalpa {
 
@@ -12,6 +13,7 @@ namespace Catalpa {
         RHITextureSubresourceRange range{};
         RHITextureAccess before{};
         RHITextureAccess after{};
+        RHIQueueTransfer transfer;
     };
 
     struct RHIBufferCopy {
@@ -32,6 +34,7 @@ namespace Catalpa {
         uint64_t size = 0;
         RHIBufferAccess before{};
         RHIBufferAccess after{};
+        RHIQueueTransfer transfer;
     };
 
     // 将指定子资源的矩形紧密复制到 Buffer，供完成后的异步读回消费。

@@ -91,6 +91,24 @@ namespace Catalpa {
         return {};
     }
 
+    RHIStatus RenderGraphBuilder::CreateTransientBuffer(const RHIBufferDesc& desc, RGBuffer& resource) try {
+        resource = {};
+        if (const auto status = CheckBuilding("RenderGraph/CreateTransientBuffer"); !status.IsSuccess())
+            return status;
+        if (desc.memory != RHIMemoryDomain::Device || desc.size == 0 || desc.size > 64 * 1024 * 1024 ||
+            desc.usage == RHIBufferUsage::None || m_Buffers.size() >= 4096)
+            return {RHIErrorCode::InvalidDescription, 0, "RenderGraph/TransientDescriptionOrBudget"};
+        const auto index = uint32_t(m_Buffers.size());
+        BufferResource buffer;
+        buffer.snapshot.desc = desc;
+        buffer.transient = true;
+        m_Buffers.push_back(std::move(buffer));
+        resource = {m_Id, {index, 1}};
+        return {};
+    } catch (const std::bad_alloc&) {
+        return {RHIErrorCode::OutOfMemory, 0, "RenderGraph/TransientDeclaration"};
+    }
+
     RHIStatus RenderGraphBuilder::ImportTexture(TextureViewHandle view, RGTexture& resource)
     {
         constexpr const char* operation = "RenderGraphBuilder::ImportTexture";
@@ -340,6 +358,21 @@ namespace Catalpa {
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
         if (m_Passes.size() >= GenerationalHandle<RGPassTag>::InvalidIndex || m_Passes.size() == m_Passes.max_size())
             return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
+        if (desc.indirect.HasValue()) {
+            const auto* indirect = Resolve(desc.indirect);
+            if (!indexed || !indirect ||
+                !HasBufferUsage(indirect->snapshot.desc.usage, RHIBufferUsage::Indirect) ||
+                desc.indirectOffset % 4 ||
+                !IsValidBufferRange(indirect->snapshot.desc.size, desc.indirectOffset, 20))
+                return {RHIErrorCode::InvalidDescription, 0, operation};
+        }
+        for (const auto& binding : desc.storageBuffers) {
+            const auto* buffer = Resolve(binding.buffer);
+            if (!buffer || !HasBufferUsage(buffer->snapshot.desc.usage, RHIBufferUsage::Storage) ||
+                binding.mode != RGAccessMode::Read || binding.initializesRange || !binding.size ||
+                !IsValidBufferRange(buffer->snapshot.desc.size, binding.offset, binding.size))
+                return {RHIErrorCode::InvalidDescription, 0, operation};
+        }
         m_Passes.push_back({ .name = name, .kind = PassKind::Draw, .draw = desc });
         return {};
     }
@@ -373,6 +406,42 @@ namespace Catalpa {
             return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
         m_Passes.push_back({ .name = name, .kind = PassKind::Clear,
             .draw = { .clearDepth = clearDepth }, .clearTexture = depth });
+        return {};
+    }
+
+    RHIStatus RenderGraphBuilder::AddComputePass(const char* name, const RGComputeDesc& desc) {
+        constexpr const char* operation = "RenderGraph/AddComputePass";
+        if (const auto status = CheckBuilding(operation); !status.IsSuccess())
+            return status;
+        if (!name || !*name || !desc.pipeline.HasValue() || desc.pipeline.device != m_Device.GetDeviceId() ||
+            !m_Device.GetCapabilities().compute || desc.groups[0] == 0 || desc.groups[1] == 0 ||
+            desc.groups[2] == 0)
+            return {RHIErrorCode::InvalidDescription, 0, operation};
+        for (size_t axis = 0; axis < 3; ++axis)
+            if (desc.groups[axis] > m_Device.GetCapabilities().maxComputeWorkGroupCount[axis])
+                return {RHIErrorCode::Unsupported, 0, operation};
+        for (const auto& binding : desc.storageBuffers) {
+            const auto* buffer = Resolve(binding.buffer);
+            if (!buffer || !HasBufferUsage(buffer->snapshot.desc.usage, RHIBufferUsage::Storage) ||
+                binding.size == 0 ||
+                !IsValidBufferRange(buffer->snapshot.desc.size, binding.offset, binding.size) ||
+                (binding.initializesRange && binding.mode != RGAccessMode::Write))
+                return {RHIErrorCode::InvalidDescription, 0, operation};
+        }
+        for (const auto& binding : desc.uniformBuffers) {
+            const auto* buffer = Resolve(binding.buffer);
+            if (!buffer || !HasBufferUsage(buffer->snapshot.desc.usage, RHIBufferUsage::Uniform) ||
+                !binding.size ||
+                !IsValidBufferRange(buffer->snapshot.desc.size, binding.offset, binding.size))
+                return {RHIErrorCode::InvalidDescription, 0, operation};
+        }
+        for (const auto& binding : desc.sampledTextures) {
+            const auto* texture = Resolve(binding.texture);
+            if (!texture || !binding.sampler.HasValue() ||
+                !HasTextureUsage(texture->snapshot.usage, RHITextureUsage::Sampled))
+                return {RHIErrorCode::InvalidDescription, 0, operation};
+        }
+        m_Passes.push_back({.name = name, .kind = PassKind::Compute, .compute = desc});
         return {};
     }
 
@@ -503,8 +572,9 @@ namespace Catalpa {
         for (const auto& pass : m_Passes) {
             RGPassDeclaration declaration;
             // UploadManager 在整批提交后统一认领已上传资源，两类复制均为不可剔除副作用。
-            declaration.sideEffect = pass.kind == PassKind::Copy || pass.kind == PassKind::TextureUpload
-                || pass.kind == PassKind::TextureReadback;
+            declaration.sideEffect = pass.kind == PassKind::Copy || pass.kind == PassKind::TextureUpload ||
+                                     pass.kind == PassKind::TextureReadback ||
+                                     (pass.kind == PassKind::Compute && pass.compute.sideEffect);
             const auto readBuffer = [&](RGBuffer buffer, uint64_t offset, uint64_t size) {
                 if (size != 0) declaration.accesses.push_back({ .resource = buffer.slot.index, .offset = offset, .size = size });
             };
@@ -518,6 +588,23 @@ namespace Catalpa {
                         : load == RHILoadOp::Clear ? RGWriteInitialization::Initialize : RGWriteInitialization::Preserve });
             };
             switch (pass.kind) {
+            case PassKind::Compute:
+                for (const auto& binding : pass.compute.storageBuffers)
+                    declaration.accesses.push_back({.resource = binding.buffer.slot.index,
+                                                    .offset = binding.offset,
+                                                    .size = binding.size,
+                                                    .mode = binding.mode,
+                                                    .initialization = binding.initializesRange
+                                                                          ? RGWriteInitialization::Initialize
+                                                                          : RGWriteInitialization::Preserve});
+                for (const auto& binding : pass.compute.uniformBuffers)
+                    readBuffer(binding.buffer, binding.offset, binding.size);
+                for (const auto& binding : pass.compute.sampledTextures)
+                    declaration.accesses.push_back(
+                        {.resource = textureIndex(binding.texture),
+                         .size = uint64_t(m_Textures[binding.texture.slot.index].snapshot.mipLevels) *
+                                 m_Textures[binding.texture.slot.index].snapshot.arrayLayers});
+                break;
             case PassKind::Copy:
                 readBuffer(pass.source, pass.copy.sourceOffset, pass.copy.size);
                 declaration.accesses.push_back({ .resource = pass.destination.slot.index,
@@ -551,6 +638,10 @@ namespace Catalpa {
                         static_cast<uint64_t>(draw.indexCount) * indexSize);
                 }
                 for (const auto& uniform : draw.uniformBuffers) readBuffer(uniform.buffer, uniform.offset, uniform.size);
+                if (draw.indirect.HasValue())
+                    readBuffer(draw.indirect, draw.indirectOffset, 20);
+                for (const auto& binding : draw.storageBuffers)
+                    readBuffer(binding.buffer, binding.offset, binding.size);
                 for (const auto& sampled : draw.sampledTextures)
                     declaration.accesses.push_back({ .resource = textureIndex(sampled.texture),
                         .size = uint64_t(m_Textures[sampled.texture.slot.index].snapshot.mipLevels) * m_Textures[sampled.texture.slot.index].snapshot.arrayLayers });

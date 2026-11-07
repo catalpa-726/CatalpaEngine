@@ -8,7 +8,9 @@
 #include "Assets/AssetHandle.h"
 #include "Assets/AssetLoader.h"
 #include "Assets/AssetStatus.h"
+#include "Assets/AssetChangeEvent.h"
 namespace Catalpa {
+    class PackageReader;
     struct AssetManagerConfig {
         // Payload capacities and bounded decode workspace, excluding allocator/control-block overhead.
         // This is managed CPU asset accounting, not a measurement of total process or GPU memory.
@@ -42,6 +44,9 @@ namespace Catalpa {
         bool InstallCookedCatalog(const std::filesystem::path& absoluteRoot, const AssetRegistry& catalog,
                                   std::string& error, bool replaceMountContents = false);
         // Cooked versions are opaque nonzero content keys; request generations provide ordering.
+        // 单会话事务：保存原挂载/目录，退出待所有读任务完成后恢复。
+        bool InstallPackage(std::shared_ptr<const PackageReader>, std::string& error);
+        bool UninstallPackage(std::string& error);
         bool Request(AssetId, std::string& error, bool forceReload = false);
         void Cancel(AssetId);
         void Unload(AssetId);
@@ -51,6 +56,11 @@ namespace Catalpa {
         [[nodiscard]] std::string GetDiagnostic(AssetId) const;
         [[nodiscard]] MemoryBudgetStats GetBudgetStats() const;
         [[nodiscard]] size_t GetPendingCount() const;
+        // 每个消费者保存自己的 cursor；历史溢出时 reset=true，消费者重扫派生缓存。
+        bool ReadChanges(uint64_t& cursor, std::vector<AssetChangeEvent>& output, bool& reset,
+                         std::string& error) const;
+        // 不加载、不选fallback；为作者实例化保活当前可用的精确领域版本。
+        bool GetDependencySnapshot(AssetId, AssetDependencyValue&, std::string& error) const;
         bool GetAsset(AssetId, std::type_index, AssetSnapshot&, std::string& error) const;
         // Explicit engine-generated values use the same identity/version/cache path and memory budget.
         // Builtin producers supply increasing revisions; they cannot replace cooked registry identities.

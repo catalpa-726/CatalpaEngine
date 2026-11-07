@@ -72,14 +72,17 @@ namespace Catalpa {
         loader.decode = [](const AssetContainer& c, const AssetDecodeContext& context,
                            AssetLoadResult& output, std::string& error) {
             if (c.payloadVersion != 1 || context.cancellation.IsCancellationRequested() ||
-                c.payload.size() > context.maxResidentBytes / 4) {
+                c.payload.size() > context.maxResidentBytes) {
                 error = "Prefab payload version, budget or cancellation";
                 return false;
             }
             auto value = std::make_shared<PrefabAsset>();
-            if (!ReadPrefab(std::string_view(reinterpret_cast<const char*>(c.payload.data()), c.payload.size()),
-                            *value, error)) return false;
-            if (!SceneSerializer::BindDependencies(value->scene, context, error)) return false;
+            if (!ReadPrefab(
+                    std::string_view(reinterpret_cast<const char*>(c.payload.data()), c.payload.size()),
+                    *value, error))
+                return false;
+            if (!SceneSerializer::BindDependencies(value->scene, context, error))
+                return false;
             for (const auto& nest : value->nested) {
                 const auto dependency = std::find_if(context.dependencies.begin(), context.dependencies.end(),
                     [&](const auto& d) { return d.id == nest.asset && d.cppType == typeid(PrefabAsset); });
@@ -88,11 +91,22 @@ namespace Catalpa {
                     return false;
                 }
                 AssetVersionRef<PrefabAsset> fixed;
-                if (!AssetVersionRef<PrefabAsset>::TryCreate(nest.asset, dependency->version,
-                    std::static_pointer_cast<const PrefabAsset>(dependency->value), fixed, error)) return false;
+                if (!AssetVersionRef<PrefabAsset>::TryCreate(
+                        nest.asset, dependency->version,
+                        std::static_pointer_cast<const PrefabAsset>(dependency->value), fixed, error))
+                    return false;
                 value->nestedVersions.insert_or_assign(nest.asset, std::move(fixed));
             }
-            output = MakeAssetLoadResult<PrefabAsset>(value, c.payload.size() * 4 + sizeof(PrefabAsset));
+            const size_t resident =
+                EstimateSceneAssetResidentBytes(value->scene) + sizeof(PrefabAsset) - sizeof(SceneAsset) +
+                value->nested.capacity() * sizeof(PrefabNest) + 4 * sizeof(void*) +
+                value->nestedVersions.size() *
+                    (sizeof(decltype(value->nestedVersions)::value_type) + 4 * sizeof(void*));
+            if (resident > context.maxResidentBytes) {
+                error = "Prefab domain tree/fixed dependency budget";
+                return false;
+            }
+            output = MakeAssetLoadResult<PrefabAsset>(value, resident);
             return true;
         };
         return manager.RegisterLoader(std::move(loader), error);

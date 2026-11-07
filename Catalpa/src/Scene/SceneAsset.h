@@ -1,4 +1,6 @@
 #pragma once
+#include "Core/Serialization/Archive.h"
+#include "Assets/AssetLoadResult.h"
 #include "Scene/Components/IdentityComponent.h"
 #include "Scene/Components/TransformComponent.h"
 #include "Scene/Components/CameraComponent.h"
@@ -13,6 +15,8 @@ namespace Catalpa {
     struct SceneMeshAsset {
         AssetId mesh;
         std::vector<AssetId> materials;
+        std::vector<AssetId> lods;
+        std::vector<float> lodErrors;
         MeshResourceRef procedural;
         Math::Vec4 color{1};
         bool visible = true;
@@ -31,6 +35,8 @@ namespace Catalpa {
         std::optional<ScriptComponent> script;
         std::optional<BehaviorGraphComponent> behavior;
         std::optional<PrefabInstanceComponent> prefab;
+        ArchiveValue::Object dynamicComponents;
+        std::vector<AssetDependencyValue> dynamicDependencies;
     };
 
     // 作者值和稳定引用，不含 World 槽位、系统回调或 GPU 对象。
@@ -38,4 +44,6 @@ namespace Catalpa {
         std::string name;
         std::vector<SceneEntityAsset> entities;
     };
+    // 容量与值树节点的保守载荷估算；不重复计入独立资产版本拥有的像素/几何。
+    CATALPA_API size_t EstimateSceneAssetResidentBytes(const SceneAsset&) noexcept;
 }

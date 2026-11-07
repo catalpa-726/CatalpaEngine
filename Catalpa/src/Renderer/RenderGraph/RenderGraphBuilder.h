@@ -22,6 +22,8 @@ namespace Catalpa {
 
         // 导入设备资源及状态快照，同一资源重复导入返回同一图内句柄。
         [[nodiscard]] CATALPA_API RHIStatus ImportBuffer(BufferHandle buffer, RGBuffer& resource);
+        // 仅图内使用，逻辑内容始终从未初始化开始。编译器以真实依赖边证明别名生命周期。
+        [[nodiscard]] CATALPA_API RHIStatus CreateTransientBuffer(const RHIBufferDesc&, RGBuffer& resource);
         [[nodiscard]] CATALPA_API RHIStatus ImportTexture(TextureViewHandle view, RGTexture& resource);
 
         // 登记复制或索引绘制，同时保存访问推导所需的参数。
@@ -30,6 +32,7 @@ namespace Catalpa {
         [[nodiscard]] CATALPA_API RHIStatus AddTextureUploadPass(const char* name, RGBuffer source, RGTexture destination, const RHIBufferTextureCopy& copy);
         [[nodiscard]] CATALPA_API RHIStatus AddTextureReadbackPass(const char* name, RGTexture source, RGBuffer destination, const RHITextureBufferCopy& copy);
         [[nodiscard]] CATALPA_API RHIStatus AddDrawPass(const char* name, const RGIndexedDrawDesc& desc);
+        [[nodiscard]] CATALPA_API RHIStatus AddComputePass(const char* name, const RGComputeDesc& desc);
         // 空场景也以真实附件Clear初始化颜色，不用零顶点绘制或旧内容掩盖未初始化。
         [[nodiscard]] CATALPA_API RHIStatus AddClearPass(const char* name, RGTexture color, std::array<float, 4> clearColor);
         [[nodiscard]] CATALPA_API RHIStatus AddDepthClearPass(const char* name, RGTexture depth, float clearDepth);
@@ -50,6 +53,7 @@ namespace Catalpa {
         struct BufferResource {
             BufferHandle handle{};
             RHIBufferStateSnapshot snapshot{};
+            bool transient = false;
         };
 
         struct TextureResource {
@@ -57,7 +61,7 @@ namespace Catalpa {
             RHITextureStateSnapshot snapshot{};
         };
 
-        enum class PassKind { Copy, TextureUpload, TextureReadback, Draw, Clear };
+        enum class PassKind { Copy, TextureUpload, TextureReadback, Draw, Clear, Compute };
 
         // 保存不同 Pass 的声明参数，由 Compile 生成实际命令步骤。
         struct Pass {
@@ -74,6 +78,7 @@ namespace Catalpa {
             RGIndexedDrawDesc draw{};
             RGTexture clearTexture{};
             std::array<float, 4> clearColor{};
+            RGComputeDesc compute{};
         };
 
         // 检查图仍处于允许添加声明的阶段。

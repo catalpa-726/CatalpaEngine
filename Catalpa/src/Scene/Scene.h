@@ -86,28 +86,31 @@ namespace Catalpa {
         [[nodiscard]] WorldStatus GetIdentity(EntityId entity, IdentityComponent& output) const;
 
     private:
-        friend class TransformSystem;
-        friend class ModelInstantiation;
-        friend class ScriptCommands;
-        friend class PrefabReconciler;
-        [[nodiscard]] WorldStatus ValidateEntity(EntityId entity) const noexcept;
-        [[nodiscard]] WorldStatus InitializeEntity(EntityId entity, PersistentEntityId persistent, const std::string& name, const Math::TransformTRS& local, EntityId parent);
-        [[nodiscard]] WorldStatus DestroySubtree(EntityId entity);
-        [[nodiscard]] WorldStatus SetLocal(EntityId entity, const Math::TransformTRS& local);
-        [[nodiscard]] WorldStatus SetParent(EntityId entity, EntityId parent, bool keepWorld);
-        [[nodiscard]] WorldStatus ValidateComponent(std::string_view type, const ArchiveValue& fields);
+      friend class DynamicComponentAccess;
+      friend class TransformSystem;
+      friend class ModelInstantiation;
+      friend class ScriptCommands;
+      friend class PrefabReconciler;
+      [[nodiscard]] WorldStatus ValidateEntity(EntityId entity) const noexcept;
+      [[nodiscard]] WorldStatus InitializeEntity(EntityId entity, PersistentEntityId persistent,
+                                                 const std::string& name, const Math::TransformTRS& local,
+                                                 EntityId parent);
+      [[nodiscard]] WorldStatus DestroySubtree(EntityId entity);
+      [[nodiscard]] WorldStatus SetLocal(EntityId entity, const Math::TransformTRS& local);
+      [[nodiscard]] WorldStatus SetParent(EntityId entity, EntityId parent, bool keepWorld);
+      [[nodiscard]] WorldStatus ValidateComponent(std::string_view type, const ArchiveValue& fields);
 
-        std::string m_Name;
-        std::shared_ptr<const ComponentRegistry> m_ComponentSchemas;
-        std::string m_ComponentDiagnostic;
-        World m_World;
-        SystemScheduler m_Systems;
-        EntityCommandBuffer m_Commands;
-        EntityCommandApplyResult m_LastCommands;
-        std::map<PersistentEntityId, EntityId> m_Entities;
-        bool m_Dirty = false;
-        bool m_Committing = false;
-        bool m_UpdatingTransforms = false;
+      std::string m_Name;
+      std::shared_ptr<const ComponentRegistry> m_ComponentSchemas;
+      std::string m_ComponentDiagnostic;
+      World m_World;
+      SystemScheduler m_Systems;
+      EntityCommandBuffer m_Commands;
+      EntityCommandApplyResult m_LastCommands;
+      std::map<PersistentEntityId, EntityId> m_Entities;
+      bool m_Dirty = false;
+      bool m_Committing = false;
+      bool m_UpdatingTransforms = false;
     };
 
 }

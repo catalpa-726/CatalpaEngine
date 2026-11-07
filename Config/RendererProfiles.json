@@ -4,5 +4,6 @@
   "depthFormat": "D32_Float",
   "depthPrepass": true,
   "normalDebug": false,
+  "asyncQueues": true,
   "clearColor": [0.02, 0.02, 0.025, 1.0]
 }

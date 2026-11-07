@@ -20,6 +20,32 @@ namespace Catalpa {
         for (const auto& instance : packet.instances) identities.push_back(instance.id);
         if (const auto status = surface.uniforms.Prepare(m_FrameSlot, packet, m_Profile, extent); !status.IsSuccess()) return status;
         auto& frame = surface.frames[m_FrameSlot];
+        if (const auto status = GpuScenePasses::Prepare(
+                m_Device, m_Compute, packet, *surface.uniforms.GetView(m_FrameSlot), extent, frame.gpu);
+            !status.IsSuccess())
+            return status;
+        frame.skins.resize(packet.instances.size());
+        std::vector<bool> skinned(packet.instances.size(), false);
+        for (const auto& input : packet.skinning) {
+            const auto found = std::find_if(packet.instances.begin(), packet.instances.end(),
+                                            [&](const auto& instance) { return instance.id == input.id; });
+            if (found == packet.instances.end())
+                return {RHIErrorCode::InvalidDescription, 0, "Skinning/instance missing"};
+            const auto index = size_t(found - packet.instances.begin());
+            if (skinned[index] || !input.binding.HasValue() || !input.binding.Get()->meshVersion.HasValue() ||
+                !found->meshVersion.HasValue() ||
+                found->meshVersion.GetId() != input.binding.Get()->meshVersion.GetId() ||
+                found->meshVersion.GetVersion() != input.binding.Get()->meshVersion.GetVersion() ||
+                found->meshVersion.Get() != input.binding.Get()->meshVersion.Get())
+                return {RHIErrorCode::InvalidDescription, 0, "Skinning/duplicate or mismatched mesh binding"};
+            skinned[index] = true;
+            if (const auto status = SkinningPass::Prepare(m_Device, m_Compute, input, frame.skins[index]);
+                !status.IsSuccess())
+                return status;
+        }
+        for (size_t index = 0; index < skinned.size(); ++index)
+            if (!skinned[index])
+                frame.skins[index] = SkinningFrame{};
         PackedLightingData lighting;
         const uint32_t mipLevels = surface.environmentVersion.HasValue()
             ? surface.environmentVersion.Get()->specular.image.mipLevels : 1;
@@ -94,6 +120,16 @@ namespace Catalpa {
                 RGBuffer imported;
                 if (const auto status = graph.ImportBuffer(buffer, imported); !status.IsSuccess()) return status;
                 draw.uniformBuffers.push_back({ imported, binding.binding, offset, bytes, binding.visibility });
+            } else if (binding.type == RHIBindingType::StorageBuffer && binding.binding == 24) {
+                RGBuffer list;
+                if (m_Device.GetCapabilities().compute)
+                    list = frame.gpu.lightListsGraph;
+                else if (const auto status = graph.ImportBuffer(frame.gpu.lightLists.buffer, list);
+                         !status.IsSuccess())
+                    return status;
+                if (!list.HasValue())
+                    return {RHIErrorCode::InvalidState, 0, "Renderer/LightListGraphIdentity"};
+                draw.storageBuffers.push_back({list, 24, 0, frame.gpu.lightListBytes});
             } else {
                 TextureViewHandle texture;
                 SamplerHandle sampler{};
@@ -132,6 +168,15 @@ namespace Catalpa {
         if (!view || !visibility || !packing || !surface.targets)
             return { .code = RHIErrorCode::InvalidState, .operation = operation };
         const auto extent = surface.targets->extent;
+        if (m_Device.GetCapabilities().compute) {
+            auto& gpu = surface.frames[m_FrameSlot].gpu;
+            if (const auto status = graph.CreateTransientBuffer({.size = gpu.lightListBytes,
+                                                                 .usage = RHIBufferUsage::Storage,
+                                                                 .memory = RHIMemoryDomain::Device},
+                                                                gpu.lightListsGraph);
+                !status.IsSuccess())
+                return status;
+        }
         const float clearDepth = view->lens.reversedZ ? 0.0f : 1.0f;
         RGTexture color, depth, display, shadowDepth, pickColor, pickDepth;
         if (const auto status = graph.ImportTexture(surface.targets->hdr.view, color); !status.IsSuccess()) return status;
@@ -173,6 +218,21 @@ namespace Catalpa {
             if (const auto status = SkyboxPass::Add(graph, std::move(sky)); !status.IsSuccess()) return status;
         }
 
+        auto& dynamicFrame = surface.frames[m_FrameSlot];
+        for (size_t index = 0; index < packet.instances.size(); ++index) {
+            if (index >= dynamicFrame.skins.size() || !dynamicFrame.skins[index].pipeline ||
+                std::none_of(packet.skinning.begin(), packet.skinning.end(),
+                             [&](const auto& skin) { return skin.id == packet.instances[index].id; }))
+                continue;
+            const auto& geometry = surface.instances[index].geometry;
+            if (geometry)
+                if (const auto status = SkinningPass::Add(graph, geometry->vertices,
+                                                          geometry->asset.Get()->mesh->GetData().vertexCount,
+                                                          dynamicFrame.skins[index]);
+                    !status.IsSuccess())
+                    return status;
+        }
+
         const auto makeDraw = [&](size_t instanceIndex, uint32_t submeshIndex, const PipelineResource& pipeline,
             bool shadow, RGIndexedDrawDesc& output) -> RHIStatus {
             if (instanceIndex >= surface.instances.size() || !surface.instances[instanceIndex].geometry)
@@ -183,13 +243,25 @@ namespace Catalpa {
             const auto& submesh = mesh.submeshes[submeshIndex];
             if (submesh.materialSlot >= gpu.materials.size()) return { .code = RHIErrorCode::InvalidState, .operation = operation };
             RGIndexedDrawDesc draw;
-            if (const auto status = graph.ImportBuffer(gpu.geometry->vertices, draw.vertices); !status.IsSuccess()) return status;
+            if (const auto status = graph.ImportBuffer(
+                    instanceIndex < dynamicFrame.skins.size() && dynamicFrame.skins[instanceIndex].pipeline &&
+                            std::any_of(
+                                packet.skinning.begin(), packet.skinning.end(),
+                                [&](const auto& skin) {
+                                    return skin.id == packet.instances[instanceIndex].id;
+                                })
+                        ? dynamicFrame.skins[instanceIndex].output.buffer
+                        : gpu.geometry->vertices,
+                    draw.vertices);
+                !status.IsSuccess())
+                return status;
             if (const auto status = graph.ImportBuffer(gpu.geometry->indices, draw.indices); !status.IsSuccess()) return status;
             draw.color = shadow ? RGTexture{} : color;
             draw.depth = shadow ? shadowDepth : depth;
             draw.pipeline = pipeline.pipeline;
             draw.indexType = mesh.indexType == MeshIndexType::UInt16 ? RHIIndexType::UInt16 : RHIIndexType::UInt32;
             draw.indexCount = submesh.indexCount;
+            draw.sourceInstance = static_cast<uint32_t>(instanceIndex);
             draw.firstIndex = submesh.firstIndex;
             draw.baseVertex = submesh.baseVertex;
             const Extent2D drawExtent = shadow ? Extent2D{ 1024, 1024 } : extent;
@@ -260,6 +332,20 @@ namespace Catalpa {
         }
         if (m_Profile.depthPrepass)
             if (const auto status = DepthPrepass::Add(graph, depthDraws, clearDepth); !status.IsSuccess()) return status;
+        if (m_Device.GetCapabilities().compute) {
+            auto& gpu = surface.frames[m_FrameSlot].gpu;
+            if (const auto status = GpuScenePasses::AddDepth(graph, depth, m_NearestEnvironmentSampler,
+                                                             view->lens.reversedZ, gpu);
+                !status.IsSuccess())
+                return status;
+            if (const auto status = GpuScenePasses::AddLights(graph, uint32_t(packet.lights.size()), gpu);
+                !status.IsSuccess())
+                return status;
+            if (const auto status = GpuScenePasses::AddVisibility(m_Device, graph, packet, *view,
+                                                                  m_Profile.depthPrepass, forwardDraws, gpu);
+                !status.IsSuccess())
+                return status;
+        }
         if (const auto status = ForwardPass::Add(graph, forwardDraws, m_Profile.depthPrepass); !status.IsSuccess()) return status;
         if (const auto status = TransparentPass::Add(graph, transparentDraws); !status.IsSuccess()) return status;
         if (picking) {
@@ -293,6 +379,10 @@ namespace Catalpa {
         tonemap.sampledTextures.push_back({ color, hdrSampler, 0, 1 });
         const float exposure = packet.environment ? packet.environment->settings.exposureEV : 0;
         if (const auto status = TonemapPass::Add(graph, std::move(tonemap), exposure); !status.IsSuccess()) return status;
+        if (surface.gameUIDraw)
+            if (const auto status = surface.gameUI.Add(graph, display, extent, m_FrameSlot);
+                !status.IsSuccess())
+                return status;
         return graph.ExportTexture(display);
     }
 }

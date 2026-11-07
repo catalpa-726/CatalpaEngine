@@ -28,8 +28,14 @@ namespace Catalpa {
 		inline void SetEventCallback(const EventCallbackFn& callback) override { m_Data.EventCallback = callback; }
 		void SetVSync(bool enabled) override;
 		bool IsVSync() const override;
+                bool SetTextInputTarget(uint64_t, const TextInputSnapshot&, TextCompositionCallback,
+                                        std::string& error) override;
+                void ClearTextInputTarget(uint64_t) override;
+                bool HasTextInputTarget() const noexcept override {
+                    return m_Data.imeOwner != 0;
+                }
 
-		virtual void* GetNativeWindow() const { return m_Window; }
+                virtual void* GetNativeWindow() const { return m_Window; }
 
 	private:
 		virtual void Init(const WindowProps& props);
@@ -45,9 +51,13 @@ namespace Catalpa {
 			bool VSync;
 
 			EventCallbackFn EventCallback;
-		};
+                        uint64_t imeOwner = 0;
+                        bool composing = false;
+                        void* originalProcedure = nullptr;
+                        TextCompositionCallback compositionCallback;
+                };
 
 		WindowData m_Data{};
 	};
 
-}
+} // namespace Catalpa

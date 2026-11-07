@@ -16,6 +16,9 @@ namespace Catalpa {
         LuaScriptBackend& operator=(const LuaScriptBackend&) = delete;
         bool Start(const ScriptAsset&, const ScriptValues&, ScriptApi&, std::string&) override;
         bool Call(std::string_view, double, ScriptApi&, std::string&) override;
+        bool Event(std::string_view, const ScriptValues&, ScriptApi&, std::string&) override;
+        bool ExportState(uint32_t&, ScriptValues&, std::string&) override;
+        bool ImportState(uint32_t, const ScriptValues&, ScriptApi&, std::string&) override;
         bool SetModules(std::map<std::string, std::shared_ptr<const ScriptAsset>, std::less<>>, std::string&);
         static bool CheckSource(std::string_view source, std::string& error);
       private:

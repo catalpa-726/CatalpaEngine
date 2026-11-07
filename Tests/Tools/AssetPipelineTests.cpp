@@ -286,18 +286,26 @@ Connections: {
 
         // 4K边界独立于用户原件，验证旧64MiB上限之外的容器及CPU解码准入。
         void LargeImageContract(TestContext& context) {
+            constexpr uint32_t side = 4096;
+            constexpr size_t baseBytes = size_t(side) * side * 4;
             ImageAsset image;
             image.sourceUri = "synthetic:4k-rgba";
             auto& v = image.image;
-            v.width = v.height = 4096;
+            v.width = v.height = side;
             v.format = PixelFormat::RGBA8_SRGB;
             v.colorSpace = ImageColorSpace::SRGB;
-            v.pixels.resize(size_t(4096) * 4096 * 4);
-            v.subresources.push_back({0, 0, 0, 4096, 4096, 1, 0, 4096 * 4, v.pixels.size(), v.pixels.size()});
-            std::string error;
+            v.alphaMode = ImageAlphaMode::Straight;
+            v.pixels.resize(baseBytes);
+            v.pixels.front() = std::byte{0x91};
+            v.pixels[3] = std::byte{0x80};
+            v.pixels.back() = std::byte{0xff};
+            v.subresources.push_back({0, 0, 0, side, side, 1, 0, side * 4, baseBytes, baseBytes});
+
+            std::string error, baseHash;
             std::vector<std::byte> payload;
             AssetBuildProduct product;
             const auto encoded =
+                ComputeAssetContentHash(v.pixels, baseHash, error) &&
                 TextureCooker::Encode(image, payload, error) &&
                 AssetArchiveWriter::Encode(AssetId::FromWords(5, 6), "image", payload, {}, product, error);
             CheckOperation(context, encoded, "4K RGBA plus metadata fits bounded cooked format: ", error);
@@ -316,11 +324,37 @@ Connections: {
             const auto loaded =
                 read && ImageAssetLoader::DecodePayload(container.payload, limits, decoded, error);
             CheckOperation(context, loaded, "4K exact pixels decode without resize: ", error);
-            if (loaded)
-                context.Check(
-                    std::static_pointer_cast<const ImageAsset>(decoded.value)->image.pixels.size() ==
-                        size_t(4096) * 4096 * 4,
-                    "4K decoded pixel count is unchanged");
+            if (!loaded)
+                return;
+
+            const auto& cooked = std::static_pointer_cast<const ImageAsset>(decoded.value)->image;
+            size_t chainBytes = 0;
+            for (uint32_t extent = side; extent > 0; extent >>= 1)
+                chainBytes += size_t(extent) * extent * 4;
+            context.Check(cooked.format == PixelFormat::RGBA8_SRGB && cooked.width == side &&
+                              cooked.height == side && cooked.mipLevels == 13 &&
+                              cooked.subresources.size() == 13 && cooked.pixels.size() == chainBytes,
+                          "The 4K RGBA image retains the complete mip chain down to 1x1");
+
+            const auto base = std::find_if(cooked.subresources.begin(), cooked.subresources.end(),
+                                           [](const auto& sub) {
+                                               return sub.mip == 0 && sub.layer == 0 && sub.face == 0;
+                                           });
+            std::string decodedHash;
+            const std::span<const std::byte> pixels(cooked.pixels);
+            const bool exactBase =
+                base != cooked.subresources.end() && base->width == side && base->height == side &&
+                base->rowPitch == side * 4 && base->byteLength == baseBytes &&
+                base->offset <= pixels.size() && baseBytes <= pixels.size() - base->offset &&
+                ComputeAssetContentHash(pixels.subspan(size_t(base->offset), baseBytes), decodedHash, error) &&
+                decodedHash == baseHash;
+            context.Check(exactBase, "Decoded mip zero preserves every byte of the original 4K image");
+
+            limits.maxResidentBytes = baseBytes;
+            const auto previous = decoded.value;
+            context.Check(!ImageAssetLoader::DecodePayload(container.payload, limits, decoded, error) &&
+                              error.find("budget") != error.npos && decoded.value == previous,
+                          "A base-level-only budget rejects the mip chain without replacing the loaded image");
         }
 
         void SceneContracts(AssetManager& manager, const AssetBuildResult& built, TestContext& context) {

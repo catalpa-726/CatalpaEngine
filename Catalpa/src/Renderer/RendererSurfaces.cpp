@@ -14,7 +14,7 @@ namespace Catalpa {
         const bool created = found == m_Previews.end();
         if (found == m_Previews.end()) {
             if (m_Previews.size() >= 8) { error = "Preview surface budget is eight independent views"; return false; }
-            found = m_Previews.emplace(surfaceId, std::make_unique<Surface>(m_Device)).first;
+            found = m_Previews.emplace(surfaceId, std::make_unique<Surface>(m_Device, m_Textures)).first;
         }
         auto& surface = *found->second;
         if (const auto resolved = ResolveEnvironmentSnapshot(packet, surface.scene.GetFrame()); !resolved.IsSuccess()) {
@@ -73,7 +73,7 @@ namespace Catalpa {
         const bool created = found == m_Previews.end();
         if (found == m_Previews.end()) {
             if (m_Previews.size() >= 8) { error = "Preview surface budget is eight independent views"; return false; }
-            found = m_Previews.emplace(surfaceId, std::make_unique<Surface>(m_Device)).first;
+            found = m_Previews.emplace(surfaceId, std::make_unique<Surface>(m_Device, m_Textures)).first;
         }
         auto& surface = *found->second;
         if (surface.imageOnly && surface.previewImage && surface.previewImage->asset.Get() == image.Get()

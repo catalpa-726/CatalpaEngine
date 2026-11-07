@@ -76,6 +76,7 @@ namespace Catalpa {
         std::vector<RGDependency> dependencies;
         std::vector<RGAccessVersion> versions;
         uint32_t culledPassCount = 0;
+        uint32_t transientAllocationCount = 0, aliasedLogicalBufferCount = 0;
     };
 
 }

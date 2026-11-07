@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Catalpa network-defaults protocol version 1",
+  "description": "Matches ReadLoopbackSettings and Resources/Config/NetworkProfiles.json. maxRetiredIdentities must also be at least maxTombstones. Faults are deterministic bounded in-process message simulation. Formal cross-process/cross-machine transport, security and product networking acceptance are explicitly deferred by user decision.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "transport": {
+      "const": "loopback"
+    },
+    "tickRate": {
+      "type": "integer",
+      "minimum": 30,
+      "maximum": 120
+    },
+    "maxEntities": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 256
+    },
+    "maxTombstones": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1024
+    },
+    "maxRetiredIdentities": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65536
+    },
+    "maxPacketBytes": {
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 61440
+    },
+    "delayTicks": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 32
+    },
+    "dropEvery": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000
+    },
+    "duplicateEvery": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000
+    },
+    "reorder": {
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "transport",
+    "tickRate",
+    "maxEntities",
+    "maxTombstones",
+    "maxRetiredIdentities",
+    "maxPacketBytes",
+    "delayTicks",
+    "dropEvery",
+    "duplicateEvery",
+    "reorder"
+  ]
+}

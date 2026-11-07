@@ -1,4 +1,5 @@
 #include "catpch.h"
+#include "Commands/PackageCommands.h"
 #include "Commands/ToolCommandRunner.h"
 #include "AssetPipeline/Importers/ShaderImporter.h"
 #include "AssetPipeline/Cookers/ShaderCooker.h"
@@ -12,6 +13,8 @@
 #include "MaterialGraph/MaterialGraphCompiler.h"
 namespace Catalpa::Tools {
     ToolCommandResult ToolCommandRunner::Run(std::span<const std::string> args,CancellationToken cancellation){
+        if (!args.empty() && (args[0] == "--inspect" || args[0] == "--package"))
+            return RunPackageCommand(args, cancellation);
         ToolCommandResult result;
         auto fail=[&](std::string message,int code=1){result.exitCode=cancellation.IsCancellationRequested()?130:code;result.diagnostics.push_back(std::move(message));return result;};
         try {
