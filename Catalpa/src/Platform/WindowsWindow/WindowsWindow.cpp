@@ -338,6 +338,11 @@ namespace Catalpa {
 		return glfwGetWindowAttrib(m_Window, GLFW_ICONIFIED) == GLFW_TRUE;
 	}
 
+	void WindowsWindow::Maximize()
+	{
+		glfwMaximizeWindow(m_Window);
+	}
+
 	void WindowsWindow::SetVSync(bool enabled) {
 		// 保存 VSync 请求；EngineRuntime 据此选择并重建交换链的呈现模式。
 		m_Data.VSync = enabled;

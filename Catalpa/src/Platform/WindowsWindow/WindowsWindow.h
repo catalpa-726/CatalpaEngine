@@ -23,6 +23,7 @@ namespace Catalpa {
 
 		std::pair<uint32_t, uint32_t> GetFramebufferSize() const override;
 		bool IsMinimized() const override;
+		void Maximize() override;
 
 		// 事件分发与呈现配置请求。
 		inline void SetEventCallback(const EventCallbackFn& callback) override { m_Data.EventCallback = callback; }

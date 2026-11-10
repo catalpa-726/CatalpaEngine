@@ -67,7 +67,7 @@ namespace Catalpa::Tests {
                 if (!panel || !target || !panel->Active || !target->Active || !target->DockNode) return;
                 auto* main = ImGui::GetMainViewport();
                 const auto* scene = ImGui::FindWindowByName("###Catalpa.Viewport");
-                if (scene && scene->Active && (!scene->DockNode || !scene->DockNode->IsCentralNode() || scene->Viewport != main)) {
+                if (!scene || !scene->Active || !scene->DockNode || !scene->DockNode->IsCentralNode() || scene->Viewport != main) {
                     Finish(false, "Scene viewport left the central node of the main window");
                     return;
                 }
@@ -128,12 +128,6 @@ namespace Catalpa::Tests {
             }
             bool AdvanceDrag() {
                 ++m_Step;
-                if (m_Step <= 4 || m_Step == 18 || m_Step == 26) {
-                    const auto& g = *ImGui::GetCurrentContext();
-                    CAT_INFO("[dock input] step={} wanted=({},{}) actual=({},{}) down={} active={} hovered={} viewport={}",
-                        m_Step, m_Position.x, m_Position.y, g.IO.MousePos.x, g.IO.MousePos.y, g.IO.MouseDown[0],
-                        g.ActiveId, g.HoveredWindow ? g.HoveredWindow->Name : "-", g.IO.MouseHoveredViewport);
-                }
                 if (m_Step == 1) m_Message = WM_LBUTTONDOWN;
                 if (m_Step >= 3 && m_Step <= 19) {
                     const float t = float(m_Step - 2) / 17.f;

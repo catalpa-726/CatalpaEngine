@@ -33,6 +33,7 @@ namespace Catalpa {
 		// framebuffer 像素尺寸与最小化状态。
 		virtual std::pair<uint32_t, uint32_t> GetFramebufferSize() const = 0;
 		virtual bool IsMinimized() const = 0;
+		virtual void Maximize() = 0;
 
 		// 窗口事件回调与请求的 VSync 配置。
 		virtual void SetEventCallback(const EventCallbackFn& callback) = 0;

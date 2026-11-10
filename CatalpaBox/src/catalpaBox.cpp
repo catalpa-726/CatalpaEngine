@@ -110,6 +110,7 @@ public:
             return;
         }
 #if !defined(CATALPA_RUNTIME_ONLY)
+        GetWindow().Maximize();
         PushLayer(std::make_unique<BoxLayer>(options.reversedZ,options.errorMaterial));
         PushOverlay(std::make_unique<Catalpa::Editor::EditorWorkspace>(options.project));
 #endif
