@@ -11,6 +11,26 @@
 #include "Renderer/Passes/DebugDrawPass.h"
 
 namespace Catalpa {
+    namespace {
+        // 编辑视口的 X/Z 工作平面每格一米。几何在编译时生成，也适用于反向 Z 和正交投影。
+        constexpr auto MakeEditorGrid() {
+            constexpr int radius = 10;
+            std::array<DebugVertex, 4 * (2 * radius + 1)> vertices{};
+            size_t i = 0;
+            for (int n = -radius; n <= radius; ++n) {
+                const float value = float(n);
+                const std::array neutral{0.33f, 0.37f, 0.36f, n % 5 == 0 ? .65f : .38f};
+                const auto xColor = n == 0 ? std::array{.72f, .15f, .12f, .82f} : neutral;
+                const auto zColor = n == 0 ? std::array{.14f, .30f, .76f, .82f} : neutral;
+                vertices[i++] = {{-float(radius), 0, value}, xColor};
+                vertices[i++] = {{ float(radius), 0, value}, xColor};
+                vertices[i++] = {{value, 0, -float(radius)}, zColor};
+                vertices[i++] = {{value, 0,  float(radius)}, zColor};
+            }
+            return vertices;
+        }
+        constexpr auto EditorGrid = MakeEditorGrid();
+    }
 
     RHIStatus Renderer::PrepareSurface(Surface& surface, const RenderFramePacket& packet, Extent2D extent)
     {
@@ -68,16 +88,23 @@ namespace Catalpa {
 
         const bool drawDebug = m_DebugSurface == 0 ? &surface == m_Main.get()
             : &surface != m_Main.get() && packet.views.front().id == m_DebugSurface;
-        if (drawDebug && !m_Debug.GetVertices().empty()) {
-            const auto bytes = std::as_bytes(m_Debug.GetVertices());
-            if (frame.debugCapacity < bytes.size()) {
+        const bool drawGrid = packet.views.front().independentCamera && packet.views.front().editorDisplay.showGrid;
+        const auto lines = drawDebug ? m_Debug.GetVertices() : std::span<const DebugVertex>{};
+        const auto grid = drawGrid ? std::span<const DebugVertex>{EditorGrid} : std::span<const DebugVertex>{};
+        frame.debugVertexCount = static_cast<uint32_t>(lines.size() + grid.size());
+        if (frame.debugVertexCount) {
+            const uint64_t size = lines.size_bytes() + grid.size_bytes();
+            if (frame.debugCapacity < size) {
                 BufferHandle replacement;
-                const RHIBufferDesc desc{ .size = bytes.size(), .usage = RHIBufferUsage::Vertex, .memory = RHIMemoryDomain::Upload };
+                const RHIBufferDesc desc{ .size = size, .usage = RHIBufferUsage::Vertex, .memory = RHIMemoryDomain::Upload };
                 if (const auto status = m_Device.CreateBuffer(desc, replacement); !status.IsSuccess()) return status;
                 m_Device.ReleaseBuffer(std::exchange(frame.debug, replacement));
-                frame.debugCapacity = bytes.size();
+                frame.debugCapacity = size;
             }
-            if (const auto status = m_Device.WriteBuffer(frame.debug, 0, bytes); !status.IsSuccess()) return status;
+            if (!grid.empty())
+                if (const auto s = m_Device.WriteBuffer(frame.debug, 0, std::as_bytes(grid)); !s.IsSuccess()) return s;
+            if (!lines.empty())
+                if (const auto s = m_Device.WriteBuffer(frame.debug, grid.size_bytes(), std::as_bytes(lines)); !s.IsSuccess()) return s;
             constexpr std::array<VertexAttribute, 2> attributes{{
                 { 0, VertexFormat::Float3, 0 }, { 1, VertexFormat::Float4, 12 }
             }};
@@ -353,13 +380,13 @@ namespace Catalpa {
             if (const auto status = graph.ExportReadbackTexture(pickColor); !status.IsSuccess()) return status;
         }
 
-        const bool drawDebug = m_DebugSurface == 0 ? !picking : picking && packet.views.front().id == m_DebugSurface;
-        if (drawDebug && !m_Debug.GetVertices().empty() && surface.debug) {
+        const auto debugVertexCount = surface.frames[m_FrameSlot].debugVertexCount;
+        if (debugVertexCount && surface.debug) {
             RGIndexedDrawDesc debug;
             debug.color = color;
             debug.depth = depth;
             debug.pipeline = surface.debug->pipeline;
-            debug.vertexCount = static_cast<uint32_t>(m_Debug.GetVertices().size());
+            debug.vertexCount = debugVertexCount;
             debug.viewport = { .width = static_cast<float>(extent.width), .height = static_cast<float>(extent.height) };
             debug.scissor.extent = extent;
             RGBuffer uniforms;
@@ -374,9 +401,14 @@ namespace Catalpa {
         tonemap.pipeline = surface.tonemap->pipeline;
         tonemap.viewport = { .width = static_cast<float>(extent.width), .height = static_cast<float>(extent.height) };
         tonemap.scissor.extent = extent;
-        const auto hdrSampler = m_Device.GetFormatSupport(PixelFormat::RGBA32_Float).linearFiltering
+        const bool drawOutline = picking && view->independentCamera && view->editorDisplay.selected.HasValue();
+        // HDR 和整数 ID 以同尺寸逐像素合成。共用最近点采样，整数附件不要求线性过滤。
+        const auto hdrSampler = !drawOutline && m_Device.GetFormatSupport(PixelFormat::RGBA32_Float).linearFiltering
             ? m_EnvironmentSampler : m_NearestEnvironmentSampler;
         tonemap.sampledTextures.push_back({ color, hdrSampler, 0, 1 });
+        // ID 以无过滤 Load 取相邻像素；RG 复用 HDR 的 sampler 槽，读回仍导出为 TransferSource。
+        if (drawOutline)
+            tonemap.sampledTextures.push_back({ pickColor, hdrSampler, 2, 1 });
         const float exposure = packet.environment ? packet.environment->settings.exposureEV : 0;
         if (const auto status = TonemapPass::Add(graph, std::move(tonemap), exposure); !status.IsSuccess()) return status;
         if (surface.gameUIDraw)

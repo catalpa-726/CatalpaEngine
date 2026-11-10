@@ -31,6 +31,8 @@ namespace Catalpa {
         std::vector<ImGuiVertex> vertices;
         std::vector<uint32_t> indices;
         std::vector<ImGuiDraw> draws;
+        // 主窗口提交时，其他窗口也可能正在显示本帧才退休的预览纹理。
+        std::vector<uint64_t> platformTextureTokens;
     };
 
 }

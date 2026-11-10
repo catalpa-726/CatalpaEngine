@@ -1,3 +1,4 @@
+#include "Panels/EditorText.h"
 #include "catpch.h"
 #include "Panels/ConsolePanel.h"
 #include "imgui.h"
@@ -33,11 +34,11 @@ namespace Catalpa::Editor {
             ImGui::Checkbox(text("console.follow", "Follow", "FollowConsole").c_str(), &m_Follow);
             ImGui::SetNextItemWidth(140);
             ImGui::Combo(text("console.level", "Minimum level", "ConsoleLevel").c_str(), &m_MinLevel,
-                         "Trace\0Debug\0Info\0Warning\0Error\0Critical\0");
+                         UiChoices({UiText("choice.trace", "Trace"), UiText("choice.debug", "Debug"), UiText("choice.info", "Info"), UiText("choice.warning", "Warning"), UiText("choice.error", "Error"), UiText("choice.critical", "Critical")}).c_str());
             ImGui::InputText(text("assets.filter", "Filter", "ConsoleFilter").c_str(), m_Filter.data(),
                              m_Filter.size());
             if (m_Dropped)
-                ImGui::Text("Dropped/evicted records: %llu", static_cast<unsigned long long>(m_Dropped));
+                ImGui::Text(UiFormat("console.dropped", "Dropped/evicted records: %llu"), static_cast<unsigned long long>(m_Dropped));
             ImGui::BeginChild("##ConsoleLines", {0, 0}, ImGuiChildFlags_Borders);
             const bool atBottom = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1;
             for (const auto& record : m_Records) {

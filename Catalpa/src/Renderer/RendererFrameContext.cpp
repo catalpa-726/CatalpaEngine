@@ -205,7 +205,7 @@ namespace Catalpa {
     {
         if (!ValidProfile(profile) || packet.views.empty()
             || maxRange < std::max(sizeof(DrawGpuParameters), sizeof(ViewGpuParameters))
-            || packet.instances.size() >= UINT32_MAX || alignment == 0 || (alignment & (alignment - 1)) != 0)
+            || packet.instances.size() >= SelectedPickBit || alignment == 0 || (alignment & (alignment - 1)) != 0)
             return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
         try {
             PackedFrameUniforms candidate;
@@ -246,7 +246,8 @@ namespace Catalpa {
                 || !FloatValue(std::fmod(time.simulationSeconds, 4096.0), frame.time[0]) || !FloatValue(time.realDeltaSeconds, frame.time[1])
                 || !FloatValue(time.fixedDeltaSeconds, frame.time[2]) || !FloatValue(time.interpolationAlpha, frame.time[3]))
                 return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
-            frame.options[0] = profile.normalDebug ? 1.0f : 0.0f;
+            const auto& primary = packet.views.front();
+            frame.options[0] = (primary.independentCamera ? primary.editorDisplay.showNormals.value_or(profile.normalDebug) : profile.normalDebug) ? 1.0f : 0.0f;
             frame.options[1] = 0.1f;
             if (!FloatValue(std::floor(time.simulationSeconds / 4096.0), frame.options[2]))
                 return { .code = RHIErrorCode::InvalidDescription, .operation = PackingOperation };
@@ -278,6 +279,10 @@ namespace Catalpa {
                 const auto& instance = packet.instances[i];
                 DrawGpuParameters draw;
                 draw.ids[0] = static_cast<uint32_t>(i + 1);
+                const auto& selected = primary.editorDisplay.selected;
+                if (primary.independentCamera && selected.HasValue() && selected.scene == instance.id.scene &&
+                    selected.index == instance.id.index && selected.generation == instance.id.generation)
+                    draw.ids[0] |= SelectedPickBit;
                 // double只用于派生符号，避免有限float世界矩阵的det乘法先溢出。
                 draw.ids[1] = glm::determinant(glm::dmat3{ Math::Mat3{ instance.worldMatrix } }) < 0 ? 1u : 0u;
                 for (int column = 0; column < 4; ++column)

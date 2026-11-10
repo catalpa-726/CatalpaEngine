@@ -1,0 +1,706 @@
+{
+  "schemaVersion": 1,
+  "name": "Grove",
+  "entities": [
+    {
+      "name": "Catalpa tree",
+      "id": "dc2eea8e-641e-26e4-8252-be0d38b10dbb",
+      "parent": null,
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Courtyard",
+      "id": "1f922d6d-5337-347c-c798-97b2988ae8ce",
+      "parent": null,
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Stone bench",
+      "id": "3787212c-1eec-93dc-13df-e8c0c51090df",
+      "parent": null,
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Architecture",
+      "id": "c9976c94-54ab-369f-95c5-12397f837ed1",
+      "parent": null,
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Fluted bark",
+      "id": "5055c26c-d228-6625-1d0b-85afb0a307f0",
+      "parent": "dc2eea8e-641e-26e4-8252-be0d38b10dbb",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "mesh": {
+        "asset": "edf260de-d9ec-3018-58c4-d13777ca13e6",
+        "materials": [
+          "4eccea66-98ac-6014-c592-ed99dcaa0c34"
+        ],
+        "color": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "visible": true
+      }
+    },
+    {
+      "name": "Young leaves",
+      "id": "1ef58ae1-a493-96a8-a6b2-e32f90a1cc7f",
+      "parent": "dc2eea8e-641e-26e4-8252-be0d38b10dbb",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "mesh": {
+        "asset": "ee814e2f-6a5a-a610-d490-fbcd4af107c5",
+        "materials": [
+          "85301eb4-4c5a-ed6c-602b-3a6478c9d61d"
+        ],
+        "color": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "visible": true
+      }
+    },
+    {
+      "name": "Leaf surface",
+      "id": "745f0fd4-ba03-0c26-2625-a86ecaa19117",
+      "parent": "dc2eea8e-641e-26e4-8252-be0d38b10dbb",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "mesh": {
+        "asset": "a530364d-f05a-86c0-4776-6f3d56d24d94",
+        "materials": [
+          "d47d8905-f175-68bf-13c8-1f427fb97460"
+        ],
+        "color": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "visible": true
+      }
+    },
+    {
+      "name": "Deep foliage",
+      "id": "2ad539a9-1dba-d288-7ce6-5838ad138f2c",
+      "parent": "dc2eea8e-641e-26e4-8252-be0d38b10dbb",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "mesh": {
+        "asset": "153c4888-71c6-8e40-bf55-4703aa398cf0",
+        "materials": [
+          "42680821-357a-6251-3ddf-67b9f2a57e28"
+        ],
+        "color": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "visible": true
+      }
+    },
+    {
+      "name": "Ivory corollas",
+      "id": "497989ef-e0b7-7c24-38f5-a30ef13a99ef",
+      "parent": "dc2eea8e-641e-26e4-8252-be0d38b10dbb",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "mesh": {
+        "asset": "3918e51d-f512-43c7-8ef5-c61de1b94923",
+        "materials": [
+          "c38a9f82-ac32-a792-5394-ffbe8d863a33"
+        ],
+        "color": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "visible": true
+      }
+    },
+    {
+      "name": "Gold throats",
+      "id": "0cf97f98-6efb-b5b3-5dea-69b285f0fcc9",
+      "parent": "dc2eea8e-641e-26e4-8252-be0d38b10dbb",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "mesh": {
+        "asset": "2c650657-6a23-efe3-5bd2-8823e0f53605",
+        "materials": [
+          "ec752c41-69b2-eb7c-5c7a-8fa69a3f462b"
+        ],
+        "color": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "visible": true
+      }
+    },
+    {
+      "name": "Planting soil",
+      "id": "fd332c76-5295-a29a-2074-8326ee603bc8",
+      "parent": "1f922d6d-5337-347c-c798-97b2988ae8ce",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "mesh": {
+        "asset": "f4dd54aa-2787-07ab-02c2-755abaf73f5d",
+        "materials": [
+          "46f3cbb1-d847-5afb-3f1e-d1275e1e6076"
+        ],
+        "color": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "visible": true
+      }
+    },
+    {
+      "name": "Limestone ivory",
+      "id": "199b529c-c7a5-c7ff-bcf3-a2710884966c",
+      "parent": "1f922d6d-5337-347c-c798-97b2988ae8ce",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "mesh": {
+        "asset": "4aacfa46-0e74-34ff-fe49-410673619b35",
+        "materials": [
+          "c64e796b-2b02-bc58-1e83-f60eb6939cf4"
+        ],
+        "color": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "visible": true
+      }
+    },
+    {
+      "name": "Limestone sand",
+      "id": "d7c8be99-9d64-00b8-1f53-fbe8997793f1",
+      "parent": "1f922d6d-5337-347c-c798-97b2988ae8ce",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "mesh": {
+        "asset": "69655083-09e0-e04d-ff8c-0ac37c8339d1",
+        "materials": [
+          "d86557b8-215d-fd76-42c4-7ad494b1df71"
+        ],
+        "color": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "visible": true
+      }
+    },
+    {
+      "name": "Limestone warm grey",
+      "id": "1de7d5a4-21ea-6082-ed6e-4786592528c3",
+      "parent": "1f922d6d-5337-347c-c798-97b2988ae8ce",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "mesh": {
+        "asset": "6381360a-c963-5ac1-f31c-3caf01ef73fc",
+        "materials": [
+          "e0151a81-881a-63a3-6565-29e3ce2455ca"
+        ],
+        "color": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "visible": true
+      }
+    },
+    {
+      "name": "Honed sandstone",
+      "id": "9cd09695-f5a6-edbe-384a-c028ba43b9bf",
+      "parent": "3787212c-1eec-93dc-13df-e8c0c51090df",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "mesh": {
+        "asset": "ff6dbde2-530b-484e-0b72-d0de844116c2",
+        "materials": [
+          "37708da9-71b5-82f9-4822-77b64a9fe043"
+        ],
+        "color": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "visible": true
+      }
+    },
+    {
+      "name": "Warm lime plaster",
+      "id": "f86699a9-8bab-024a-4b8f-1dd2706ece63",
+      "parent": "c9976c94-54ab-369f-95c5-12397f837ed1",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "mesh": {
+        "asset": "ed01d034-f3c5-94d3-328e-7156cb247eba",
+        "materials": [
+          "dd7c10d9-7725-3d47-9d51-bbe273e86746"
+        ],
+        "color": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "visible": true
+      }
+    },
+    {
+      "name": "Bronze window frames",
+      "id": "fbf4311c-2d8b-e2b4-fd94-953e586bd8b6",
+      "parent": "c9976c94-54ab-369f-95c5-12397f837ed1",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "mesh": {
+        "asset": "60a169c1-1dd6-acb0-2b57-ed2ebba4641a",
+        "materials": [
+          "4e380905-f4d1-d5bb-737f-25e57270eb2c"
+        ],
+        "color": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "visible": true
+      }
+    },
+    {
+      "name": "Blue green glazing",
+      "id": "ded0d803-f409-659c-0bd9-ce26ad488098",
+      "parent": "c9976c94-54ab-369f-95c5-12397f837ed1",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "mesh": {
+        "asset": "0adfee2f-c6bf-4818-d4fd-d3f2056b554c",
+        "materials": [
+          "35f22c3f-da9e-866f-9a30-c72cb15c0341"
+        ],
+        "color": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "visible": true
+      }
+    },
+    {
+      "name": "Sage planting",
+      "id": "e5ad5d88-24f8-b9e3-a425-08f1a7721638",
+      "parent": "1f922d6d-5337-347c-c798-97b2988ae8ce",
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "mesh": {
+        "asset": "9fbf0353-75e4-75b9-a12a-c39629556126",
+        "materials": [
+          "9e9c81c7-befc-e75c-d441-b5c39659ff8b"
+        ],
+        "color": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "visible": true
+      }
+    },
+    {
+      "name": "Courtyard camera",
+      "id": "541e7f72-4175-7be4-e5ab-be5f2f8e5ef4",
+      "parent": null,
+      "translation": [
+        3.7,
+        2.48,
+        9.1
+      ],
+      "rotation": [
+        0.9821287565093165,
+        -0.018550884936053627,
+        0.18726040565811813,
+        0.0035370578607118934
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "camera": {
+        "projection": 0,
+        "fov": 0.79,
+        "near": 0.09,
+        "far": 50,
+        "height": 10,
+        "infinite": false,
+        "reversed": false,
+        "enabled": true,
+        "priority": 1,
+        "view": 1,
+        "history": 1
+      }
+    },
+    {
+      "name": "Afternoon sun",
+      "id": "3de4f52e-ae93-c41d-e33a-c64e0aae3b21",
+      "parent": null,
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        0.8533093506426301,
+        -0.4121954043659156,
+        -0.2875206709806879,
+        -0.13888831658669887
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "light": {
+        "type": 0,
+        "color": [
+          1,
+          0.885,
+          0.72
+        ],
+        "intensity": 3.2,
+        "range": 30,
+        "inner": 0.32,
+        "outer": 0.64,
+        "shadows": true,
+        "bias": 0.002,
+        "enabled": true
+      }
+    },
+    {
+      "name": "Courtyard sky",
+      "id": "8c3ddbb2-1db4-4a9e-37a4-9cea6a65506e",
+      "parent": null,
+      "translation": [
+        0,
+        0,
+        0
+      ],
+      "rotation": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "scale": [
+        1,
+        1,
+        1
+      ],
+      "environment": {
+        "asset": "8b632ea4-6631-ccda-58af-eb29a16ff89a",
+        "intensity": 0.68,
+        "rotation": 0,
+        "exposure": 0,
+        "background": true,
+        "fog": false,
+        "fog_color": [
+          0.66,
+          0.72,
+          0.76
+        ],
+        "fog_density": 0,
+        "enabled": true
+      }
+    }
+  ]
+}

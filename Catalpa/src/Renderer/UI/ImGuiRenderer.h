@@ -32,7 +32,7 @@ namespace Catalpa {
         // 固定英文 atlas，立即复制像素到现有上传器；首帧图内完成上传。
         [[nodiscard]] RHIStatus InitFont(const AssetVersionRef<ImageAsset>&);
         // 仅在 PrepareFrame 返回 ready 后调用，安全覆盖该槽的 host-visible 缓冲。
-        [[nodiscard]] RHIStatus Prepare(uint32_t slot, const ImGuiFrameData& frame, PixelFormat format);
+        [[nodiscard]] RHIStatus Prepare(uint32_t slot, const ImGuiFrameData& frame, PixelFormat format, bool collectRetired = true);
         // 在场景之后、Present 之前按 UI 顺序登记 Load/Store 绘制及采样访问。
         [[nodiscard]] RHIStatus AddPasses(RenderGraph& graph, RGTexture color, Extent2D extent,
             uint32_t slot, const ImGuiFrameData& frame);

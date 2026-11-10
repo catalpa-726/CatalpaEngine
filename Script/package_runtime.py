@@ -52,8 +52,9 @@ def main():
     if not any(name.casefold() == 'catalpa.dll' for _, name in planned):
         parser.error('Deployment must explicitly include Catalpa.dll')
     selected = {name.casefold() for _, name in planned}
-    if any(('Resources/' + name).casefold() not in selected for name in REQUIRED):
-        parser.error('Deployment omits required runtime Config, cooked shaders or the configured font')
+    for name in REQUIRED:
+        if ('Resources/' + name).casefold() not in selected:
+            parser.error(f'Deployment omits required resource: Resources/{name}')
     names = [name.casefold() for _, name in planned]
     occupied = set(names) | {'run.cmd', 'deployment.json', 'runtime-manifest.json'}
     if any(parent.as_posix().casefold() in occupied

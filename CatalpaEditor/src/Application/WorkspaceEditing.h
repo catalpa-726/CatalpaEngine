@@ -8,6 +8,7 @@
 #include "Viewport/EditorCameraController.h"
 #include "Scene/SceneAsset.h"
 
+namespace Catalpa { class AssetDependencyGraph; }
 namespace Catalpa::Editor {
     class BuildPanel;
 
@@ -19,10 +20,16 @@ namespace Catalpa::Editor {
         ~WorkspaceEditing();
         bool Reset(std::string& error);
         void SceneTree(const PanelText&);
+        bool HasSceneSelection();
+        void ClearSceneSelection();
         bool Inspect(const PanelText&);
         void Draw(const PanelText&, BuildPanel*, uint32_t centerDockId);
         void OpenAsset(AssetId, const BuildPanel&);
         void Menu(const PanelText&);
+        void PlayToolbar(const PanelText&);
+        bool PickViewport(SceneDocument&, const RenderSurfaceSnapshot&, uint32_t x, uint32_t y, std::string& error);
+        Document* CurrentDocument() noexcept { return m_Documents.Active(); }
+        const Document* CurrentDocument() const noexcept { return m_Documents.Active(); }
         bool HasDirtyDocuments() const;
         bool HasPendingWork() const noexcept {
             return m_PlayDocument.HasValue() || m_PendingScene.has_value() || m_PendingAuthor.has_value();
@@ -30,6 +37,9 @@ namespace Catalpa::Editor {
         void SetProject(const Tools::ProjectConfig*);
         bool SaveAll();
         void DiscardRecoveryCopies();
+        void OpenGroveShowcase();
+        void ReturnFromGrove();
+        bool CanReturnFromGrove() const noexcept { return m_PreGroveScene.HasValue(); }
 
       private:
         SceneDocument* ActiveScene();
@@ -42,7 +52,7 @@ namespace Catalpa::Editor {
         bool SaveDocument(Document&, bool saveAs = false);
         bool LoadProjectCatalog();
         bool OpenAuthor(const std::filesystem::path&, std::string text = {}, std::string type = {},
-                        const std::filesystem::path& recovery = {});
+                        const std::filesystem::path& recovery = {}, const AssetDependencyGraph* loadGraph = nullptr);
         bool InstallAuthorScene(const SceneAsset&, const std::filesystem::path&,
                                 const std::filesystem::path& recovery = {});
         void RemoveRecovery(StableId);
@@ -51,7 +61,6 @@ namespace Catalpa::Editor {
         void DocumentMenu();
         void UpdateDocuments();
         void CloseDocument(StableId);
-        void PlayToolbar(SceneDocument&);
         bool StopPlay();
         void AuthorComponentControls(SceneDocument&);
         void PrefabMenu();
@@ -71,6 +80,7 @@ namespace Catalpa::Editor {
             SceneAsset scene;
             std::filesystem::path path, recovery;
             std::vector<AssetId> dependencies;
+            size_t cursor = 0;
         };
         std::optional<PendingScene> m_PendingScene;
         struct PendingAuthor {
@@ -80,6 +90,8 @@ namespace Catalpa::Editor {
         };
         std::optional<PendingAuthor> m_PendingAuthor;
         SceneHandle m_HostScene;
+        SceneHandle m_PreGroveScene;
+        std::filesystem::path m_GrovePath;
         std::vector<SceneHandle> m_AuthorScenes;
         Application& m_App;
         DocumentManager m_Documents;
@@ -89,7 +101,7 @@ namespace Catalpa::Editor {
         EditorCameraController m_Camera;
         bool m_RightLook = false;
         bool m_PlayUIActive = false, m_PlayUICapture = false;
-        bool m_ResetCamera = true;
+        bool m_ResetCamera = true, m_ShowNormals = false, m_ShowGrid = false;
         AssetEditorRegistry m_AssetEditors;
         HierarchyPanel m_Hierarchy;
         InspectorPanel m_Inspector;

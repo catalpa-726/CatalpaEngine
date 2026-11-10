@@ -4,6 +4,7 @@
 #include "AssetPipeline/AssetImportRegistry.h"
 #include "Core/PlatformServices.h"
 #include "imgui.h"
+#include "Panels/EditorText.h"
 
 namespace Catalpa::Editor {
     void ContentBrowserPanel::ClearSelection() {
@@ -16,45 +17,13 @@ namespace Catalpa::Editor {
     void ContentBrowserPanel::Reset() {
         ClearSelection();
         m_Directory.clear();
-        m_Files.clear();
+        m_Browser.Reset();
         m_Error.clear();
         m_Root = 0;
-        m_Filter = {};
         m_UnitScale = 1;
         m_Up = 0;
         m_Normals = true;
         m_Tangents = true;
-    }
-
-    void ContentBrowserPanel::Refresh(const std::filesystem::path& root) {
-        m_Files.clear();
-        m_Error.clear();
-        try {
-            m_Directory = std::filesystem::canonical(m_Directory);
-            if (!IsPathWithinRoot(m_Directory, root)) {
-                m_Error = "Browse directory escaped the declared root";
-                return;
-            }
-            for (const auto& entry : std::filesystem::directory_iterator(m_Directory)) {
-                if (m_Files.size() == 4096) {
-                    m_Error = "Showing at most 4096 entries; open a smaller folder";
-                    break;
-                }
-                std::error_code code;
-                const auto actual = std::filesystem::canonical(entry.path(), code);
-                if (code || !IsPathWithinRoot(actual, root))
-                    continue;
-                const bool directory = entry.is_directory(code);
-                if (!code && (directory || entry.is_regular_file(code)))
-                    m_Files.push_back(
-                        {entry.path(), Tools::AssetPathText(entry.path().filename()), directory});
-            }
-            std::sort(m_Files.begin(), m_Files.end(), [](const auto& a, const auto& b) {
-                return a.directory != b.directory ? a.directory > b.directory : a.name < b.name;
-            });
-        } catch (const std::exception& exception) {
-            m_Error = exception.what();
-        }
     }
 
     void ContentBrowserPanel::Draw(bool& visible, const Tools::ProjectSession* session,
@@ -70,14 +39,13 @@ namespace Catalpa::Editor {
                               .c_str());
             else {
                 std::vector<std::pair<std::string, std::filesystem::path>> roots{
-                    {"Content", session->config.contentRoot}};
+                    {UiText("browser.content","Content"), session->config.contentRoot}};
                 for (const auto& [name, path] : session->config.externalSourceRoots)
                     roots.push_back({name, path});
                 if (m_Root >= roots.size())
                     m_Root = 0;
                 if (m_Directory.empty()) {
                     m_Directory = roots[m_Root].second;
-                    Refresh(roots[m_Root].second);
                 }
                 if (ImGui::BeginCombo(text("content.root", "Read-only root", "ContentRoot").c_str(),
                                       roots[m_Root].first.c_str())) {
@@ -87,60 +55,26 @@ namespace Catalpa::Editor {
                             m_Root = i;
                             m_Directory = roots[i].second;
                             ClearSelection();
-                            Refresh(roots[i].second);
+                            m_Browser.Reset();
                         }
                         ImGui::PopID();
                     }
                     ImGui::EndCombo();
                 }
-                ImGui::TextWrapped("%s", Tools::AssetPathText(m_Directory).c_str());
-                if (ImGui::Button(text("assets.up", "Up", "ContentUp").c_str()) &&
-                    m_Directory != roots[m_Root].second) {
-                    m_Directory = m_Directory.parent_path();
-                    ClearSelection();
-                    Refresh(roots[m_Root].second);
-                }
-                ImGui::SameLine();
-                if (ImGui::Button(text("assets.refresh", "Refresh", "ContentRefresh").c_str()))
-                    Refresh(roots[m_Root].second);
-                ImGui::SetNextItemWidth(180);
-                ImGui::InputText(text("assets.filter", "Filter", "ContentFilter").c_str(), m_Filter.data(),
-                                 m_Filter.size());
-                std::filesystem::path enter;
-                if (ImGui::BeginListBox("##ContentFiles", {0, 170})) {
-                    for (size_t i = 0; i < m_Files.size(); ++i) {
-                        const auto& entry = m_Files[i];
-                        if (entry.name.find(m_Filter.data()) == std::string::npos)
-                            continue;
-                        ImGui::PushID(int(i));
-                        const auto position = ImGui::GetCursorScreenPos();
-                        if (ImGui::Selectable("##Source", entry.path == m_Selected,
-                                              ImGuiSelectableFlags_AllowDoubleClick)) {
-                            if (m_Selected != entry.path) {
-                                ClearSelection();
-                                m_Selected = entry.path;
-                            }
-                            if (entry.directory && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-                                enter = entry.path;
-                        }
-                        const auto display = (entry.directory ? "> " : "  ") + entry.name;
-                        ImGui::GetWindowDrawList()->AddText(position, ImGui::GetColorU32(ImGuiCol_Text),
-                                                            display.c_str());
-                        ImGui::PopID();
-                    }
-                    ImGui::EndListBox();
-                }
-                if (!enter.empty()) {
-                    m_Directory = enter;
-                    ClearSelection();
-                    Refresh(roots[m_Root].second);
+                if (m_Browser.Draw(roots[m_Root].second, roots[m_Root].first, m_Directory, m_Selected,
+                                   ImGui::GetTextLineHeightWithSpacing() * 7, text)) {
+                    m_Remaps.clear();
+                    m_RemapUri = {};
+                    m_RemapTarget = {};
+                    m_Error.clear();
                 }
                 ImGui::BeginDisabled(build.Busy());
                 ImGui::InputDouble(
                     text("content.unit_scale", "Additional unit scale", "ImportUnitScale").c_str(),
                     &m_UnitScale, 0, 0, "%.6g");
+                const char* axes[]{UiText("content.up_auto","Auto / source metadata"), "Y", "Z"};
                 ImGui::Combo(text("content.up_axis", "Source up axis", "ImportUpAxis").c_str(), &m_Up,
-                             "Auto / source metadata\0Y\0Z\0");
+                             axes, 3);
                 ImGui::Checkbox(
                     text("content.normals", "Generate missing face normals", "GenerateNormals").c_str(),
                     &m_Normals);
@@ -170,10 +104,9 @@ namespace Catalpa::Editor {
                 }
                 // 默认导入器只按扩展查询，整个浏览会话复用注册表。
                 static const auto importers = Tools::AssetImportRegistry::Defaults();
-                const bool supported = importers.Find(m_Selected) &&
-                                       std::any_of(m_Files.begin(), m_Files.end(), [&](const auto& entry) {
-                                           return !entry.directory && entry.path == m_Selected;
-                                       });
+                std::error_code fileError;
+                const bool supported = !m_Selected.empty() && importers.Find(m_Selected) &&
+                                       std::filesystem::is_regular_file(m_Selected, fileError);
                 ImGui::BeginDisabled(!supported);
                 if (ImGui::Button(
                         text("content.build", "Build and load selected source", "BuildSource").c_str())) {

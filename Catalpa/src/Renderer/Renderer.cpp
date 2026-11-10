@@ -226,6 +226,7 @@ namespace Catalpa {
             ~DebugFrameReset() { draw.Clear(); }
         } debugFrameReset{ m_Debug };
         OnCancelled();
+        m_PlatformFrameReady = false;
         if (const auto changes = RefreshAssetChanges(); !changes.IsSuccess())
             return changes;
         if (m_Swapchain.GetInfo().state != RHISwapchainState::Ready) return {};
@@ -392,9 +393,15 @@ namespace Catalpa {
             if (!submitted) return CancelFrame(acquired, status);
             if (!status.IsSuccess()) return status;
             OnSubmitted(execution.completion, execution.completions.GetPoints());
+            m_PlatformFrameReady = true;
             m_FrameSlot = (m_FrameSlot + 1) % m_Device.GetFrameCount();
             RHIPresentOutcome outcome;
-            return m_Swapchain.Present(acquired, outcome);
+            const auto presented = m_Swapchain.Present(acquired, outcome);
+            if (presented.IsSuccess() && (outcome == RHIPresentOutcome::Queued || outcome == RHIPresentOutcome::Suboptimal)) {
+                m_MainPresentation.extent = m_Swapchain.GetInfo().extent;
+                ++m_MainPresentation.sequence;
+            }
+            return presented;
         } catch (const std::bad_alloc&) {
             const RHIStatus failure{ .code = RHIErrorCode::OutOfMemory, .operation = "Renderer::Render" };
             if (!submitted) OnCancelled();

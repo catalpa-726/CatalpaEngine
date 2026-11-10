@@ -1,4 +1,5 @@
 ﻿#include "catpch.h"
+#include "VulkanSurface.h"
 #include "VulkanSwapchain.h"
 #include "VulkanDevice.h"
 #include "VulkanUtils.h"
@@ -63,6 +64,9 @@ namespace Catalpa {
     }
 
     VulkanSwapchain::VulkanSwapchain(VulkanDevice& device, VkSurfaceKHR surface) : m_Device(device), m_Surface(surface) {}
+
+    VulkanSwapchain::VulkanSwapchain(VulkanDevice& device, std::unique_ptr<VulkanSurface> surface)
+        : m_Device(device), m_OwnedSurface(std::move(surface)), m_Surface(m_OwnedSurface->GetHandle()) {}
 
     VulkanSwapchain::~VulkanSwapchain() { Shutdown(); }
 

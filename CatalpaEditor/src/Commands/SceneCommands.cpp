@@ -34,8 +34,8 @@ namespace Catalpa::Editor {
           public:
             using Step = std::function<WorldStatus(Scene&)>;
 
-            SceneCommand(StableId id, Step apply, Step revert, std::vector<PersistentEntityId> targets = {})
-                : EditorCommand(id), m_Apply(std::move(apply)), m_Revert(std::move(revert)),
+            SceneCommand(StableId id, const char* labelKey, Step apply, Step revert, std::vector<PersistentEntityId> targets = {})
+                : EditorCommand(id, labelKey), m_Apply(std::move(apply)), m_Revert(std::move(revert)),
                   m_Targets(std::move(targets)) {}
 
             bool Apply(Document& doc, std::string& e) override {
@@ -102,7 +102,7 @@ namespace Catalpa::Editor {
                 else return Commit(scene,value?scene.QueueSetBehaviorGraph(target,*value):scene.QueueRemoveBehaviorGraph(target));
             };
         };
-        return doc.History().Execute(doc,std::make_unique<SceneCommand>(doc.Id(),step(before,next),step(next,before),std::vector{id}),error);
+        return doc.History().Execute(doc,std::make_unique<SceneCommand>(doc.Id(), "history.component", step(before,next),step(next,before),std::vector{id}),error);
     }
 
     bool EditScript(SceneDocument& doc,PersistentEntityId id,std::optional<ScriptComponent> next,std::string& error) {
@@ -165,7 +165,7 @@ namespace Catalpa::Editor {
             return s;
         };
         if (!doc.History().Execute(
-                doc, std::make_unique<SceneCommand>(doc.Id(), create, remove, std::vector{parent}), error))
+                doc, std::make_unique<SceneCommand>(doc.Id(), "history.create", create, remove, std::vector{parent}), error))
             return false;
         created = id;
         return true;
@@ -202,7 +202,7 @@ namespace Catalpa::Editor {
             return s;
         };
         return doc.History().Execute(
-            doc, std::make_unique<SceneCommand>(doc.Id(), remove, restore, std::vector{parent}), error);
+            doc, std::make_unique<SceneCommand>(doc.Id(), "history.delete", remove, restore, std::vector{parent}), error);
     }
 
     bool RenameEntity(SceneDocument& doc, PersistentEntityId id, std::string name,
@@ -221,7 +221,7 @@ namespace Catalpa::Editor {
             };
         };
         return doc.History().Execute(doc,
-                                     std::make_unique<SceneCommand>(doc.Id(), set(expected, name),
+                                     std::make_unique<SceneCommand>(doc.Id(), "history.rename", set(expected, name),
                                                                     set(name, expected), std::vector{id}),
                                      error);
     }
@@ -269,7 +269,7 @@ namespace Catalpa::Editor {
         };
         return doc.History().Execute(
             doc,
-            std::make_unique<SceneCommand>(doc.Id(), set(before, next), set(next, before), std::vector{id}),
+            std::make_unique<SceneCommand>(doc.Id(), "history.camera", set(before, next), set(next, before), std::vector{id}),
             error);
     }
 
@@ -290,7 +290,7 @@ namespace Catalpa::Editor {
         };
         return doc.History().Execute(
             doc,
-            std::make_unique<SceneCommand>(doc.Id(), set(before, after), set(after, before), std::vector{id}),
+            std::make_unique<SceneCommand>(doc.Id(), "history.transform", set(before, after), set(after, before), std::vector{id}),
             error);
     }
 
@@ -343,7 +343,7 @@ namespace Catalpa::Editor {
                 };
             };
             return doc.History().Execute(doc,
-                                         std::make_unique<SceneCommand>(doc.Id(), update(before, next),
+                                         std::make_unique<SceneCommand>(doc.Id(), "history.component", update(before, next),
                                                                         update(next, before),
                                                                         std::vector{id}),
                                          error);
@@ -386,7 +386,7 @@ namespace Catalpa::Editor {
         };
         return doc.History().Execute(
             doc,
-            std::make_unique<SceneCommand>(doc.Id(), update(before.color, before.visible, color, visible),
+            std::make_unique<SceneCommand>(doc.Id(), "history.mesh", update(before.color, before.visible, color, visible),
                                            update(color, visible, before.color, before.visible),
                                            std::vector{id}),
             error);
@@ -417,7 +417,7 @@ namespace Catalpa::Editor {
             };
         };
         return doc.History().Execute(doc,
-                                     std::make_unique<SceneCommand>(doc.Id(), move(before, parent),
+                                     std::make_unique<SceneCommand>(doc.Id(), "history.reparent", move(before, parent),
                                                                     move(parent, before),
                                                                     std::vector{child, parent, before}),
                                      error);

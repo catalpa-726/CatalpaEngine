@@ -7,6 +7,8 @@ namespace Catalpa {
     class CATALPA_API LocalizationCatalog final {
       public:
         bool Load(std::string_view json, std::string_view expectedLanguage, std::string& error);
+        bool LoadFile(const std::filesystem::path& path, std::string_view expectedLanguage, std::string& error);
+        const auto& Strings() const noexcept { return m_Strings; }
         const char* Text(const char* key, const char* fallback) const noexcept;
         const std::string& Language() const noexcept {
             return m_Language;

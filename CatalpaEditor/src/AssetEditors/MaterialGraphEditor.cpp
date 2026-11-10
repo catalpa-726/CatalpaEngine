@@ -7,6 +7,7 @@
 #include "Materials/MaterialValidation.h"
 #include "Materials/MaterialAssetLoader.h"
 #include "Shaders/ShaderLibrary.h"
+#include "Panels/EditorText.h"
 #include "imgui.h"
 
 namespace Catalpa::Editor {
@@ -32,12 +33,12 @@ namespace Catalpa::Editor {
         ImGui::SliderInt(text("graph.node_width", "New numeric node width", "GraphNodeWidth").c_str(), &m_Width, 1, 4);
         ImGui::InputText(text("graph.texture_id", "Texture asset ID", "GraphTextureId").c_str(), m_Texture.data(), m_Texture.size());
         ImGui::Combo(text("graph.texture_role", "Texture role", "GraphTextureRole").c_str(), &m_Semantic,
-            "baseColor\0normal\0metallicRoughness\0emissive\0occlusion\0");
+            UiChoices({UiText("choice.basecolor", "baseColor"), UiText("choice.normal", "normal"), UiText("choice.metallicroughness", "metallicRoughness"), UiText("choice.emissive", "emissive"), UiText("choice.occlusion", "occlusion")}).c_str());
         if (ImGui::BeginCombo(text("graph.add_node", "Add node", "GraphAddNode").c_str(),
             text("graph.choose_node", "Choose node type", nullptr).c_str())) {
             for (const auto type : Tools::MaterialNodeTypes()) {
                 if (type == "SurfaceOutput") continue;
-                if (ImGui::Selectable(std::string(type).c_str())) {
+                if (ImGui::Selectable((GraphTerm(type) + "###" + std::string(type)).c_str())) {
                     auto next = graph;
                     StableId id;
                     if (Tools::AddMaterialNode(next, type, uint32_t(m_Width), id, error)) {
@@ -55,7 +56,7 @@ namespace Catalpa::Editor {
         int model = graph.shadingModel == "pbr" ? 0 : 1;
         int alpha = graph.alphaMode == "opaque" ? 0 : graph.alphaMode == "mask" ? 1 : 2;
         bool changed = false;
-        if (ImGui::Combo(text("graph.shading", "Shading", "GraphShading").c_str(), &model, "PBR\0Unlit\0")) {
+        if (ImGui::Combo(text("graph.shading", "Shading", "GraphShading").c_str(), &model, UiChoices({UiText("choice.pbr", "PBR"), UiText("choice.unlit", "Unlit")}).c_str())) {
             graph.shadingModel = model ? "unlit" : "pbr";
             changed = true;
         }
@@ -74,9 +75,10 @@ namespace Catalpa::Editor {
         std::vector<CanvasNode> nodes;
         std::vector<CanvasLink> links;
         for (const auto& n : graph.nodes) {
-            CanvasNode node; node.id = n.id; node.title = n.type;
+            CanvasNode node; node.id = n.id; node.title = GraphTerm(n.type);
             if (const auto p = graph.layout.find(n.id); p != graph.layout.end()) { node.x = p->second.x; node.y = p->second.y; }
-            for (const auto& port : Tools::MaterialNodePorts(n)) node.pins.push_back({n.ports.at(port.name), n.id, port.name, port.input});
+            for (const auto& port : Tools::MaterialNodePorts(n))
+                node.pins.push_back({n.ports.at(port.name), n.id, GraphTerm(port.name), port.input});
             nodes.push_back(std::move(node));
         }
         for (const auto& l : graph.links) links.push_back({l.id, l.from.port, l.to.port});
@@ -120,8 +122,16 @@ namespace Catalpa::Editor {
                     selected->value.data(), int(selected->width), nullptr, nullptr, "%.6g", ImGuiInputTextFlags_EnterReturnsTrue))
                     Commit(doc, graph, error);
             } else if(selected->type=="Parameter") {
-                if (ImGui::BeginCombo(text("graph.parameter", "Parameter", "GraphParameter").c_str(), selected->parameter.c_str())) {
-                    for(const auto& [name,value]:graph.parameters) if(value.size()==selected->width && ImGui::Selectable(name.c_str())) {selected->parameter=name;Commit(doc,graph,error);}
+                const auto preview = text(("graph.parameter." + selected->parameter).c_str(), selected->parameter.c_str(), nullptr);
+                if (ImGui::BeginCombo(text("graph.parameter", "Parameter", "GraphParameter").c_str(), preview.c_str())) {
+                    for (const auto& [name, value] : graph.parameters) {
+                        if (value.size() != selected->width) continue;
+                        const auto item = text(("graph.parameter." + name).c_str(), name.c_str(), name.c_str());
+                        if (ImGui::Selectable(item.c_str(), name == selected->parameter)) {
+                            selected->parameter = name;
+                            Commit(doc, graph, error);
+                        }
+                    }
                     ImGui::EndCombo();
                 }
             }

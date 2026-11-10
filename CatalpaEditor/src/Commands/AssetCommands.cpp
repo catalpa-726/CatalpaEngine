@@ -8,7 +8,7 @@ namespace Catalpa::Editor {
         class ImportEdit final : public EditorCommand {
           public:
             ImportEdit(StableId id, Recipe before, Recipe after)
-                : EditorCommand(id), m_Before(std::move(before)), m_After(std::move(after)) {}
+                : EditorCommand(id, "history.import"), m_Before(std::move(before)), m_After(std::move(after)) {}
 
             bool Apply(Document& doc, std::string& error) override {
                 return static_cast<AssetDocument&>(doc).ReplaceRecipe(m_Before, m_After, error);
@@ -26,7 +26,7 @@ namespace Catalpa::Editor {
           public:
             MaterialEdit(StableId doc, std::shared_ptr<const MaterialInstance> before,
                          std::shared_ptr<const MaterialInstance> after)
-                : EditorCommand(doc), m_Before(std::move(before)), m_After(std::move(after)) {}
+                : EditorCommand(doc, "history.material"), m_Before(std::move(before)), m_After(std::move(after)) {}
 
             bool Apply(Document& doc, std::string& error) override {
                 return static_cast<AssetDocument&>(doc).ReplaceMaterial(m_Before, m_After, error);

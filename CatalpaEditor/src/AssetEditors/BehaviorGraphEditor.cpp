@@ -3,6 +3,7 @@
 #include "BehaviorGraph/BehaviorGraphCompiler.h"
 #include "Core/Application.h"
 #include "Scripting/BehaviorGraphRuntime.h"
+#include "Panels/EditorText.h"
 #include "imgui.h"
 
 namespace Catalpa::Editor {
@@ -17,8 +18,8 @@ namespace Catalpa::Editor {
     }
 
     void BehaviorGraphEditor::EditToolbar(AssetDocument& doc, BehaviorGraphAsset& graph, std::string& error) {
-        if(ImGui::BeginCombo("Add behavior node","Choose node type")) {
-            for(const auto& type:BehaviorNodeTypes()) if(ImGui::Selectable(std::string(type.name).c_str())) {
+        if(ImGui::BeginCombo(UiLabel("ui.add_behavior_node", "Add behavior node").c_str(),UiText("ui.choose_node_type", "Choose node type"))) {
+            for(const auto& type:BehaviorNodeTypes()) if(ImGui::Selectable((GraphTerm(type.name) + "###" + std::string(type.name)).c_str())) {
                 auto next=graph;BehaviorNode node;
                 if(!GenerateStableId(node.id,error)) continue;
                 node.type=type.name;node.x=float(next.nodes.size()%4)*220;node.y=float(next.nodes.size()/4)*180;
@@ -32,8 +33,8 @@ namespace Catalpa::Editor {
             }
             ImGui::EndCombo();
         }
-        ImGui::InputText("Variable name",m_Variable.data(),m_Variable.size());
-        if(ImGui::Button("Add numeric variable") && m_Variable[0]) {
+        ImGui::InputText(UiLabel("ui.variable_name", "Variable name").c_str(),m_Variable.data(),m_Variable.size());
+        if(ImGui::Button(UiLabel("ui.add_numeric_variable", "Add numeric variable").c_str()) && m_Variable[0]) {
             auto next=graph;
             if(!next.variables.emplace(m_Variable.data(),0).second) error="Behavior variable already exists";
             else if(Commit(doc,next,error)) graph=std::move(next);
@@ -45,13 +46,13 @@ namespace Catalpa::Editor {
         std::vector<CanvasLink> links;
         std::map<StableId,std::pair<StableId,std::string>> outputs;
         for(const auto& node:graph.nodes) {
-            CanvasNode n; n.id=node.id;n.title=node.type;n.x=node.x;n.y=node.y;
+            CanvasNode n; n.id=node.id;n.title=GraphTerm(node.type);n.x=node.x;n.y=node.y;
             const auto& kind=Kind(node);
-            if(!kind.entry) n.pins.push_back({CanvasIdentity(node.id,"in"),node.id,"in",true});
+            if(!kind.entry) n.pins.push_back({CanvasIdentity(node.id,"in"),node.id,GraphTerm("in"),true});
             for(const auto& port:kind.outputs) {
                 const auto name=std::string(port);
                 const auto id=CanvasIdentity(node.id,"out/"+name);
-                n.pins.push_back({id,node.id,name,false});outputs[id]={node.id,name};
+                n.pins.push_back({id,node.id,GraphTerm(name),false});outputs[id]={node.id,name};
                 if(const auto target=node.flow.find(port);target!=node.flow.end())
                     links.push_back({CanvasIdentity(node.id,"link/"+name),id,CanvasIdentity(target->second,"in")});
             }
@@ -89,11 +90,11 @@ namespace Catalpa::Editor {
 
     void BehaviorGraphEditor::EditProperties(AssetDocument& doc, BehaviorGraphAsset& graph, std::string& error) {
         if(auto node=std::find_if(graph.nodes.begin(),graph.nodes.end(),[&](const auto& n){return n.id==m_Selected;});node!=graph.nodes.end()) {
-            ImGui::Text("Node: %s",node->id.ToString().c_str());
-            bool changed=ImGui::InputDouble("Number / wait seconds / comparison",&node->number,0,0,"%.6g",ImGuiInputTextFlags_EnterReturnsTrue);
-            changed|=ImGui::InputFloat3("Translation delta (m)",&node->vector.x,"%.6g",ImGuiInputTextFlags_EnterReturnsTrue);
+            ImGui::Text(UiFormat("ui.node", "Node: %s"),node->id.ToString().c_str());
+            bool changed=ImGui::InputDouble(UiLabel("ui.number_wait_seconds_comparison", "Number / wait seconds / comparison").c_str(),&node->number,0,0,"%.6g",ImGuiInputTextFlags_EnterReturnsTrue);
+            changed|=ImGui::InputFloat3(UiLabel("ui.translation_delta_m", "Translation delta (m)").c_str(),&node->vector.x,"%.6g",ImGuiInputTextFlags_EnterReturnsTrue);
             if(node->type=="Condition" || node->type=="SetNumber" || node->type=="AddNumber") {
-                if(ImGui::BeginCombo("Variable",node->variable.c_str())) {
+                if(ImGui::BeginCombo(UiLabel("ui.variable", "Variable").c_str(),node->variable.c_str())) {
                     for(const auto& [name,value]:graph.variables) if(ImGui::Selectable(name.c_str())) {node->variable=name;changed=true;}
                     ImGui::EndCombo();
                 }
@@ -101,30 +102,30 @@ namespace Catalpa::Editor {
             if(node->type=="Event" || node->type=="EmitEvent") {
                 std::array<char,129> name{};
                 std::copy_n(node->event.data(),std::min(node->event.size(),name.size()-1),name.data());
-                if(ImGui::InputText("Event name",name.data(),name.size(),ImGuiInputTextFlags_EnterReturnsTrue)) {node->event=name.data();changed=true;}
+                if(ImGui::InputText(UiLabel("ui.event_name", "Event name").c_str(),name.data(),name.size(),ImGuiInputTextFlags_EnterReturnsTrue)) {node->event=name.data();changed=true;}
             }
             if(changed) Commit(doc,graph,error);
         }
-        if(ImGui::CollapsingHeader("Initial variables")) for(auto& [name,value]:graph.variables)
+        if(ImGui::CollapsingHeader(UiLabel("ui.initial_variables", "Initial variables").c_str())) for(auto& [name,value]:graph.variables)
             if(ImGui::InputDouble(name.c_str(),&value,0,0,"%.6g",ImGuiInputTextFlags_EnterReturnsTrue)) Commit(doc,graph,error);
     }
 
     void BehaviorGraphEditor::DrawDebug(Application& app, const AssetDocument& doc, std::string& error) {
-        if(ImGui::CollapsingHeader("Play execution snapshots")) {
-            ImGui::InputText("Emit event",m_Event.data(),m_Event.size());
+        if(ImGui::CollapsingHeader(UiLabel("ui.play_execution_snapshots", "Play execution snapshots").c_str())) {
+            ImGui::InputText(UiLabel("ui.emit_event", "Emit event").c_str(),m_Event.data(),m_Event.size());
             for(const auto& snapshot:app.GetBehaviorDebug()) {
                 if (snapshot.graph != doc.Asset()) continue;
                 ImGui::PushID(snapshot.entity.ToString().c_str());
-                ImGui::Text("Entity: %s / node: %s",snapshot.entity.ToString().c_str(),snapshot.node.ToString().c_str());
-                ImGui::Text("Running program version: %llu (author draft is separate)",
+                ImGui::Text(UiFormat("ui.entity_node", "Entity: %s / node: %s"),snapshot.entity.ToString().c_str(),snapshot.node.ToString().c_str());
+                ImGui::Text(UiFormat("ui.running_program_version_author_draft_is_separate", "Running program version: %llu (author draft is separate)"),
                             static_cast<unsigned long long>(snapshot.version));
                 ImGui::TextWrapped("%s",snapshot.error.c_str());
-                if (snapshot.node.HasValue() && ImGui::Button("Locate running node")) {
+                if (snapshot.node.HasValue() && ImGui::Button(UiLabel("ui.locate_running_node", "Locate running node").c_str())) {
                     m_Selected = snapshot.node;
                     m_Canvas.Focus(snapshot.node);
                 }
                 for(const auto& [name,value]:snapshot.variables) ImGui::Text("%s = %.8g",name.c_str(),value);
-                if(ImGui::Button("Send to this running instance")) app.EmitBehaviorEvent(snapshot.entity,m_Event.data(),error);
+                if(ImGui::Button(UiLabel("ui.send_to_this_running_instance", "Send to this running instance").c_str())) app.EmitBehaviorEvent(snapshot.entity,m_Event.data(),error);
                 ImGui::PopID();
             }
         }

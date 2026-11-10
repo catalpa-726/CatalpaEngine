@@ -1,3 +1,4 @@
+#include "Panels/EditorText.h"
 #include "AssetEditors/TerrainEditor.h"
 #include "Commands/GraphCommands.h"
 #include "Core/Application.h"
@@ -38,9 +39,9 @@ namespace Catalpa::Editor {
         TerrainSource value;
         if (!ReadTerrainSource(*doc.Source(), value, error))
             return;
-        ImGui::TextWrapped("Read-only height source: %s", value.heightSource.c_str());
+        ImGui::TextWrapped(UiFormat("terrain.source_height", "Read-only height source: %s"), value.heightSource.c_str());
         ImGui::TextUnformatted(
-            "Author edits change sampling settings; the original height bytes are never overwritten.");
+            UiText("terrain.source_help", "Author edits change sampling settings; the original height bytes are never overwritten."));
         int width = int(value.settings.width), height = int(value.settings.height),
             quads = int(value.settings.tileQuads), lod = int(value.settings.lodCount);
         bool changed = ImGui::InputInt(T("terrain.width", "Width samples").c_str(), &width);
@@ -70,8 +71,8 @@ namespace Catalpa::Editor {
         }
         ImGui::Separator();
         ImGui::TextUnformatted(
-            "Build with Content Browser. Runtime: 64 visible tiles, 2 pending reads, 128 MiB CPU "
-            "budget including retained frame snapshots.");
+            UiText("terrain.build_help", "Build with Content Browser. Runtime: 64 visible tiles, 2 pending reads, 128 MiB CPU "
+            "budget including retained frame snapshots."));
         if (!doc.Asset().HasValue())
             return;
         auto& assets = app.GetAssets();
@@ -82,12 +83,12 @@ namespace Catalpa::Editor {
         if (!assets.Acquire(doc.Asset(), asset, fallback, error) || fallback)
             return;
         const auto& terrain = *asset.Get();
-        ImGui::Text("Version: %llu; products: %zu", static_cast<unsigned long long>(asset.GetVersion()),
+        ImGui::Text(UiFormat("terrain.version_products", "Version: %llu; products: %zu"), static_cast<unsigned long long>(asset.GetVersion()),
                     terrain.tiles.size());
-        ImGui::TextWrapped("Height SHA-256: %s", terrain.heightDigest.c_str());
-        ImGui::Text("Derived collision: %s; navigation: %s",
-                    terrain.settings.buildCollision ? "finest tile" : "disabled",
-                    terrain.navigation.id.HasValue() ? "fixed cooked version" : "disabled");
+        ImGui::TextWrapped(UiFormat("terrain.height_digest", "Height SHA-256: %s"), terrain.heightDigest.c_str());
+        ImGui::Text(UiFormat("terrain.derived", "Derived collision: %s; navigation: %s"),
+                    terrain.settings.buildCollision ? UiText("terrain.finest_tile", "finest tile") : UiText("choice.disabled", "disabled"),
+                    terrain.navigation.id.HasValue() ? UiText("terrain.fixed_version", "fixed cooked version") : UiText("choice.disabled", "disabled"));
         const auto origin = ImGui::GetCursorScreenPos();
         const auto available = ImGui::GetContentRegionAvail();
         const ImVec2 size{std::max(available.x, 32.0f), 200};
@@ -106,8 +107,8 @@ namespace Catalpa::Editor {
                 draw->AddRect(low, high, IM_COL32(160, 185, 160, 255));
             }
         ImGui::TextUnformatted(
-            "Tile overview uses shared integer grid sampling. Cross-LOD skirts are excluded from "
-            "collision and navigation.");
+            UiText("terrain.skirts_info", "Tile overview uses shared integer grid sampling. Cross-LOD skirts are excluded from "
+            "collision and navigation."));
         if (m_Document != doc.Id())
             Close(app);
         const auto check = [&](WorldStatus status) {

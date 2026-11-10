@@ -52,8 +52,21 @@ namespace Catalpa {
         if(args.size()==1&&args[0]=="--sample-error-material") {options.errorMaterial=true;return {};}
         if(args.size()==1&&args[0]=="--sample-reversed-z") {options.reversedZ=true;return {};}
 #endif
+#if !defined(CATALPA_DIST) && !defined(CATALPA_RUNTIME_ONLY)
+        if (args.size() == 2 && args[0] == "--test-editor-language") {
+            options.testLanguageDirectory = std::filesystem::u8path(args[1]);
+            if (!options.testLanguageDirectory.is_absolute()) {
+                CAT_ERROR("--test-editor-language requires an absolute acceptance directory");
+                return {true, 2};
+            }
+            return {};
+        }
+#endif
         if(args.size()==1&&args[0].starts_with("--test-")) {
 #if !defined(CATALPA_DIST) && !defined(CATALPA_RUNTIME_ONLY)
+            if (args[0] == "--test-editor-platform-windows") { options.testEditorPlatformWindows = true; return {}; }
+            if (args[0] == "--test-editor-thumbnails") { options.testEditorThumbnails = true; return {}; }
+            if (args[0] == "--test-editor-grove") { options.testEditorGrove = true; return {}; }
             if (args[0] == "--test-s14-foundation")
                 return {true, Tests::RunS14FoundationTests()};
             if (args[0] == "--test-s14-s17")
@@ -80,8 +93,8 @@ namespace Catalpa {
         CAT_INFO(
             "Usage: CatalpaBox [--project <absolute-file> | --run-package <absolute-file> | "
             "--inspect <absolute-file> | --package <tool arguments> | --test-s14-s17 | --test-s14-foundation "
-            "| --test-s10-s13 | --test-s07-s09 | --test-s05-s06 | --test-s04 | --sample-reversed-z | "
-            "--sample-error-material | --cook-shaders <tool arguments> | --build-assets <tool arguments> | "
+            "| --test-editor-platform-windows | --test-editor-thumbnails | --test-editor-grove | --test-s10-s13 | --test-s07-s09 | --test-s05-s06 | --test-s04 | --sample-reversed-z | "
+            "--test-editor-language <absolute-directory> | --sample-error-material | --cook-shaders <tool arguments> | --build-assets <tool arguments> | "
             "--cook-assets <tool arguments> | --help]. No arguments opens the workspace.");
 #endif
         return {true,args.size()==1&&args[0]=="--help"?0:2};

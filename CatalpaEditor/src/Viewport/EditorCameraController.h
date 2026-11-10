@@ -18,6 +18,9 @@ namespace Catalpa::Editor {
       public:
         bool Reset(const Scene* scene, std::string& error, CameraViewport viewport = {640, 480});
         bool Navigate(const EditorCameraInput&, std::string& error);
+        bool SetProjection(ProjectionType projection, std::string& error);
+
+        bool AlignAxis(int axis, float sign, Math::Vec3 pivot, std::string& error);
 
         const Math::TransformTRS& Pose() const noexcept {
             return m_Pose;

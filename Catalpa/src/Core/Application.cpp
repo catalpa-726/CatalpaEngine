@@ -103,9 +103,9 @@ namespace Catalpa {
     bool Application::SetEditorPreview(SceneHandle scene, uint64_t viewId, Extent2D extent, std::string& error)
     { return m_Runtime->SetEditorPreview(scene, viewId, extent, error); }
     bool Application::SetEditorCameraPreview(SceneHandle scene, uint64_t viewId, Extent2D extent,
-        const Math::TransformTRS& pose, const CameraLens& lens, uint64_t revision, std::string& error)
+        const Math::TransformTRS& pose, const CameraLens& lens, uint64_t revision, std::string& error, EditorViewDisplay display)
     {
-        return m_Runtime->SetEditorCameraPreview(scene, viewId, extent, pose, lens, revision, error);
+        return m_Runtime->SetEditorCameraPreview(scene, viewId, extent, pose, lens, revision, error, display);
     }
 
     void Application::SetEditorViewportActive(bool active)
@@ -133,6 +133,7 @@ namespace Catalpa {
 
     bool Application::GetEditorPreview(uint64_t viewId, RenderSurfaceSnapshot& surface) const
     { return m_Runtime->GetEditorPreview(viewId, surface); }
+    void Application::FreezeEditorPreview(uint64_t viewId) { m_Runtime->FreezeEditorPreview(viewId); }
     void Application::CloseEditorPreview(uint64_t viewId) { m_Runtime->CloseEditorPreview(viewId); }
     bool Application::SetEditorPreviewImage(uint64_t viewId, const AssetVersionRef<ImageAsset>& image,
         uint32_t mip, uint32_t layer, uint32_t channelMask, std::string& error)
@@ -141,6 +142,10 @@ namespace Catalpa {
     { return m_Runtime->RequestEditorPick(request, ticket, error); }
     bool Application::PollEditorPick(uint64_t ticket, PickingResult& result) { return m_Runtime->PollEditorPick(ticket, result); }
     void Application::CancelEditorPick(uint64_t ticket) { m_Runtime->CancelEditorPick(ticket); }
+    bool Application::GetPlatformWindowPresentation(uint32_t id, PlatformWindowPresentation& output) const {
+        return m_Runtime->GetPlatformWindowPresentation(id, output);
+    }
+
     bool Application::GetGpuFrameMilliseconds(double& milliseconds) const { return m_Runtime->GetGpuFrameMilliseconds(milliseconds); }
     bool Application::GetManagedGpuPayloadBytes(uint64_t& used, uint64_t& budget) const {
         return m_Runtime->GetManagedGpuPayloadBytes(used, budget);
@@ -204,6 +209,7 @@ namespace Catalpa {
         }
 
         m_ImGuiLayer = std::make_unique<ImGuiLayer>();
+        m_ImGuiLayer->SetPlatformRuntime(*m_Runtime);
         m_ImGuiLayer->OnAttach();
         if (!m_ImGuiLayer->IsReady()) {
             m_ImGuiLayer.reset();
@@ -264,6 +270,11 @@ namespace Catalpa {
                 break;
             }
 
+            if (const auto status = m_ImGuiLayer->PresentPlatformWindows(); !status.IsSuccess()) {
+                CAT_CORE_ERROR("Platform window presentation failed at {0}. RHI error: {1}", status.operation, static_cast<int>(status.code));
+                m_ExitCode = 1;
+                break;
+            }
             AttachPendingLayers();
         }
 

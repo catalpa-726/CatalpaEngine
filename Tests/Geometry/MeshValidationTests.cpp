@@ -54,6 +54,27 @@ namespace Catalpa::Tests {
         if (!ValidateMesh(cube).IsSuccess() || !ValidateMesh(plane).IsSuccess()) return;
         test.Check(cube.vertexCount == 24 && cube.GetIndexCount() == 36 && cube.submeshes.size() == 1, "Cube has per-face vertices and twelve indexed triangles");
         test.Check(plane.vertexCount == 4 && plane.GetIndexCount() == 6, "Plane has two indexed triangles");
+        MeshData previewSphere;
+        const bool sphereReady = CreateSphereMeshWithTangents(2.f, previewSphere).IsSuccess();
+        test.Check(sphereReady, "Material preview sphere passes mesh validation");
+        if (sphereReady) {
+            bool surface = previewSphere.vertexStride == 48 && previewSphere.GetIndexCount() > 0;
+            for (uint32_t i = 0; i < previewSphere.vertexCount && surface; ++i) {
+                const size_t vertex = size_t(i) * previewSphere.vertexStride;
+                const auto position = Position(previewSphere, i);
+                const Math::Vec3 tangent{ReadFloat(previewSphere,vertex+32), ReadFloat(previewSphere,vertex+36),
+                                         ReadFloat(previewSphere,vertex+40)};
+                surface = Near(glm::length(position),2.f) && Near(glm::length(tangent),1.f) &&
+                          Near(glm::dot(position,tangent),0.f) && ReadFloat(previewSphere,vertex+44)==1.f;
+            }
+            for (size_t i = 0; i < previewSphere.GetIndexCount() && surface; i += 3) {
+                const auto a = Position(previewSphere,ReadIndex(previewSphere,i));
+                const auto b = Position(previewSphere,ReadIndex(previewSphere,i+1));
+                const auto c = Position(previewSphere,ReadIndex(previewSphere,i+2));
+                surface = glm::dot(glm::cross(b-a,c-a),a) > 0.f;
+            }
+            test.Check(surface, "Sphere tiles have outward winding and a valid tangent at every pole and seam");
+        }
         test.Check(cube.vertexStride == 32 && cube.GetVertexLayout().attributes.size() == 3, "Owned mesh exposes a short-lived layout borrow");
         test.Check(cube.localBounds.minimum == Math::Vec3(-1) && cube.localBounds.maximum == Math::Vec3(1), "Cube local bounds match explicit size");
         test.Check(plane.localBounds.minimum == Math::Vec3(-2,0,-3) && plane.localBounds.maximum == Math::Vec3(2,0,3), "Plane dimensions and XZ convention are explicit");

@@ -8,6 +8,7 @@
 namespace Catalpa {
 
     class VulkanDevice;
+    class VulkanSurface;
     class VulkanBinarySemaphore;
     class VulkanFrameContext;
     class VulkanFence;
@@ -16,6 +17,7 @@ namespace Catalpa {
     public:
         // 构造与所有权
         VulkanSwapchain(VulkanDevice& device, VkSurfaceKHR surface);
+        VulkanSwapchain(VulkanDevice&, std::unique_ptr<VulkanSurface> surface);
         ~VulkanSwapchain() override;
 
         VulkanSwapchain(const VulkanSwapchain&) = delete;
@@ -67,6 +69,7 @@ namespace Catalpa {
         // 设备和表面为借用，交换链句柄由本对象销毁。
         VulkanDevice& m_Device;
 
+        std::unique_ptr<VulkanSurface> m_OwnedSurface; // 仅附加窗口由本交换链持有表面。
         VkSurfaceKHR m_Surface = VK_NULL_HANDLE;
         VkSwapchainKHR m_Swapchain = VK_NULL_HANDLE;
 

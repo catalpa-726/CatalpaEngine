@@ -7,5 +7,7 @@ namespace Catalpa::Editor {
     class HierarchyPanel {
       public:
         bool Draw(SceneDocument&, EditorSelection&, const PanelText&, std::string& error);
+      private:
+        std::array<char, 160> m_Search{};
     };
 }

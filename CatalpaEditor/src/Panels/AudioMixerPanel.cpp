@@ -16,9 +16,9 @@ namespace Catalpa::Editor {
         ImGui::Text("%s: %zu", text("audio.active_voices", "Active voices", nullptr).c_str(), voices.size());
         for (const auto& voice : voices) {
             ImGui::PushID(static_cast<int>(voice.handle.value));
-            ImGui::Text("%llu | %.2f / %.2f s | gain %.2f",
+            ImGui::Text("%llu | %.2f / %.2f s | %s %.2f",
                         static_cast<unsigned long long>(voice.handle.value), double(voice.cursor) / 48000,
-                        double(voice.frames) / 48000, voice.gain);
+                        double(voice.frames) / 48000, text("audio.gain", "Gain", nullptr).c_str(), voice.gain);
             ImGui::SameLine();
             if (ImGui::SmallButton(text("audio.stop", "Stop", "StopVoice").c_str()))
                 audio.Stop(voice.handle, error);

@@ -1,5 +1,5 @@
 #pragma once
-#include "Panels/PanelText.h"
+#include "Panels/FileBrowserView.h"
 #include "Project/ProjectConfig.h"
 
 namespace Catalpa::Editor {
@@ -9,21 +9,14 @@ namespace Catalpa::Editor {
     class ContentBrowserPanel final {
       public:
         void Reset();
+        void Update() { m_Browser.Update(); }
         void Draw(bool& visible, const Tools::ProjectSession*, const std::filesystem::path& shaderRoot,
                   BuildPanel&, const PanelText&);
 
       private:
-        struct Entry {
-            std::filesystem::path path;
-            std::string name;
-            bool directory = false;
-        };
-
         void ClearSelection();
-        void Refresh(const std::filesystem::path& root);
         std::filesystem::path m_Directory, m_Selected;
-        std::vector<Entry> m_Files;
-        std::array<char, 128> m_Filter{};
+        FileBrowserView m_Browser{0x434f4e54454e5410ULL};
         std::string m_Error;
         size_t m_Root = 0;
         double m_UnitScale = 1;

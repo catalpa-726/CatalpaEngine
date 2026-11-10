@@ -6,6 +6,10 @@ namespace Catalpa {
     struct BoxLaunchOptions {
         bool reversedZ = false;
         bool errorMaterial = false;
+        bool testEditorThumbnails = false;
+        bool testEditorGrove = false;
+        std::filesystem::path testLanguageDirectory;
+        bool testEditorPlatformWindows = false;
         std::filesystem::path project, package;
     };
     class BoxCommandLine final {

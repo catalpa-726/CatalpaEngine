@@ -348,7 +348,7 @@ namespace Catalpa {
         }
         for (const auto name :
              {"Pbr.slang", "Unlit.slang", "Depth.slang", "Shadow.slang", "ImGui.slang", "Skybox.slang",
-              "Tonemap.slang", "Present.slang", "Picking.slang", "DebugDraw.slang", "GameUI.slang",
+              "Tonemap.slang", "EditorTonemap.slang", "Present.slang", "Picking.slang", "DebugDraw.slang", "GameUI.slang",
               "Skinning.slang", "DepthPyramid.slang", "LightCulling.slang", "GpuCulling.slang"}) {
             AssetId id;AssetVersionRef<ShaderAsset> shader;bool fallback=false;
             if(!ShaderLibrary::BuiltinId(name,id,error)||!m_Assets->Acquire(id,shader,fallback,error)||fallback) {error="Required cooked builtin shader missing: "+std::string(name);return false;}
@@ -367,6 +367,16 @@ namespace Catalpa {
     {
         if (m_Device) return { RHIErrorCode::InvalidState, 0, "EngineRuntime::ConfigureRendererProfile/AlreadyInitialized" };
         return ParseRendererProfile(json, m_RendererProfile);
+    }
+
+    RHIStatus EngineRuntime::RenderPlatformWindow(uint32_t id, void* window, Extent2D extent, const ImGuiFrameData& frame)
+    {
+        return m_Renderer->RenderPlatformWindow(id, window, extent, frame);
+    }
+
+    RHIStatus EngineRuntime::ReleasePlatformWindow(uint32_t id)
+    {
+        return m_Renderer ? m_Renderer->ReleasePlatformWindow(id) : RHIStatus{};
     }
 
     RHIStatus EngineRuntime::InitUI(std::span<const std::byte> fontPixels, Extent2D fontExtent)
@@ -389,11 +399,12 @@ namespace Catalpa {
     }
 
     bool EngineRuntime::SetEditorCameraPreview(SceneHandle scene, uint64_t viewId, Extent2D extent,
-        const Math::TransformTRS& pose, const CameraLens& lens, uint64_t historyRevision, std::string& error)
+        const Math::TransformTRS& pose, const CameraLens& lens, uint64_t historyRevision, std::string& error, EditorViewDisplay display)
     {
         RenderView view;
         view.id = viewId;
         view.independentCamera = true;
+        view.editorDisplay = display;
         view.historyRevision = historyRevision;
         view.viewport = { .width = extent.width, .height = extent.height };
         view.lens = lens;
@@ -464,6 +475,12 @@ namespace Catalpa {
         return m_Renderer && m_Renderer->GetPreviewSurface(viewId, surface);
     }
 
+    void EngineRuntime::FreezeEditorPreview(uint64_t viewId)
+    {
+        m_PreviewRequests.erase(viewId);
+        if (m_Renderer) m_Renderer->FreezePreviewSurface(viewId);
+    }
+
     void EngineRuntime::CloseEditorPreview(uint64_t viewId)
     {
         m_PreviewRequests.erase(viewId);
@@ -494,6 +511,10 @@ namespace Catalpa {
     void EngineRuntime::CancelEditorPick(uint64_t ticket)
     {
         if (m_Renderer) m_Renderer->CancelPick(ticket);
+    }
+
+    bool EngineRuntime::GetPlatformWindowPresentation(uint32_t id, PlatformWindowPresentation& output) const {
+        return m_Renderer && m_Renderer->GetPlatformWindowPresentation(id, output);
     }
 
     bool EngineRuntime::GetGpuFrameMilliseconds(double& milliseconds) const

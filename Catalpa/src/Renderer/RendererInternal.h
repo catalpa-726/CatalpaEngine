@@ -42,6 +42,7 @@ namespace Catalpa {
         struct FrameBuffers {
             BufferHandle lights{}, shadowView{}, debug{};
             uint64_t debugCapacity = 0;
+            uint32_t debugVertexCount = 0;
             std::vector<SkinningFrame> skins;
             GpuSceneFrame gpu;
         };

@@ -1,3 +1,4 @@
+#include "Panels/EditorText.h"
 #include "AssetEditors/PhysicsNavigationInspector.h"
 #include "Documents/SceneDocument.h"
 #include "Commands/EditorCommand.h"
@@ -240,7 +241,7 @@ namespace Catalpa::Editor {
             if (ImGui::CollapsingHeader(T("physics.body", "Rigid body").c_str())) {
                 int motion = int(v.motion);
                 bool changed = ImGui::Combo(T("physics.motion", "Motion").c_str(), &motion,
-                                            "Static\0Kinematic\0Dynamic\0");
+                                            UiChoices({UiText("choice.static", "Static"), UiText("choice.kinematic", "Kinematic"), UiText("choice.dynamic", "Dynamic")}).c_str());
                 v.motion = PhysicsMotion(motion);
                 changed |= ImGui::Checkbox(T("physics.body_enabled", "Body enabled").c_str(), &v.enabled);
                 changed |=

@@ -9,6 +9,9 @@
 #include "Scene/SceneManager.h"
 #include "BoxCommandLine.h"
 #include <string_view>
+#if !defined(CATALPA_DIST) && !defined(CATALPA_RUNTIME_ONLY)
+#include "TestRunner.h"
+#endif
 
 namespace {
     Catalpa::BoxLaunchOptions sandboxOptions;
@@ -80,6 +83,24 @@ class CatalpaBox : public Catalpa::Application {
 public:
     // CatalpaBox 是唯一启动应用；编辑器静态库只提供由宿主挂载的功能。
     explicit CatalpaBox(const Catalpa::BoxLaunchOptions& options) {
+#if !defined(CATALPA_DIST) && !defined(CATALPA_RUNTIME_ONLY)
+        if (options.testEditorPlatformWindows) {
+            PushOverlay(Catalpa::Tests::CreatePlatformWindowGpuTest());
+            return;
+        }
+        if (options.testEditorThumbnails) {
+            PushOverlay(Catalpa::Tests::CreateBrowserThumbnailGpuTest());
+            return;
+        }
+        if (options.testEditorGrove) {
+            PushOverlay(Catalpa::Tests::CreateGroveGpuTest());
+            return;
+        }
+        if (!options.testLanguageDirectory.empty()) {
+            PushOverlay(Catalpa::Tests::CreateWorkspaceLanguageTest(options.testLanguageDirectory));
+            return;
+        }
+#endif
         if (!options.package.empty()) {
             PushLayer(std::make_unique<PackageLayer>(options.package));
             return;

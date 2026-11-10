@@ -3,6 +3,8 @@
 
 namespace Catalpa::Editor {
     StableId CanvasIdentity(StableId owner, std::string_view role);
+    // Localize schema terms for display; author data and canvas IDs keep the registry spelling.
+    std::string GraphTerm(std::string_view symbol);
     struct CanvasPin { StableId id, node; std::string label; bool input = false; };
     struct CanvasNode { StableId id; std::string title; std::vector<CanvasPin> pins; float x = 0, y = 0; };
     struct CanvasLink { StableId id, from, to; };

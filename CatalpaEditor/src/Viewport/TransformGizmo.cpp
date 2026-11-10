@@ -1,18 +1,30 @@
 #include "Viewport/TransformGizmo.h"
 #include "Commands/SceneCommands.h"
-#include "imgui.h"
+#include "Viewport/ToolbarButton.h"
 #include "ImGuizmo.h"
 
 namespace Catalpa::Editor {
     void TransformGizmo::Toolbar(const PanelText& text) {
-        ImGui::Combo(text("gizmo.operation", "Tool", "GizmoOperation").c_str(), &m_Operation,
-                     "Translate\0Rotate\0Scale\0");
-        ImGui::Combo(text("gizmo.space", "Space", "GizmoSpace").c_str(), &m_Mode, "Local\0World\0");
-        ImGui::Checkbox(text("gizmo.snap", "Snap", "GizmoSnap").c_str(), &m_Snap);
-        if (m_Snap) {
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(80);
-            ImGui::InputFloat("##SnapValue", &m_Step);
+        const ToolIcon icons[]{ToolIcon::Select, ToolIcon::Move, ToolIcon::Rotate, ToolIcon::Scale};
+        const char* keys[]{"gizmo.select", "gizmo.move", "gizmo.rotate", "gizmo.scale"};
+        const char* names[]{"Select", "Move", "Rotate", "Scale"};
+        for (int i = 0; i < 4; ++i) {
+            if (i) ImGui::SameLine();
+            ImGui::PushID(keys[i]);
+            if (ToolbarButton("##tool", icons[i], text(keys[i], names[i], nullptr), m_Operation == i-1))
+                m_Operation = i-1;
+            ImGui::PopID();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button(text(m_Mode ? "gizmo.world" : "gizmo.local", m_Mode ? "World" : "Local", "Space").c_str()))
+            m_Mode = !m_Mode;
+        ImGui::SameLine();
+        if (ToolbarButton("##snap", ToolIcon::Snap, text("gizmo.snap", "Snap", nullptr), m_Snap))
+            m_Snap = !m_Snap;
+        if (ImGui::BeginPopupContextItem("SnapOptions")) {
+            ImGui::SetNextItemWidth(100);
+            ImGui::InputFloat(text("gizmo.increment", "Snap increment", "SnapIncrement").c_str(), &m_Step);
+            ImGui::EndPopup();
         }
     }
 
@@ -20,7 +32,7 @@ namespace Catalpa::Editor {
                               float x, float y, float w, float h, std::string& error) {
         Scene* scene = doc.Resolve();
         const auto id = selection.Resolve(doc);
-        if (!scene || !id.HasValue() ||
+        if (m_Operation < 0 || !scene || !id.HasValue() ||
             (!view.independentCamera && view.camera.scene != scene->GetWorld().GetIdentity())) {
             Cancel(error);
             return false;

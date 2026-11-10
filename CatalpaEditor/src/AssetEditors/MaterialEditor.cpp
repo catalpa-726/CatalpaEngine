@@ -8,13 +8,14 @@
 #include "Scene/SceneSubtree.h"
 #include "Renderer/RenderSurface.h"
 #include "imgui.h"
+#include "Panels/EditorText.h"
 
 namespace Catalpa::Editor {
     namespace {
         constexpr uint64_t MaterialSurface = 0x4341544d41544c01ULL;
 
-        bool EditValue(const MaterialParameter& schema, MaterialValue& value) {
-            const char* label = schema.displayName.c_str();
+        bool EditValue(MaterialValue& value) {
+            const char* label = "##Value";
             const auto flags = ImGuiInputTextFlags_EnterReturnsTrue;
             return std::visit(
                 [&](auto& v) {
@@ -87,8 +88,10 @@ namespace Catalpa::Editor {
             pose.translation = {0, 0, 2.5f};
             Math::TransformTRS objectPose;
             objectPose.rotation = Math::Quat(Math::Vec3(-.15f, .4f, 0));
+            Math::TransformTRS lightPose;
+            lightPose.rotation = Math::Quat(Math::Vec3(-.52f, -.55f, 0.f));
             if (!check(scene->QueueCreate(camera, "Preview camera", pose)) ||
-                !check(scene->QueueCreate(light, "Preview light", {})) ||
+                !check(scene->QueueCreate(light, "Preview light", lightPose)) ||
                 !check(scene->QueueCreate(m_Object, "Preview mesh", objectPose)) ||
                 !check(scene->CommitPending()))
                 return false;
@@ -96,11 +99,12 @@ namespace Catalpa::Editor {
             lens.lens.nearPlane = 0.5f;
             lens.lens.farPlane = 5.0f;
             LightComponent sun;
+            sun.parameters.intensity = 4.0f;
             if (!check(scene->QueueSetCamera(scene->Resolve(camera), lens)) ||
                 !check(scene->QueueSetLight(scene->Resolve(light), sun)) || !check(scene->CommitPending()))
                 return false;
             MeshData data;
-            auto generated = CreateCubeMeshWithTangents(1, data);
+            auto generated = m_Sphere ? CreateSphereMeshWithTangents(.82f, data) : CreateCubeMeshWithTangents(1, data);
             if (generated.IsSuccess())
                 generated = CreateMeshResource(data, m_Renderer.mesh);
             if (!generated.IsSuccess()) {
@@ -137,18 +141,33 @@ namespace Catalpa::Editor {
     void MaterialEditor::Draw(Application& app, AssetDocument& doc, const PanelText& text,
                               std::string& error) {
         const auto draft = doc.Material();
-        for (const auto& parameter : draft->definition.Get()->parameters) {
+        if (ImGui::BeginTable("MaterialParameters", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp)) {
+          ImGui::TableSetupColumn("##Name", ImGuiTableColumnFlags_WidthStretch, .4f);
+          ImGui::TableSetupColumn("##Value", ImGuiTableColumnFlags_WidthStretch, .6f);
+          for (const auto& parameter : draft->definition.Get()->parameters) {
             const auto* old = FindMaterialParameter(*draft, parameter.id);
             if (!old)
                 continue;
+            std::string key = "material.parameter." + parameter.id;
+            for (char& c : key) if (c >= 'A' && c <= 'Z') c = char(c - 'A' + 'a');
+            const auto& fallback = parameter.displayName.empty() ? parameter.id : parameter.displayName;
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted(UiText(key.c_str(), fallback.c_str()));
+            ImGui::TableNextColumn();
+            ImGui::SetNextItemWidth(-FLT_MIN);
             // 源采样状态不可由材质草稿覆盖；显示其含义，不把内部 bit 协议当作数值控件。
             if (parameter.id.ends_with("_sampler")) {
                 if (const auto* source = std::get_if<uint32_t>(old)) {
-                    constexpr const char* address[]{"Repeat", "Clamp", "Mirror", "Invalid"};
-                    ImGui::Text("%s: U %s / V %s; min %s / mag %s / mip %s",
-                        parameter.displayName.c_str(), address[*source & 3u], address[(*source >> 2) & 3u],
-                        (*source & 16u) ? "Linear" : "Nearest", (*source & 32u) ? "Linear" : "Nearest",
-                        !(*source & 128u) ? "Off" : (*source & 64u) ? "Linear" : "Nearest");
+                    const char* address[]{UiText("sampler.repeat","Repeat"),UiText("sampler.clamp","Clamp"),
+                                          UiText("sampler.mirror","Mirror"),UiText("sampler.invalid","Invalid")};
+                    const auto* linear = UiText("sampler.linear","Linear");
+                    const auto* nearest = UiText("sampler.nearest","Nearest");
+                    ImGui::TextWrapped(UiText("sampler.settings", "U %s / V %s, min %s / mag %s / mip %s"),
+                        address[*source & 3u], address[(*source >> 2) & 3u],
+                        (*source & 16u) ? linear : nearest, (*source & 32u) ? linear : nearest,
+                        !(*source & 128u) ? UiText("sampler.off","Off") : (*source & 64u) ? linear : nearest);
                 }
                 continue;
             }
@@ -156,7 +175,7 @@ namespace Catalpa::Editor {
             ImGui::PushID(parameter.id.c_str());
             ImGui::BeginDisabled(!parameter.allowOverride);
             try {
-                if (EditValue(parameter, next)) {
+                if (EditValue(next)) {
                     MaterialParameterOverride edit{parameter.id, std::move(next)};
                     ChangeMaterial(doc, std::span{&edit, 1}, {}, error, &app.GetAssets());
                 }
@@ -166,6 +185,8 @@ namespace Catalpa::Editor {
             ImGui::EndDisabled();
             ImGui::PopID();
         }
+          ImGui::EndTable();
+        }
         const auto allowed = draft->definition.Get()->allowedStateOverrides;
         auto permits = [allowed](MaterialStateOverride key) {
             return (allowed & static_cast<uint32_t>(key)) != 0;
@@ -174,12 +195,16 @@ namespace Catalpa::Editor {
         int cull = static_cast<int>(draft->renderState.cull),
             blend = static_cast<int>(draft->renderState.blend);
         bool depthTest = draft->renderState.depthTest, depthWrite = draft->renderState.depthWrite;
+        const char* culls[]{UiText("material.cull_none","None"), UiText("material.cull_back","Back"),
+                             UiText("material.cull_front","Front")};
+        const char* blends[]{UiText("material.blend_opaque","Opaque"), UiText("material.blend_alpha","Alpha"),
+                              UiText("material.blend_add","Additive")};
         if (permits(MaterialStateOverride::Cull) &&
-            ImGui::Combo(text("material.cull", "Cull", "MaterialCull").c_str(), &cull, "None\0Back\0Front\0"))
+            ImGui::Combo(text("material.cull", "Cull", "MaterialCull").c_str(), &cull, culls, 3))
             states.cull = static_cast<MaterialCullMode>(cull);
         if (permits(MaterialStateOverride::Blend) &&
             ImGui::Combo(text("material.blend", "Blend", "MaterialBlend").c_str(), &blend,
-                         "Opaque\0Alpha\0Additive\0"))
+                         blends, 3))
             states.blend = static_cast<MaterialBlendMode>(blend);
         if (permits(MaterialStateOverride::DepthTest) &&
             ImGui::Checkbox(text("material.depth_test", "Depth test", "MaterialDepthTest").c_str(),
@@ -191,6 +216,16 @@ namespace Catalpa::Editor {
             states.depthWrite = depthWrite;
         if (states.cull || states.blend || states.depthTest || states.depthWrite)
             ChangeMaterial(doc, {}, states, error);
+        ImGui::SeparatorText(text("material.preview", "Preview", nullptr).c_str());
+        if (ImGui::RadioButton(text("material.preview_sphere", "Sphere", "Sphere").c_str(), m_Sphere) && !m_Sphere) {
+            Close(app);
+            m_Sphere = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton(text("material.preview_cube", "Cube", "Cube").c_str(), !m_Sphere) && m_Sphere) {
+            Close(app);
+            m_Sphere = false;
+        }
         DrawPreview(app, doc, error);
     }
 

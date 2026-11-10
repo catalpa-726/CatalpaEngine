@@ -7,8 +7,14 @@ namespace Catalpa::Editor {
 
     // 编辑器工作区配置；布局文本与场景/资产数据分开保存，内部面板 ID 保持稳定。
     struct WorkspaceSettings {
+        static constexpr int DefaultFontSize = 24;
+        static constexpr int MinFontSize = 12;
+        static constexpr int MaxFontSize = 36;
+
+        int editorFontSize = DefaultFontSize;
         bool vsync = true;
         bool showScene = true;
+        bool showHistory = true;
         bool showAssets = true;
         bool showInspector = true;
         bool showSettings = false;
@@ -16,6 +22,8 @@ namespace Catalpa::Editor {
         bool showBuild = true;
         bool showConsole = false;
         bool showDependencies = false;
+        bool showAudioMixer = false;
+        bool showNetwork = false;
         std::string language = "en-US";
         // 仅保存应用生成的 opaque ImGui 布局；人工编辑 JSON 时不要改 layout 或 layout_checksum。
         // 校验值用于检测意外变化，不是安全签名，也不验证 ImGui ini 的语义。

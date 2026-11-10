@@ -67,12 +67,16 @@ namespace Catalpa {
         // 默认保留主窗口场景；编辑宿主可只在中央离屏surface展示，交换链仍清底色并合成UI。
         void SetMainScenePresentation(MainScenePresentation) noexcept;
         [[nodiscard]] MainScenePresentation GetMainScenePresentation() const noexcept { return m_MainScenePresentation; }
+        RHIStatus RenderPlatformWindow(uint32_t id, void* window, Extent2D extent, const ImGuiFrameData& frame);
+        bool GetPlatformWindowPresentation(uint32_t id, PlatformWindowPresentation& output) const;
+        RHIStatus ReleasePlatformWindow(uint32_t id);
         [[nodiscard]] RHIStatus InitUI(std::span<const std::byte> pixels, Extent2D extent);
 
         // 每个surface独占表现目标与帧槽，CPU/GPU资产缓存仍由同一个Renderer共享。
         [[nodiscard]] bool SetPreviewFrame(uint64_t surfaceId, RenderFramePacket packet, std::string& error);
         [[nodiscard]] bool GetPreviewSurface(uint64_t surfaceId, RenderSurfaceSnapshot& output) const;
         void ReleasePreviewSurface(uint64_t surfaceId);
+        void FreezePreviewSurface(uint64_t surfaceId);
         [[nodiscard]] bool SetPreviewImage(uint64_t surfaceId, const AssetVersionRef<ImageAsset>&,
             uint32_t mip, uint32_t layer, uint32_t channelMask, std::string& error);
 
@@ -142,6 +146,13 @@ namespace Catalpa {
         DebugDraw m_Debug;
         uint64_t m_DebugSurface = 0; // 0仅宿主主场景；其他值只匹配一个离屏surface。
         RendererStatistics m_Statistics;
+        struct PlatformWindow {
+            std::unique_ptr<RHISwapchain> swapchain;
+            PlatformWindowPresentation presentation;
+        };
+        std::map<uint32_t, PlatformWindow> m_PlatformChains;
+        PlatformWindowPresentation m_MainPresentation;
+        bool m_PlatformFrameReady = false;
         uint32_t m_FrameSlot = 0;
         bool m_QuerySupportChecked = false;
     };

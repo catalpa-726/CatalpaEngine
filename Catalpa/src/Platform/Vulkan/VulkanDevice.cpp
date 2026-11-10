@@ -291,6 +291,28 @@ namespace Catalpa {
         return swapchain;
     }
 
+    std::unique_ptr<RHISwapchain> VulkanDevice::CreateWindowSwapchain(void* window, const RHISwapchainDesc& desc,
+                                                                     RHIStatus& status)
+    {
+        auto surface = std::make_unique<VulkanSurface>();
+        if (!surface->InitNative(m_Backend->GetInstance().GetHandle(), window)) {
+            status = {RHIErrorCode::BackendFailure, 0, "Create platform window surface"};
+            return nullptr;
+        }
+        VkBool32 supported = VK_FALSE;
+        status = ObserveStatus(MakeVulkanStatus(vkGetPhysicalDeviceSurfaceSupportKHR(
+            m_PhysicalDevice, GetPresentQueueFamily(), surface->GetHandle(), &supported), "Platform surface support"));
+        if (!status.IsSuccess()) return nullptr;
+        if (!supported) {
+            status = {RHIErrorCode::Unsupported, 0, "Present queue cannot present to this window"};
+            return nullptr;
+        }
+        auto chain = std::make_unique<VulkanSwapchain>(*this, std::move(surface));
+        status = ObserveStatus(chain->Init(desc));
+        if (!status.IsSuccess()) return nullptr;
+        return chain;
+    }
+
     RHIFormatSupport VulkanDevice::GetFormatSupport(PixelFormat format) const
     {
         const VkFormat nativeFormat = ToVulkanFormat(format);

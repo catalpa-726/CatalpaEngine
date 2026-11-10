@@ -6,7 +6,7 @@ namespace Catalpa::Editor {
           public:
             SourceEdit(StableId id, std::shared_ptr<const std::string> before,
                        std::shared_ptr<const std::string> after, uint64_t group)
-                : EditorCommand(id), m_Before(std::move(before)), m_After(std::move(after)), m_Group(group) {}
+                : EditorCommand(id, "history.source"), m_Before(std::move(before)), m_After(std::move(after)), m_Group(group) {}
             bool TryMerge(const EditorCommand& command) noexcept override {
                 const auto* next = dynamic_cast<const SourceEdit*>(&command);
                 if (!next || !m_Group || m_Group != next->m_Group || Owner() != next->Owner() || m_After != next->m_Before) return false;

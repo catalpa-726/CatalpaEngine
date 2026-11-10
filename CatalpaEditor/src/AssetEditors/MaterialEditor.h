@@ -23,5 +23,6 @@ namespace Catalpa::Editor {
         MeshRendererComponent m_Renderer;
         std::shared_ptr<const MaterialInstance> m_Bound;
         uint64_t m_Version = 0;
+        bool m_Sphere = true;
     };
 }

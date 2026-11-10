@@ -32,6 +32,12 @@ namespace Catalpa {
         // 返回的交换链必须先于设备释放；失败时返回空指针并填写 status。
         [[nodiscard]] virtual std::unique_ptr<RHISwapchain> CreateSwapchain(const RHISwapchainDesc& desc, RHIStatus& status) = 0;
 
+        // 附加原生窗口使用同一逻辑设备。交换链拥有其新建的表面，窗口须晚于它销毁。
+        virtual std::unique_ptr<RHISwapchain> CreateWindowSwapchain(void*, const RHISwapchainDesc&, RHIStatus& status) {
+            status = {RHIErrorCode::Unsupported, 0, "RHIDevice/CreateWindowSwapchain"};
+            return {};
+        }
+
         // 查询初始化时保存的设备上限与实际启用的可选能力。
         virtual const RHICapabilities& GetCapabilities() const = 0;
         [[nodiscard]] virtual RHIStatus GetMemoryBudgets(std::vector<RHIMemoryHeapBudget>&) const {

@@ -3,6 +3,28 @@
 #include "Core/Serialization/JsonArchive.h"
 
 namespace Catalpa {
+    namespace {
+        constexpr size_t MaxCatalogBytes = 512 * 1024;
+    }
+
+    bool LocalizationCatalog::LoadFile(const std::filesystem::path& path, std::string_view language,
+                                       std::string& error) {
+        std::ifstream stream(path, std::ios::binary | std::ios::ate);
+        const std::streamoff length = stream.tellg();
+        if (!stream || length <= 0 || length > static_cast<std::streamoff>(MaxCatalogBytes)) {
+            error = "Language pack is missing, empty or exceeds the 512 KiB limit";
+            return false;
+        }
+        std::string bytes(static_cast<size_t>(length), '\0');
+        stream.seekg(0);
+        if (!stream.read(bytes.data(), static_cast<std::streamsize>(bytes.size())) ||
+            stream.peek() != std::char_traits<char>::eof()) {
+            error = "Could not read the complete language pack";
+            return false;
+        }
+        return Load(bytes, language, error);
+    }
+
     bool LocalizationCatalog::Load(std::string_view bytes, std::string_view language, std::string& error) {
         try {
             if (language != "en-US" && language != "zh-CN") {
@@ -10,7 +32,7 @@ namespace Catalpa {
                 return false;
             }
             ArchiveLimits limits;
-            limits.maxBytes = 512 * 1024;
+            limits.maxBytes = MaxCatalogBytes;
             limits.maxDepth = 4;
             limits.maxNodes = 16384;
             limits.maxStringBytes = 2048;

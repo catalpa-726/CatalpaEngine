@@ -1,3 +1,4 @@
+#include "Panels/EditorText.h"
 #include "AssetEditors/PhysicsNavigationEditor.h"
 #include "Commands/GraphCommands.h"
 #include "Core/Application.h"
@@ -23,6 +24,7 @@ namespace Catalpa::Editor {
         std::string source;
         Math::Vec3 start{}, end{3, 0, 3};
         bool success = false;
+        bool centralRayHit = false;
         std::vector<Math::Vec3> curve;
         bool motionCurve = false;
         std::string profiles;
@@ -68,7 +70,7 @@ namespace Catalpa::Editor {
             return text ? text(key, fallback, key) : std::string(fallback);
         };
         if (!doc.Source()) {
-            ImGui::TextUnformatted("No author source");
+            ImGui::TextUnformatted(UiText("physics.no_source", "No author source"));
             return;
         }
         const auto& source = *doc.Source();
@@ -114,8 +116,8 @@ namespace Catalpa::Editor {
                 }
             }
             ImGui::TextUnformatted(
-                "SI units; material changes create a new cooked version. Runtime rebuild keeps its "
-                "old body if a candidate fails.");
+                UiText("physics.si_note", "SI units; material changes create a new cooked version. Runtime rebuild keeps its "
+                "old body if a candidate fails."));
         } else if (doc.TypeKey() == "collision_shape" ||
                    doc.AuthorPath().filename().string().ends_with(".collision.json")) {
             CollisionShapeAsset value;
@@ -125,24 +127,28 @@ namespace Catalpa::Editor {
             bool changed = false;
             if (value.vertices.empty()) {
                 changed = ImGui::Combo(T("physics.primitive", "Primitive").c_str(), &kind,
-                                       "Box\0Sphere\0Capsule\0");
+                                       UiChoices({UiText("choice.box", "Box"), UiText("choice.sphere", "Sphere"), UiText("choice.capsule", "Capsule")}).c_str());
                 value.kind = CollisionShapeKind(kind);
                 changed |= ImGui::DragFloat3(
                     T("physics.dimensions", "Half extents / radius, half-height (m)").c_str(),
                     &value.dimensions.x, 0.01f, 0.001f, 10000);
             }
-            ImGui::Text("Vertices: %zu; triangles: %zu", value.vertices.size(), value.indices.size() / 3);
+            ImGui::Text(UiFormat("physics.primitive_counts", "Vertices: %zu; triangles: %zu"), value.vertices.size(), value.indices.size() / 3);
             if (changed && WriteCollisionShape(value, next, error)) {
                 ChangeAuthorSource(doc, std::move(next), error);
+                m_Impl->success = false;
                 m_Impl->curve.clear();
             }
             if (ImGui::Button(T("physics.validate_shape", "Validate SDK shape and ground query").c_str())) {
+                m_Impl->success = false;
+                m_Impl->curve.clear();
                 PhysicsWorld world;
                 PhysicsBodyHandle body;
                 PhysicsQueryHit hit;
                 if (world.Initialize({}, error) && world.CreateBody({}, value, {}, body, error) &&
                     world.Raycast({0, 100, 0}, {0, -200, 0}, hit, error)) {
                     m_Impl->success = true;
+                    m_Impl->centralRayHit = hit.hit;
                     Math::Vec3 low = -value.dimensions, high = value.dimensions;
                     if (value.kind == CollisionShapeKind::Sphere) {
                         low = Math::Vec3(-value.dimensions.x);
@@ -179,8 +185,9 @@ namespace Catalpa::Editor {
                 }
             }
             if (m_Impl->success)
-                ImGui::TextUnformatted(
-                    "Jolt shape created; central ray hit. Preview uses the authored metre-space shape.");
+                ImGui::TextUnformatted(m_Impl->centralRayHit
+                    ? UiText("physics.ray_hit", "Jolt shape created; central ray hit. Preview uses the authored metre-space shape.")
+                    : UiText("physics.ray_missed", "Jolt shape created; the central ray missed."));
         } else {
             const auto profilePath = app.GetResourceRoot() / "Config" / "NavigationBuildProfiles.json";
             std::error_code profileError;
@@ -205,7 +212,7 @@ namespace Catalpa::Editor {
             NavigationBuildInput value;
             if (!Tools::ResolveNavigationBuildSource(source, m_Impl->profiles, value, error))
                 return;
-            ImGui::Text("%s: %s", T("navigation.profile", "Build profile").c_str(),
+            ImGui::Text("%s: %s", UiText("navigation.profile", "Build profile"),
                         value.buildProfile.c_str());
             bool changed = ImGui::DragFloat(T("navigation.cell_size", "Cell size (m)").c_str(),
                                             &value.settings.cellSize, 0.01f, 0.01f, 10);
@@ -260,7 +267,7 @@ namespace Catalpa::Editor {
                 if (!m_Impl->bake->error.empty())
                     ImGui::TextWrapped("%s", m_Impl->bake->error.c_str());
                 if (m_Impl->bake->success) {
-                    ImGui::Text("Tile bytes: %zu; path points: %zu", m_Impl->bake->asset.tile.size(),
+                    ImGui::Text(UiFormat("nav.tile_bytes", "Tile bytes: %zu; path points: %zu"), m_Impl->bake->asset.tile.size(),
                                 m_Impl->bake->path.points.size());
                     const auto origin = ImGui::GetCursorScreenPos();
                     const ImVec2 size{ImGui::GetContentRegionAvail().x, 240};
@@ -296,14 +303,14 @@ namespace Catalpa::Editor {
                 }
             }
             ImGui::TextUnformatted(
-                "Top-down source regions / agent radius / actual Detour path. Bake is cancellable "
-                "and leaves source geometry untouched.");
+                UiText("nav.bake_view", "Top-down source regions / agent radius / actual Detour path. Bake is cancellable "
+                "and leaves source geometry untouched."));
         }
         if (doc.TypeKey() != "navmesh" && !doc.AuthorPath().filename().string().ends_with(".navmesh.json") &&
             !m_Impl->curve.empty()) {
             ImGui::TextUnformatted(m_Impl->motionCurve
-                                       ? "Jolt drop / bounce / friction trajectory (X/Y metres)"
-                                       : "Jolt ray-sampled shape cross section (X/Y metres)");
+                                       ? UiText("physics.drop_curve", "Jolt drop / bounce / friction trajectory (X/Y metres)")
+                                       : UiText("physics.ray_curve", "Jolt ray-sampled shape cross section (X/Y metres)"));
             auto low = m_Impl->curve.front(), high = low;
             for (auto p : m_Impl->curve) {
                 low = glm::min(low, p);

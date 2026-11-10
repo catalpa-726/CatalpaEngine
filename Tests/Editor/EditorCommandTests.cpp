@@ -1,9 +1,13 @@
 #include "catpch.h"
 #include "TestRunner.h"
+#include "Panels/BrowserDirectoryCache.h"
 #include "Commands/SceneCommands.h"
 #include "Commands/AssetCommands.h"
 #include "Commands/TransformDrag.h"
 #include "Application/EditorSelection.h"
+#include "Application/WorkspaceSettings.h"
+#include "Platform/WorkspaceFiles.h"
+#include "Assets/AssetTestFixture.h"
 #include "Documents/DocumentManager.h"
 #include "Assets/BuiltinAssetIds.h"
 #include "Materials/MaterialValidation.h"
@@ -13,11 +17,91 @@
 #include "AssetEditors/AssetEditorRegistry.h"
 #include "Viewport/EditorCameraController.h"
 #include "Properties/RotationEditorState.h"
+#include <nlohmann/json.hpp>
 
 namespace Catalpa::Tests {
     using namespace Editor;
 
     namespace {
+        void CheckWorkspaceFontSize(TestContext& t) {
+            AssetTest::Fixture fixture;
+            std::string error;
+            if (!fixture.Create(error)) {
+                t.Check(false, error);
+                return;
+            }
+            const auto path = fixture.root / "workspace.json";
+            fixture.files = {path, fixture.root / "workspace.json.bak"};
+
+            // 旧工作区只有四个基础面板键，字号应从默认值补齐，同时保留原有偏好。
+            nlohmann::json legacy = {
+                {"schema_version", 1}, {"language", "zh-CN"}, {"vsync", false},
+                {"panels", {{"scene", true}, {"assets", false}, {"inspector", true}, {"settings", false}}},
+                {"layout", ""}, {"layout_checksum", "cbf29ce484222325"}
+            };
+            WorkspaceSettings loaded;
+            loaded.editorFontSize = 18;
+            const bool migrated = AtomicFileWriter::Write(path, legacy.dump(), error) &&
+                                  LoadWorkspaceSettings(path, loaded, error) == WorkspaceLoadResult::Loaded;
+            t.Check(migrated && loaded.editorFontSize == 24 && loaded.language == "zh-CN" &&
+                        !loaded.vsync && !loaded.showAssets, "Old workspaces acquire 24 px and retain panel preferences");
+            if (!migrated)
+                return;
+
+            t.Check(!loaded.showAudioMixer && !loaded.showNetwork,
+                    "Legacy workspaces keep diagnostics panels closed");
+            for (int size : {12, 36}) {
+                auto edited = loaded;
+                edited.editorFontSize = size;
+                edited.showAudioMixer = size == 12;
+                edited.showNetwork = size == 36;
+                const bool roundtrip = SaveWorkspaceSettings(path, edited, error) &&
+                                       LoadWorkspaceSettings(path, loaded, error) == WorkspaceLoadResult::Loaded;
+                t.Check(roundtrip && loaded.editorFontSize == size, "Workspace font size endpoints persist");
+                t.Check(roundtrip && loaded.showAudioMixer == edited.showAudioMixer &&
+                            loaded.showNetwork == edited.showNetwork,
+                        "Audio mixer and network panel visibility persist independently");
+                if (!roundtrip)
+                    return;
+            }
+
+            std::string text;
+            if (!ReadWorkspaceText(path, text, 1024 * 1024, error)) {
+                t.Check(false, error);
+                return;
+            }
+            auto saved = nlohmann::json::parse(text, nullptr, false);
+            const bool currentSchema = saved.is_object() && saved.contains("schema_version") &&
+                                       saved["schema_version"] == 2 && saved.contains("editor_font_size") &&
+                                       saved["editor_font_size"] == 36;
+            t.Check(currentSchema, "Saved workspaces write a versioned font size");
+            if (!currentSchema)
+                return;
+            auto previous = saved;
+            previous["panels"].erase("audio_mixer");
+            previous["panels"].erase("network");
+            previous["panels"]["history"] = false;
+            const bool legacyPanels = AtomicFileWriter::Write(path, previous.dump(), error) &&
+                                      LoadWorkspaceSettings(path, loaded, error) == WorkspaceLoadResult::Loaded;
+            t.Check(legacyPanels && !loaded.showHistory && !loaded.showNetwork && !loaded.showAudioMixer,
+                    "Existing nine-panel workspaces retain history visibility and default diagnostics");
+            auto malformed = saved;
+            malformed["panels"]["network"] = 1;
+            const bool invalidPanel = AtomicFileWriter::Write(path, malformed.dump(), error) &&
+                                      LoadWorkspaceSettings(path, loaded, error) == WorkspaceLoadResult::Failed;
+            t.Check(invalidPanel && !loaded.showHistory && !loaded.showNetwork,
+                    "Invalid diagnostics visibility preserves the previous workspace");
+            // 即使坏文件中的其他偏好有效，加载失败也不能部分覆盖当前状态。
+            saved["language"] = "en-US";
+            for (const auto& invalid : nlohmann::json::array({11, 37, 24.5, "24", 4294967320ULL})) {
+                saved["editor_font_size"] = invalid;
+                const bool rejected = AtomicFileWriter::Write(path, saved.dump(), error) &&
+                                      LoadWorkspaceSettings(path, loaded, error) == WorkspaceLoadResult::Failed;
+                t.Check(rejected && loaded.editorFontSize == 36 && loaded.language == "zh-CN",
+                        "Invalid font sizes preserve the previous workspace without truncating or clamping");
+            }
+        }
+
         // 用真实 SceneManager 和实体代次检查事务；不建立窗口或替身 GPU。
         void CheckScenes(TestContext& t) {
             SceneManager manager;
@@ -43,6 +127,9 @@ namespace Catalpa::Tests {
                     "Reject a reparent cycle without recording a command");
 
             auto& history = doc->History();
+            t.Check(history.Size() == 2 && history.Position() == 2 &&
+                        std::string_view(history.LabelKey(0)) == "history.create",
+                    "History pane lists actual successful commands in document order");
             EditorSelection selection;
             const auto id = scene->Resolve(child);
             t.Check(selection.Select(*doc, id), "Select child by document, world and generation");
@@ -468,6 +555,43 @@ namespace Catalpa::Tests {
                     "Cancel cannot overwrite an unrelated edit");
         }
 
+        void CheckAssetDirectoryNavigation(TestContext& t) {
+            AssetTest::Fixture fixture;
+            std::string error;
+            if (!fixture.Create(error)) { t.Check(false,error); return; }
+            const auto root = std::filesystem::canonical(fixture.root);
+            const auto folder = root / "Materials";
+            const auto first = folder / "B.material.json";
+            const auto next = folder / "C.material.json";
+            const auto loose = root / "A.asset";
+            fixture.files = {first, next, loose, folder};
+            if (!std::filesystem::create_directory(folder) || !AtomicFileWriter::Write(first,"{}",error) ||
+                !AtomicFileWriter::Write(loose,"sample",error)) { t.Check(false,error); return; }
+
+            BrowserDirectoryCache cache;
+            const auto entry = cache.List(root, root);
+            t.Check(entry->error.empty() && entry->entries.size() == 2 && entry->entries[0].path == folder &&
+                    entry->entries[0].folder && entry->entries[1].path == loose,
+                    "Asset tree and file grid share folders-first navigation");
+            auto contents = cache.List(root, folder);
+            t.Check(contents->error.empty() && contents->entries.size() == 1 &&
+                    contents->entries.front().path == first, "Navigation enters a selected child folder");
+            t.Check(!cache.List(root, root.parent_path())->error.empty(),
+                    "Asset breadcrumbs cannot enumerate above the declared root");
+            if (!AtomicFileWriter::Write(next,"{}",error)) { t.Check(false,error); return; }
+            t.Check(cache.List(root, folder) == contents, "Repeated frames reuse the immutable directory listing");
+            cache.Clear();
+            t.Check(cache.List(root, folder)->entries.size() == 2, "Refreshing reveals new files");
+            std::weak_ptr<const BrowserListing> firstCached = cache.List(root,folder);
+            for (unsigned n = 0; n < 96; ++n) {
+                const auto path = root / ("Page" + std::to_string(n));
+                fixture.files.push_back(path);
+                if (!std::filesystem::create_directory(path)) { t.Check(false,"Create bounded cache fixture"); return; }
+                (void)cache.List(root, path);
+            }
+            t.Check(firstCached.expired(), "Browsing many folders retires unused directory snapshots");
+        }
+
         void CheckAssetDraft(TestContext& t) {
             std::string e;
             std::shared_ptr<const MaterialInstance> material;
@@ -495,6 +619,13 @@ namespace Catalpa::Tests {
                     "Open a material document through its registered type");
             if (!doc)
                 return;
+            AssetVersionRef<MaterialInstance> replacement;
+            if (AssetVersionRef<MaterialInstance>::TryCreate(fixed.GetId(), 2, fixed.GetShared(), replacement, e)) {
+                auto* newer = documents.Open(replacement, e);
+                auto* selectedSlot = documents.Open(fixed, e);
+                t.Check(newer && newer != doc && selectedSlot == doc && selectedSlot->SourceVersion() == 1,
+                        "Inspector material slot reopens its pinned version after a newer version is opened");
+            } else t.Check(false,e);
             const auto markerFactory = +[]() -> std::unique_ptr<IAssetEditor> { return {}; };
             const auto markerOpen = +[](AssetId, const AssetManager&, DocumentManager&,
                                         std::string&) -> AssetDocument* { return nullptr; };
@@ -522,6 +653,8 @@ namespace Catalpa::Tests {
     }
 
     void RunEditorCommandTests(TestContext& t) {
+        CheckWorkspaceFontSize(t);
+        CheckAssetDirectoryNavigation(t);
         CheckScenes(t);
         CheckIdentityAndCamera(t);
         CheckRotationEditor(t);

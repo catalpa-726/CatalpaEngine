@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "43853bc2-001f-45ed-914b-d51c70a54a9a",
+  "name": "Grove",
+  "contentRoot": "Content",
+  "externalSourceRoots": {},
+  "derivedDataRoot": "DerivedDataCache",
+  "cookedRoot": "Cooked",
+  "metadata": "asset_metadata.json",
+  "buildProfiles": "BuildProfiles.json",
+  "buildProfile": "desktop-vulkan",
+  "targetPlatform": "windows",
+  "buildConfiguration": "Debug",
+  "startupScene": null,
+  "modules": []
+}

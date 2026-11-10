@@ -70,6 +70,8 @@ namespace Catalpa {
         [[nodiscard]] RHIStatus Update(Window& window, const ImGuiFrameData* uiFrame = nullptr);
 
         // 初始化 UI 静态字体资源；不暴露设备或后端原生句柄给 Layer。
+        RHIStatus RenderPlatformWindow(uint32_t id, void* window, Extent2D extent, const ImGuiFrameData& frame);
+        RHIStatus ReleasePlatformWindow(uint32_t id);
         [[nodiscard]] RHIStatus InitUI(std::span<const std::byte> fontPixels, Extent2D fontExtent);
 
         void RequestSwapchainUpdate() { m_SwapchainDirty = true; }
@@ -98,7 +100,8 @@ namespace Catalpa {
         // 编辑宿主只借用场景句柄与表现快照，不能接管设备或缓存所有权。
         [[nodiscard]] bool SetEditorPreview(SceneHandle scene, uint64_t viewId, Extent2D extent, std::string& error);
         [[nodiscard]] bool SetEditorCameraPreview(SceneHandle scene, uint64_t viewId, Extent2D extent,
-            const Math::TransformTRS& cameraPose, const CameraLens& lens, uint64_t historyRevision, std::string& error);
+            const Math::TransformTRS& cameraPose, const CameraLens& lens, uint64_t historyRevision, std::string& error,
+            EditorViewDisplay display = {});
         void SetEditorViewportActive(bool active);
         [[nodiscard]] bool SetPlayScene(SceneHandle scene, bool paused, std::string& error);
         [[nodiscard]] bool StepPlay(std::string& error);
@@ -108,11 +111,13 @@ namespace Catalpa {
         }
         [[nodiscard]] bool GetEditorPreview(uint64_t viewId, RenderSurfaceSnapshot& surface) const;
         void CloseEditorPreview(uint64_t viewId);
+        void FreezeEditorPreview(uint64_t viewId);
         [[nodiscard]] bool SetEditorPreviewImage(uint64_t viewId, const AssetVersionRef<ImageAsset>& image,
             uint32_t mip, uint32_t layer, uint32_t channelMask, std::string& error);
         [[nodiscard]] bool RequestEditorPick(const PickingRequest& request, uint64_t& ticket, std::string& error);
         [[nodiscard]] bool PollEditorPick(uint64_t ticket, PickingResult& result);
         void CancelEditorPick(uint64_t ticket);
+        [[nodiscard]] bool GetPlatformWindowPresentation(uint32_t id, PlatformWindowPresentation& output) const;
         [[nodiscard]] bool GetGpuFrameMilliseconds(double& milliseconds) const;
         [[nodiscard]] bool GetManagedGpuPayloadBytes(uint64_t& used, uint64_t& budget) const;
         [[nodiscard]] bool AddDebugBounds(const Aabb& bounds, const Math::Vec4& color, std::string& error, uint64_t surfaceId = 0);

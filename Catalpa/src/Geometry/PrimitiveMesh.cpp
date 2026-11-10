@@ -1,6 +1,7 @@
 #include "catpch.h"
 #include "Geometry/PrimitiveMesh.h"
 #include "Geometry/MeshValidation.h"
+#include "Core/Math/CoordinateConvention.h"
 
 namespace Catalpa {
     namespace {
@@ -79,6 +80,54 @@ namespace Catalpa {
         }};
         constexpr std::array<uint32_t, 6> indices{ 0,1,2,2,3,0 };
         return FinishMesh(vertices, indices, Aabb{ {-x,0,-z}, {x,0,z}, false }, output);
+    }
+
+    MeshStatus CreateSphereMeshWithTangents(float radius, MeshData& output)
+    {
+        if (!std::isfinite(radius) || radius <= 0)
+            return {MeshError::InvalidArgument, "Sphere radius must be finite and positive"};
+        try {
+            constexpr uint32_t rings = 24, sectors = 48;
+            struct SphereVertex { Vertex base; float tangent[4]; };
+            static_assert(sizeof(SphereVertex) == 48 && offsetof(SphereVertex, tangent) == 32);
+            std::vector<SphereVertex> vertices;
+            std::vector<uint32_t> indices;
+            vertices.reserve((rings + 1) * (sectors + 1));
+            indices.reserve(6 * sectors * (rings - 1));
+            for (uint32_t i = 0; i <= rings; ++i) {
+                const float v = float(i) / rings;
+                const float h = (i == 0 || i == rings) ? 0.f : std::sin(Math::Pi * v);
+                const float y = std::cos(Math::Pi * v);
+                for (uint32_t j = 0; j <= sectors; ++j) {
+                    const float u = float(j) / sectors;
+                    const float angle = j == sectors ? 0.f : 2.f * Math::Pi * u;
+                    const float c = std::cos(angle), s = std::sin(angle);
+                    const float x = h * c, z = h * s;
+                    // 接缝处复制 UV；沿经线 +V 与 N×T 一致，极点也保留有限单位切线。
+                    vertices.push_back({{{radius*x, radius*y, radius*z}, {x,y,z}, {u,v}}, {-s,0,c,1}});
+                    if (i == rings || j == sectors) continue;
+                    const uint32_t a = i * (sectors + 1) + j, b = a + sectors + 1;
+                    if (i > 0) indices.insert(indices.end(), {a, a+1, b});
+                    if (i+1 < rings) indices.insert(indices.end(), {a+1, b+1, b});
+                }
+            }
+            MeshData candidate;
+            candidate.vertexCount = uint32_t(vertices.size());
+            candidate.vertexStride = sizeof(SphereVertex);
+            candidate.attributes = {{0, VertexFormat::Float3, 0, VertexSemantic::Position},
+                {1, VertexFormat::Float3, 12, VertexSemantic::Normal},
+                {2, VertexFormat::Float2, 24, VertexSemantic::TexCoord0},
+                {3, VertexFormat::Float4, 32, VertexSemantic::Tangent}};
+            candidate.vertexData.resize(vertices.size() * sizeof(SphereVertex));
+            candidate.indexData.resize(indices.size() * sizeof(uint32_t));
+            std::memcpy(candidate.vertexData.data(), vertices.data(), candidate.vertexData.size());
+            std::memcpy(candidate.indexData.data(), indices.data(), candidate.indexData.size());
+            candidate.submeshes.push_back({0,uint32_t(indices.size()),0,0,candidate.vertexCount,0,MeshTopology::TriangleList});
+            candidate.localBounds = {Math::Vec3{-radius}, Math::Vec3{radius}, false};
+            if (const auto status = ValidateMesh(candidate); !status.IsSuccess()) return status;
+            output = std::move(candidate);
+            return {};
+        } catch (const std::bad_alloc&) { return {MeshError::AllocationFailed, "Cannot allocate sphere geometry"}; }
     }
 
     MeshStatus CreateCubeMeshWithTangents(float size, MeshData& output)

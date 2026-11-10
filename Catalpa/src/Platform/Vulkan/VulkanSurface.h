@@ -17,6 +17,7 @@ namespace Catalpa {
         static bool GetRequiredExtensions(std::vector<const char*>& extensions);
 
         bool Init(VkInstance instance, Window& window);
+        bool InitNative(VkInstance instance, void* nativeWindow);
         void Shutdown();
 
         VkSurfaceKHR GetHandle() const { return m_Surface; }

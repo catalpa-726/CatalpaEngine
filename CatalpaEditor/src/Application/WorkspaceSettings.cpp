@@ -81,6 +81,9 @@ namespace Catalpa::Editor {
         {
             if (settings.language != "en-US" && settings.language != "zh-CN")
                 error = "Unsupported workspace language.";
+            else if (settings.editorFontSize < WorkspaceSettings::MinFontSize ||
+                     settings.editorFontSize > WorkspaceSettings::MaxFontSize)
+                error = "Workspace editor_font_size must be between 12 and 36 pixels.";
             else if (settings.layout.size() > MaxWorkspaceBytes) error = "Workspace layout exceeds the 1 MiB limit.";
             else if (settings.layout.find('\0') != std::string::npos) error = "Workspace layout contains an embedded null byte.";
             else if (!IsValidUtf8(settings.layout)) error = "Workspace layout is not valid UTF-8.";
@@ -111,28 +114,43 @@ namespace Catalpa::Editor {
         }
 
         const auto document = nlohmann::json::parse(text, nullptr, false);
-        if (!document.is_object() || document.size() != 6) {
-            error = "Workspace settings require a JSON object with exactly six schema fields.";
+        if (!document.is_object()) {
+            error = "Workspace settings must be a JSON object.";
             return WorkspaceLoadResult::Failed;
         }
         const auto version = document.find("schema_version");
+        if (version == document.end() || !version->is_number_integer() || (*version != 1 && *version != 2)) {
+            error = "Unsupported workspace schema_version; expected integer 1 or 2.";
+            return WorkspaceLoadResult::Failed;
+        }
+        // v1 没有字号字段，沿用 24 px；v2 完整保存用户选择的字号。
+        const bool hasFontSize = *version == 2;
+        if (document.size() != (hasFontSize ? 7u : 6u)) {
+            error = "Workspace field count does not match its schema_version.";
+            return WorkspaceLoadResult::Failed;
+        }
         const auto language = document.find("language");
         const auto vsync = document.find("vsync");
         const auto panels = document.find("panels");
         const auto layout = document.find("layout");
         const auto checksum = document.find("layout_checksum");
-        if (version == document.end() || !version->is_number_integer() || *version != 1) {
-            error = "Unsupported workspace schema_version; expected integer 1.";
-            return WorkspaceLoadResult::Failed;
-        }
         if (language == document.end() || !language->is_string() || vsync == document.end() || !vsync->is_boolean() ||
             layout == document.end() || !layout->is_string() || checksum == document.end() || !checksum->is_string() ||
-            panels == document.end() || !panels->is_object() || (panels->size() != 4 && panels->size() != 8)) {
-            error = "Workspace language/layout/layout_checksum must be strings, vsync a boolean, and panels a supported four/eight-field object.";
+            panels == document.end() || !panels->is_object() || (panels->size() != 4 && panels->size() != 8 && panels->size() != 9 && panels->size() != 11)) {
+            error = "Workspace language/layout/layout_checksum must be strings, vsync a boolean, and panels a supported panel object.";
             return WorkspaceLoadResult::Failed;
         }
 
         WorkspaceSettings parsed;
+        if (hasFontSize) {
+            const auto size = document.find("editor_font_size");
+            if (size == document.end() || !size->is_number_integer() ||
+                *size < WorkspaceSettings::MinFontSize || *size > WorkspaceSettings::MaxFontSize) {
+                error = "Workspace editor_font_size must be an integer between 12 and 36 pixels.";
+                return WorkspaceLoadResult::Failed;
+            }
+            parsed.editorFontSize = size->get<int>();
+        }
         parsed.language = *language->get_ptr<const std::string*>();
         parsed.vsync = *vsync->get_ptr<const bool*>();
         parsed.layout = *layout->get_ptr<const std::string*>();
@@ -148,11 +166,16 @@ namespace Catalpa::Editor {
         if (!readPanel("scene", parsed.showScene) || !readPanel("assets", parsed.showAssets) ||
             !readPanel("inspector", parsed.showInspector) || !readPanel("settings", parsed.showSettings) ||
             !ValidateSettings(parsed, error)) return WorkspaceLoadResult::Failed;
-        // 旧四面板配置保持兼容；新配置一次保存全部八个稳定面板键。
-        if (panels->size() == 8 &&
+        // 面板字段随版本递增；旧配置未记录的面板使用各自的默认值。
+        if (panels->size() >= 8 &&
             (!readPanel("content", parsed.showContent) || !readPanel("build", parsed.showBuild) ||
              !readPanel("console", parsed.showConsole) ||
              !readPanel("dependencies", parsed.showDependencies)))
+            return WorkspaceLoadResult::Failed;
+
+        if (panels->size() >= 9 && !readPanel("history", parsed.showHistory)) return WorkspaceLoadResult::Failed;
+        if (panels->size() == 11 &&
+            (!readPanel("audio_mixer", parsed.showAudioMixer) || !readPanel("network", parsed.showNetwork)))
             return WorkspaceLoadResult::Failed;
 
         const auto& storedChecksum = *checksum->get_ptr<const std::string*>();
@@ -169,18 +192,22 @@ namespace Catalpa::Editor {
     {
         error.clear();
         if (!ValidateSettings(settings, error)) return false;
-        const nlohmann::json document{{"schema_version", 1},
+        const nlohmann::json document{{"schema_version", 2},
                                       {"language", settings.language},
+                                      {"editor_font_size", settings.editorFontSize},
                                       {"vsync", settings.vsync},
                                       {"panels",
                                        {{"scene", settings.showScene},
                                         {"assets", settings.showAssets},
+                                        {"history", settings.showHistory},
                                         {"inspector", settings.showInspector},
                                         {"settings", settings.showSettings},
                                         {"content", settings.showContent},
                                         {"build", settings.showBuild},
                                         {"console", settings.showConsole},
-                                        {"dependencies", settings.showDependencies}}},
+                                        {"dependencies", settings.showDependencies},
+                                        {"audio_mixer", settings.showAudioMixer},
+                                        {"network", settings.showNetwork}}},
                                       {"layout", settings.layout},
                                       {"layout_checksum", LayoutChecksum(settings.layout)}};
         const std::string text = document.dump(2) + '\n';

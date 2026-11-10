@@ -19,7 +19,7 @@ namespace Catalpa::Editor {
         }
 
       private:
-        int m_Mode = 0, m_Operation = 0;
+        int m_Mode = 0, m_Operation = -1;
         bool m_Snap = false, m_WaitRelease = false;
         float m_Step = .25f;
         TransformDrag m_Drag;

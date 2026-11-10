@@ -49,6 +49,15 @@ namespace Catalpa {
         return true;
     }
 
+    void Renderer::FreezePreviewSurface(uint64_t surfaceId)
+    {
+        const auto found = m_Previews.find(surfaceId);
+        if (found == m_Previews.end() || !found->second->published.textureToken) return;
+        // 后续 UI 采样由已发布的 token/附件负责保活；清空输入帧后不再执行场景绘制。
+        found->second->scene.Clear();
+        found->second->prepared = false;
+    }
+
     void Renderer::ReleasePreviewSurface(uint64_t surfaceId)
     {
         const auto found = m_Previews.find(surfaceId);

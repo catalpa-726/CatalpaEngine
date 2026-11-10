@@ -15,8 +15,12 @@ namespace Catalpa::Editor {
             m_NameBuffer.resize(MaxNameBytes + 1);
         std::copy(identity.name.begin(), identity.name.end(), m_NameBuffer.begin());
         m_NameBuffer[identity.name.size()] = '\0';
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(text("edit.entity_name", "Name", nullptr).c_str());
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(-FLT_MIN);
         const bool submit =
-            ImGui::InputText(text("edit.entity_name", "Name", "EntityName").c_str(), m_NameBuffer.data(),
+            ImGui::InputText("##EntityName", m_NameBuffer.data(),
                              m_NameBuffer.size(), ImGuiInputTextFlags_EnterReturnsTrue);
         if (ImGui::IsItemActivated() || m_NameTarget != ref) {
             m_NameAtActivation = identity.name;
@@ -29,7 +33,7 @@ namespace Catalpa::Editor {
     }
 
     bool InspectorPanel::Draw(SceneDocument& doc, const EditorSelection& selection, const PanelText& text,
-                              std::string& error) {
+                              AssetVersionRef<MaterialInstance>& openMaterial, std::string& error) {
         auto* scene = doc.Resolve();
         if (!scene)
             return false;
@@ -42,7 +46,7 @@ namespace Catalpa::Editor {
         ImGui::PushID(id.persistent.ToString().c_str());
         DrawName(doc, ref, id, text, error);
         ImGui::TextDisabled("%s", id.persistent.ToString().c_str());
-        m_Properties.Draw(doc, ref, text, error);
+        m_Properties.Draw(doc, ref, text, openMaterial, error);
         ImGui::PopID();
         return true;
     }

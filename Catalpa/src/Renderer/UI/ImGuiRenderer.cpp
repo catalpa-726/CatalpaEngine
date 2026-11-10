@@ -115,14 +115,16 @@ namespace Catalpa {
         return m_Device.WriteBuffer(buffer, 0, bytes);
     }
 
-    RHIStatus ImGuiRenderer::Prepare(uint32_t slot, const ImGuiFrameData& frame, PixelFormat format)
+    RHIStatus ImGuiRenderer::Prepare(uint32_t slot, const ImGuiFrameData& frame, PixelFormat format, bool collectRetired)
     {
         // 关闭/重建时旧token可保活到最后一个CPU draw包消费完；GPU命令另有后端引用。
-        std::set<uint64_t> referenced;
-        for (const auto& draw : frame.draws) referenced.insert(draw.textureToken);
-        for (auto it = m_Registered.begin(); it != m_Registered.end();)
-            if (it->second.retired && !referenced.contains(it->first)) it = m_Registered.erase(it);
-            else ++it;
+        if (collectRetired) {
+            std::set<uint64_t> referenced(frame.platformTextureTokens.begin(), frame.platformTextureTokens.end());
+            for (const auto& draw : frame.draws) referenced.insert(draw.textureToken);
+            for (auto it = m_Registered.begin(); it != m_Registered.end();)
+                if (it->second.retired && !referenced.contains(it->first)) it = m_Registered.erase(it);
+                else ++it;
+        }
         if (frame.draws.empty()) return {};
         if (slot >= m_Frames.size() || !m_Font || frame.vertices.empty() || frame.indices.empty())
             return { .code = RHIErrorCode::InvalidState, .operation = "ImGuiRenderer::Prepare" };

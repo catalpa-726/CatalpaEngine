@@ -383,7 +383,7 @@ namespace Catalpa {
                 RHITextureUsage::DepthAttachment | RHITextureUsage::Sampled); !status.IsSuccess()) return status;
             if (preview) {
                 if (const auto status = create(targets->picking, extent, PixelFormat::R32_UInt,
-                    RHITextureUsage::ColorAttachment | RHITextureUsage::TransferSource); !status.IsSuccess()) return status;
+                    sampledColor | RHITextureUsage::TransferSource); !status.IsSuccess()) return status;
                 if (const auto status = create(targets->pickingDepth, extent, m_Profile.depthFormat, RHITextureUsage::DepthAttachment); !status.IsSuccess()) return status;
                 uint64_t token = 0;
                 if (const auto status = m_UI.RegisterTexture(targets->display.view, targets, token); !status.IsSuccess()) return status;
@@ -517,7 +517,8 @@ namespace Catalpa {
                 if (m_ReportedMaterialFailures.size() < 256 && m_ReportedMaterialFailures.emplace(id, version).second)
                     CAT_CORE_WARN("Environment {0} format does not support linear filtering; using explicit nearest sampling and preserving HDR radiance.", id.ToString());
             }
-        if (const auto status = AcquireBuiltinPipeline("Tonemap.slang", PixelFormat::RGBA8_SRGB, PixelFormat::Unknown,
+        const bool outline = preview && packet.views.front().independentCamera && packet.views.front().editorDisplay.selected.HasValue();
+        if (const auto status = AcquireBuiltinPipeline(outline ? "EditorTonemap.slang" : "Tonemap.slang", PixelFormat::RGBA8_SRGB, PixelFormat::Unknown,
             {}, {}, surface.tonemap); !status.IsSuccess()) return status;
         if (!preview)
             if (const auto status = AcquireBuiltinPipeline("Present.slang", m_Swapchain.GetInfo().format, PixelFormat::Unknown,

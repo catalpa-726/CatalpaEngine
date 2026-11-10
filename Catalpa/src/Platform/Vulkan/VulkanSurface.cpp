@@ -25,9 +25,15 @@ namespace Catalpa {
 
     bool VulkanSurface::Init(VkInstance instance, Window& window)
     {
+        return InitNative(instance, window.GetNativeWindow());
+    }
+
+    bool VulkanSurface::InitNative(VkInstance instance, void* handle)
+    {
+        if (!handle) return false;
         CAT_CORE_ASSERT(m_Surface == VK_NULL_HANDLE, "Vulkan surface already exists!");
 
-        auto* nativeWindow = static_cast<GLFWwindow*>(window.GetNativeWindow());
+        auto* nativeWindow = static_cast<GLFWwindow*>(handle);
         VkSurfaceKHR surface = VK_NULL_HANDLE;
 
         if (const VkResult result = glfwCreateWindowSurface(instance, nativeWindow, nullptr, &surface); result != VK_SUCCESS) {

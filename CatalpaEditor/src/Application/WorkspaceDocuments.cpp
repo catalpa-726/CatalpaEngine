@@ -1,5 +1,6 @@
 #include "Application/WorkspaceEditing.h"
 #include "Core/Application.h"
+#include "Core/PlatformServices.h"
 #include "Documents/DocumentRecovery.h"
 #include "Platform/AuthorFileDialogs.h"
 #include "Scene/SceneSerializer.h"
@@ -14,7 +15,10 @@
 #include "Core/Serialization/SchemaMigrationRegistry.h"
 #include "Core/IO/VirtualFileSystem.h"
 #include "Assets/AssetManifest.h"
+#include "Assets/AssetDependencyGraph.h"
+#include "Panels/EditorText.h"
 #include "imgui.h"
+#include "Viewport/ToolbarButton.h"
 
 namespace Catalpa::Editor {
     void WorkspaceEditing::SetProject(const Tools::ProjectConfig* config) {
@@ -41,26 +45,67 @@ namespace Catalpa::Editor {
         }
     }
 
-    bool WorkspaceEditing::LoadProjectCatalog() try {
-        const auto& root = m_Project->cookedRoot;
-        if (!std::filesystem::exists(root / "Assets.manifest"))
+    namespace {
+    bool InstallDirectoryCatalog(Application& app, const std::filesystem::path& root,
+                                 bool optional, std::string& error, AssetDependencyGraph* graph = nullptr) {
+        if (optional && !std::filesystem::exists(root / "Assets.manifest"))
             return true;
         VirtualFileSystem files;
         VirtualPath locator;
         std::vector<std::byte> bytes;
         AssetRegistry catalog;
-        if (!files.MountReadOnly("project-cooked", root, 0, m_Error) ||
-            !VirtualPath::Parse("project-cooked:/Assets.manifest", locator, m_Error) ||
-            !files.ReadFile(locator, 64 * 1024 * 1024, bytes, m_Error) ||
-            !AssetManifest::Read(bytes, catalog, m_Error))
+        if (!files.MountReadOnly("project-cooked", root, 0, error) ||
+            !VirtualPath::Parse("project-cooked:/Assets.manifest", locator, error) ||
+            !files.ReadFile(locator, 64 * 1024 * 1024, bytes, error) ||
+            !AssetManifest::Read(bytes, catalog, error))
             return false;
-        if (catalog.GetRecords().empty())
-            return true;
+        if (catalog.GetRecords().empty() && optional) return true;
+        if (graph && !graph->Build(catalog.GetRecords(), error)) return false;
         // 只安装目录，不在 UI 一次性解码项目所有资产；场景或组件按需请求依赖。
-        return m_App.GetAssets().InstallCookedCatalog(root, catalog, m_Error, true);
+        return app.GetAssets().InstallCookedCatalog(root, catalog, error, true);
+    }
+    }
+
+    bool WorkspaceEditing::LoadProjectCatalog() try {
+        return InstallDirectoryCatalog(m_App, m_Project->cookedRoot, true, m_Error);
     } catch (const std::exception& exception) {
         m_Error = exception.what();
         return false;
+    }
+
+    void WorkspaceEditing::OpenGroveShowcase() try {
+        if (CanReturnFromGrove() || m_PlayDocument.HasValue()) return;
+        const SceneHandle previous = m_App.GetScenes().GetActiveHandle();
+        if (!previous.HasValue()) { m_Error = "No active scene to return to"; return; }
+        std::filesystem::path directory;
+        if (!GetExecutableDirectory(directory, m_Error)) return;
+        const auto root = directory / "Resources" / "Grove";
+        AssetDependencyGraph graph;
+        if (!InstallDirectoryCatalog(m_App, root / "Cooked", false, m_Error, &graph)) return;
+        const auto path = std::filesystem::canonical(root / "Grove.scene.json");
+        // 复用作者场景的异步加载。已有文档及未保存修改继续由原文档会话持有。
+        if (!OpenAuthor(path, {}, {}, {}, &graph)) return;
+        m_GrovePath = path;
+        m_PreGroveScene = previous;
+        m_ResetCamera = true;
+    } catch (const std::exception& exception) {
+        m_Error = exception.what();
+    }
+
+    void WorkspaceEditing::ReturnFromGrove() {
+        if (!CanReturnFromGrove() || !StopPlay()) return;
+        const auto previous = m_PreGroveScene;
+        const auto target = m_App.GetScenes().GetScene(previous) ? previous : m_HostScene;
+        if (const auto status = m_App.GetScenes().SetActive(target); !status.IsSuccess()) {
+            m_Error = status.message;
+            return;
+        }
+        CancelPendingOpen();
+        if (auto* doc = m_Documents.SceneFor(m_App.GetScenes(), target, m_Error))
+            m_Documents.Activate(doc->Id());
+        m_PreGroveScene = {};
+        m_GrovePath.clear();
+        m_ResetCamera = true;
     }
 
     bool WorkspaceEditing::SaveDocument(Document& doc, bool saveAs) {
@@ -104,6 +149,10 @@ namespace Catalpa::Editor {
 
     void WorkspaceEditing::CancelPendingOpen() {
         // 取消的是本次打开意图，不删除恢复文件；失败或改选后仍能再次恢复。
+        if (m_PendingScene && m_PendingScene->path == m_GrovePath) {
+            m_PreGroveScene = {};
+            m_GrovePath.clear();
+        }
         if (m_PendingScene)
             RetainRecovery(m_PendingScene->recovery);
         if (m_PendingAuthor)
@@ -146,7 +195,8 @@ namespace Catalpa::Editor {
     }
 
     bool WorkspaceEditing::OpenAuthor(const std::filesystem::path& requestedPath, std::string source,
-                                      std::string type, const std::filesystem::path& recovery) try {
+                                      std::string type, const std::filesystem::path& recovery,
+                                      const AssetDependencyGraph* loadGraph) try {
         if (m_PlayDocument.HasValue()) {
             m_Error = "Stop Play before opening author data";
             return false;
@@ -194,19 +244,22 @@ namespace Catalpa::Editor {
             if (!SceneSerializer::ReadMigrated(source, migrations, asset, m_Error))
                 return false;
             auto dependencies = SceneSerializer::Dependencies(asset);
-            bool pending = false;
-            for (auto id : dependencies) {
-                if (m_App.GetAssets().GetStatus(id) == AssetStatus::Unloaded) {
-                    if (!m_App.GetAssets().Request(id, m_Error))
-                        return false;
+            if (loadGraph) {
+                // 只加载本场景可达的记录，着色器/纹理先于材质到达解码队列。
+                std::set<AssetId> needed;
+                for (size_t i = 0; i < dependencies.size(); ++i) {
+                    if (!needed.insert(dependencies[i]).second) continue;
+                    auto input = loadGraph->Dependencies(dependencies[i]);
+                    dependencies.insert(dependencies.end(), input.begin(), input.end());
                 }
-                const auto status = m_App.GetAssets().GetStatus(id);
-                if (status == AssetStatus::Failed || status == AssetStatus::Cancelled) {
-                    m_Error = m_App.GetAssets().GetDiagnostic(id);
-                    return false;
-                }
-                pending |= status != AssetStatus::Ready;
+                dependencies.clear();
+                for (auto id : loadGraph->Order())
+                    if (needed.erase(id)) dependencies.push_back(id);
+                if (!needed.empty()) { m_Error = "Grove scene references a missing cooked asset"; return false; }
             }
+            const bool pending = std::any_of(dependencies.begin(), dependencies.end(), [&](auto id) {
+                return m_App.GetAssets().GetStatus(id) != AssetStatus::Ready;
+            });
             if (pending) {
                 m_PendingScene = PendingScene{std::move(asset), path, recovery, std::move(dependencies)};
                 m_Error = "Loading scene dependencies; current scene retained.";
@@ -418,10 +471,10 @@ namespace Catalpa::Editor {
     }
 
     void WorkspaceEditing::DocumentMenu() {
-        if (!ImGui::BeginMenu("Documents"))
+        if (!ImGui::BeginMenu(UiLabel("ui.documents", "Documents").c_str()))
             return;
         ImGui::BeginDisabled(!m_Project || m_PlayDocument.HasValue());
-        if (ImGui::MenuItem("New scene")) {
+        if (ImGui::MenuItem(UiLabel("ui.new_scene", "New scene").c_str())) {
             CancelPendingOpen();
             SceneAsset scene;
             scene.name = "Untitled scene";
@@ -444,12 +497,12 @@ namespace Catalpa::Editor {
                 ActivateAsset(*doc);
             }
         };
-        create("New Lua script", "script",
+        create(UiLabel("ui.new_lua_script", "New Lua script").c_str(), "script",
                "return {\n    update = function(dt)\n        scene.translate(0, dt, 0)\n    end\n}\n");
         std::string graphText;
         Tools::MaterialGraphSource material = Tools::DefaultMaterialGraph();
         if (Tools::WriteMaterialGraph(material, graphText, m_Error))
-            create("New material graph", "material_graph", graphText);
+            create(UiLabel("ui.new_material_graph", "New material graph").c_str(), "material_graph", graphText);
         BehaviorGraphAsset behavior;
         StableId entry;
         std::string ignored;
@@ -459,23 +512,23 @@ namespace Catalpa::Editor {
             node.type = "Update";
             behavior.nodes.push_back(node);
             if (WriteBehaviorGraph(behavior, graphText, ignored))
-                create("New behavior graph", "behavior_graph", graphText);
+                create(UiLabel("ui.new_behavior_graph", "New behavior graph").c_str(), "behavior_graph", graphText);
         }
-        if (ImGui::MenuItem("Open author document...")) {
+        if (ImGui::MenuItem(UiLabel("ui.open_author_document", "Open author document...").c_str())) {
             std::filesystem::path file;
             bool cancelled = false;
             if (SelectAuthorFile(false, m_Project->contentRoot, file, cancelled, m_Error) && !cancelled)
                 OpenAuthor(file);
         }
         auto* active = m_Documents.Active();
-        if (ImGui::MenuItem("Save", nullptr, false, active != nullptr))
+        if (ImGui::MenuItem(UiLabel("ui.save", "Save").c_str(), nullptr, false, active != nullptr))
             SaveDocument(*active);
-        if (ImGui::MenuItem("Save as...", nullptr, false, active != nullptr))
+        if (ImGui::MenuItem(UiLabel("ui.save_as", "Save as...").c_str(), nullptr, false, active != nullptr))
             SaveDocument(*active, true);
-        if (ImGui::MenuItem("Save all"))
+        if (ImGui::MenuItem(UiLabel("ui.save_all", "Save all").c_str()))
             SaveAll();
         PrefabMenu();
-        if (ImGui::MenuItem("Close", nullptr, false, active != nullptr)) {
+        if (ImGui::MenuItem(UiLabel("ui.close", "Close").c_str(), nullptr, false, active != nullptr)) {
             if (active->History().Dirty())
                 m_Closing = active->Id();
             else
@@ -524,41 +577,51 @@ namespace Catalpa::Editor {
             }
         }
         if (m_PendingScene && !m_PlayDocument.HasValue()) {
-            bool ready = true, failed = false;
-            for (auto id : m_PendingScene->dependencies) {
-                const auto status = m_App.GetAssets().GetStatus(id);
+            // 每次只准入一个未加载依赖，复用已经发布的版本。等待期间保留当前场景。
+            auto& assets = m_App.GetAssets();
+            auto& pending = *m_PendingScene;
+            while (pending.cursor < pending.dependencies.size() &&
+                   assets.GetStatus(pending.dependencies[pending.cursor]) == AssetStatus::Ready)
+                ++pending.cursor;
+            if (pending.cursor < pending.dependencies.size()) {
+                const auto id = pending.dependencies[pending.cursor];
+                const auto status = assets.GetStatus(id);
                 if (status == AssetStatus::Failed || status == AssetStatus::Cancelled) {
-                    m_Error = m_App.GetAssets().GetDiagnostic(id);
-                    failed = true;
-                    break;
+                    m_Error = assets.GetDiagnostic(id);
+                    CancelPendingOpen();
+                } else if (status == AssetStatus::Unloaded && assets.GetPendingCount() == 0 &&
+                           !assets.Request(id, m_Error)) {
+                    CancelPendingOpen();
                 }
-                ready &= status == AssetStatus::Ready;
             }
-            if (failed)
-                CancelPendingOpen();
-            else if (ready) {
+            else {
                 auto candidate = std::move(*m_PendingScene);
                 m_PendingScene.reset();
-                if (!InstallAuthorScene(candidate.scene, candidate.path, candidate.recovery))
+                if (!InstallAuthorScene(candidate.scene, candidate.path, candidate.recovery)) {
+                    if (candidate.path == m_GrovePath) {
+                        m_PreGroveScene = {};
+                        m_GrovePath.clear();
+                    }
                     RetainRecovery(candidate.recovery);
+                }
             }
         }
         if (m_Closing.HasValue())
-            ImGui::OpenPopup("Unsaved document");
-        if (ImGui::BeginPopupModal("Unsaved document", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::OpenPopup(UiLabel("ui.unsaved_document", "Unsaved document").c_str());
+        if (ImGui::BeginPopupModal(UiLabel("ui.unsaved_document", "Unsaved document").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             auto* doc = m_Documents.Find(m_Closing);
-            ImGui::TextUnformatted("Save changes before closing?");
-            if (ImGui::Button("Save") && doc && SaveDocument(*doc)) {
+            ImGui::TextUnformatted(UiText("ui.save_changes_before_closing", "Save changes before closing?"));
+            if (ImGui::Button(UiLabel("ui.save", "Save").c_str()) && doc && SaveDocument(*doc)) {
                 CloseDocument(m_Closing);
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            if (ImGui::Button("Discard")) {
+            if (ImGui::Button(UiLabel("ui.discard", "Discard").c_str())) {
                 CloseDocument(m_Closing);
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            if (ImGui::Button("Cancel")) {
+            if (ImGui::Button(UiLabel("ui.cancel", "Cancel").c_str())) {
                 m_Closing = {};
                 ImGui::CloseCurrentPopup();
             }
@@ -573,11 +636,11 @@ namespace Catalpa::Editor {
         }
         if (m_Recovery.empty())
             return;
-        ImGui::OpenPopup("Recovered author document");
-        if (ImGui::BeginPopupModal("Recovered author document", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::TextWrapped("A separate recovery copy is available: %s",
+        ImGui::OpenPopup(UiLabel("ui.recovered_author_document", "Recovered author document").c_str());
+        if (ImGui::BeginPopupModal(UiLabel("ui.recovered_author_document", "Recovered author document").c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::TextWrapped(UiFormat("ui.a_separate_recovery_copy_is_available", "A separate recovery copy is available: %s"),
                                Tools::AssetPathText(m_Recovery.back()).c_str());
-            if (ImGui::Button("Restore as unsaved document")) {
+            if (ImGui::Button(UiLabel("ui.restore_as_unsaved_document", "Restore as unsaved document").c_str())) {
                 const auto recovery = m_Recovery.back();
                 std::string text;
                 if (DocumentRecovery::Read(recovery, text, m_Error, DocumentRecovery::MaxRecoveryBytes))
@@ -596,7 +659,7 @@ namespace Catalpa::Editor {
                     }
             }
             ImGui::SameLine();
-            if (ImGui::Button("Discard recovery")) {
+            if (ImGui::Button(UiLabel("ui.discard_recovery", "Discard recovery").c_str())) {
                 std::error_code error;
                 std::filesystem::remove(m_Recovery.back(), error);
                 if (error)
@@ -625,34 +688,40 @@ namespace Catalpa::Editor {
         return true;
     }
 
-    void WorkspaceEditing::PlayToolbar(SceneDocument& doc) {
-        if (!doc.Playing()) {
-            if (ImGui::Button("Play")) {
-                CancelPendingOpen();
-                m_Gizmo.Cancel(m_Error);
-                m_Picking.Cancel(m_App);
-                if (doc.StartPlay(m_App.GetAssets(), m_Error)) {
-                    if (m_App.SetEditorPlayScene(doc.PlayHandle(), false, m_Error))
-                        m_PlayDocument = doc.Id();
-                    else {
-                        std::string ignored;
-                        (void)doc.StopPlay(ignored);
-                    }
+    void WorkspaceEditing::PlayToolbar(const PanelText& text) {
+        auto* doc = ActiveScene();
+        const bool playing = doc && doc->Playing();
+        ImGui::BeginDisabled(!doc || playing);
+        if (ToolbarButton("##play", ToolIcon::Play, text("play.start", "Play", nullptr))) {
+            CancelPendingOpen();
+            m_Gizmo.Cancel(m_Error);
+            m_Picking.Cancel(m_App);
+            if (doc->StartPlay(m_App.GetAssets(), m_Error)) {
+                if (m_App.SetEditorPlayScene(doc->PlayHandle(), false, m_Error))
+                    m_PlayDocument = doc->Id();
+                else {
+                    std::string ignored;
+                    doc->StopPlay(ignored);
                 }
             }
-            return;
         }
-        if (ImGui::Button(m_PlayPaused ? "Resume" : "Pause")) {
-            if (m_App.SetEditorPlayScene(doc.PlayHandle(), !m_PlayPaused, m_Error))
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!playing);
+        if (ToolbarButton("##pause", ToolIcon::Pause,
+                          text(m_PlayPaused ? "play.resume" : "play.pause", m_PlayPaused ? "Resume" : "Pause", nullptr),
+                          m_PlayPaused)) {
+            if (m_App.SetEditorPlayScene(doc->PlayHandle(), !m_PlayPaused, m_Error))
                 m_PlayPaused = !m_PlayPaused;
         }
         ImGui::SameLine();
         ImGui::BeginDisabled(!m_PlayPaused);
-        if (ImGui::Button("Step"))
+        if (ToolbarButton("##step", ToolIcon::Step, text("play.step", "Step one tick", nullptr)))
             (void)m_App.StepEditorPlay(m_Error);
         ImGui::EndDisabled();
         ImGui::SameLine();
-        if (ImGui::Button("Stop"))
+        if (ToolbarButton("##stop", ToolIcon::Stop, text("play.stop", "Stop", nullptr)))
             StopPlay();
+        ImGui::EndDisabled();
     }
 }

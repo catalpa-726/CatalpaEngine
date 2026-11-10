@@ -317,7 +317,36 @@ project "CatalpaBox"
         buildoutputs { "%{cfg.targetdir}/Resources/Config/%{file.name}" }
 
     filter {}
-    if not runtimeOnly then CatalpaShaderBuild.AttachHostCook() end
+    if not runtimeOnly then
+        CatalpaShaderBuild.AttachHostCook()
+        -- Grove 使用普通作者资产流程。宿主完成链接且内置着色器就绪后再制作示例。
+        local groveRoot = path.join(_MAIN_SCRIPT_DIR, "Projects/Grove")
+        local deployGrove = path.join(_MAIN_SCRIPT_DIR, "Script/deploy_grove.py")
+        local groveWork = path.join(_MAIN_SCRIPT_DIR, "bin-int", outputdir, "Grove")
+        local projectFile = path.join(groveRoot, "Grove.catalpaproj")
+        files { projectFile }
+        filter { "system:windows", "files:**/Grove.catalpaproj" }
+            buildmessage "Tracking Grove courtyard inputs"
+            buildinputs { path.join(groveRoot, "Content/Grove.glb"), path.join(groveRoot, "Content/Courtyard.hdr"),
+                          path.join(groveRoot, "Content/Grove.scene.json"), path.join(groveRoot, "Content/asset_metadata.json"),
+                          path.join(groveRoot, "BuildProfiles.json"), deployGrove }
+            buildcommands {
+                '{MKDIR} "' .. groveWork .. '"',
+                'if errorlevel 1 exit /b 1',
+                'type nul > "' .. groveWork .. '/inputs.stamp"',
+                'if errorlevel 1 exit /b 1'
+            }
+            buildoutputs { path.join(groveWork, "inputs.stamp") }
+            compilebuildoutputs(false)
+            linkbuildoutputs(false)
+        filter "system:windows"
+            postbuildcommands {
+                'python "' .. deployGrove .. '" --host "%{!cfg.buildtarget.abspath}" --work "' ..
+                    groveWork .. '" --configuration "%{cfg.buildcfg}"',
+                'if errorlevel 1 exit /b 1'
+            }
+        filter {}
+    end
 
 end
 
@@ -398,6 +427,7 @@ project "Tests"
         "CatalpaEditor/src",
         "Catalpa/src",
         "Catalpa/third_party/spdlog/include",
+        "%{IncludeDir.imgui}",
         -- 作者文档/图语义回归直接消费有界 JSON 适配；静态库不继承 Tools 的 include 路径。
         "%{IncludeDir.JSON}",
         "%{IncludeDir.GLM}"
@@ -408,8 +438,8 @@ project "Tests"
     filter "system:windows"
         -- Fixture按__FILE__定位源根；/FC保证从任意cwd运行也得到绝对路径。
         buildoptions { "/FC" }
-        -- Tests 是 Catalpa.dll 的消费者，不定义 CATALPA_BUILD_DLL。
-        defines { "CATALPA_PLATFORM_WINDOW" }
+        -- Tests 是 Catalpa.dll 的消费者，GPU 缩略图用例消费同一个 ImGui 上下文。
+        defines { "CATALPA_PLATFORM_WINDOW", "IMGUI_API=__declspec(dllimport)" }
 
     filter "configurations:Dist"
         excludefrombuild "On"
@@ -464,16 +494,26 @@ filter {}
 filter {}
 if buildBox then
 project "CatalpaBox"
-    files { "Catalpa/Resources/Fonts/Inter/extras/ttf/Inter-Regular.ttf", "Catalpa/Resources/Fonts/Inter/InterVariable.ttf", "Catalpa/Resources/Fonts/Inter/LICENSE.txt" }
-    filter { "system:windows", "files:**/Fonts/Inter/**" }
-        buildmessage "Deploying Latin fallback font and license"
+    files {
+        "Catalpa/Resources/Fonts/Inter/extras/ttf/Inter-Regular.ttf",
+        "Catalpa/Resources/Fonts/Inter/InterVariable.ttf",
+        "Catalpa/Resources/Fonts/Inter/LICENSE.txt",
+        "Catalpa/Resources/Fonts/NotoSansSC/NotoSansSC-Regular.otf",
+        "Catalpa/Resources/Fonts/NotoSansSC/LICENSE.txt"
+    }
+    -- 每个字体和许可文件有独立输出；两个字族可分别更新且不会覆盖同名许可证。
+    for _, family in ipairs { "Inter", "NotoSansSC" } do
+        local destination = "%{cfg.targetdir}/Resources/Fonts/" .. family
+        filter { "system:windows", "files:**/Fonts/" .. family .. "/**" }
+        buildmessage ("Deploying " .. family .. " font resource")
         buildcommands {
-            '{MKDIR} "%{cfg.targetdir}/Resources/Fonts/Inter"',
+            '{MKDIR} "' .. destination .. '"',
             'if errorlevel 1 exit /b 1',
-            '{COPYFILE} "%{file.abspath}" "%{cfg.targetdir}/Resources/Fonts/Inter/%{file.name}"',
+            '{COPYFILE} "%{file.abspath}" "' .. destination .. '/%{file.name}"',
             'if errorlevel 1 exit /b 1'
         }
-        buildoutputs { "%{cfg.targetdir}/Resources/Fonts/Inter/%{file.name}" }
+        buildoutputs { destination .. "/%{file.name}" }
+    end
 filter {}
 
 end

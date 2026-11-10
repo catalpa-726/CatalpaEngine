@@ -85,6 +85,50 @@ namespace Catalpa::Editor {
         return true;
     }
 
+    bool EditorCameraController::SetProjection(ProjectionType projection, std::string& error) {
+        if (m_Lens.projection == projection) return true;
+        auto lens = m_Lens;
+        lens.projection = projection;
+        if (projection == ProjectionType::Orthographic) {
+            lens.infiniteFar = false;
+            if (!std::isfinite(lens.farPlane) || lens.farPlane <= lens.nearPlane)
+                lens.farPlane = lens.nearPlane + 1000.f;
+        } else if (lens.nearPlane == 0.f) {
+            lens.nearPlane = 0.1f;
+        }
+        const auto status = ValidateCameraLens(lens);
+        if (!status.IsSuccess() || m_HistoryRevision == UINT64_MAX) {
+            error = status.IsSuccess() ? "Editor camera history exhausted" : status.message;
+            return false;
+        }
+        m_Lens = lens;
+        ++m_HistoryRevision;
+        return true;
+    }
+
+    bool EditorCameraController::AlignAxis(int axis, float sign, Math::Vec3 pivot, std::string& error) {
+        if (axis < 0 || axis > 2 || (sign != 1.f && sign != -1.f) || m_HistoryRevision == UINT64_MAX) {
+            error = "Invalid editor camera axis or revision";
+            return false;
+        }
+        Math::Vec3 back{0.f};
+        back[axis] = sign;
+        const auto upHint = axis == 1 ? Math::Vec3{0, 0, -sign} : Math::Vec3{0, 1, 0};
+        const auto right = glm::normalize(glm::cross(upHint, back));
+        const auto up = glm::cross(back, right);
+        const float distance = std::max(glm::length(m_Pose.translation - pivot), 1.f);
+        auto pose = m_Pose;
+        pose.translation = pivot + distance * back;
+        pose.rotation = glm::quat_cast(Math::Mat3{right, up, back});
+        if (const auto status = Math::ValidateTRS(pose); !status.IsSuccess()) {
+            error = status.message;
+            return false;
+        }
+        m_Pose = pose;
+        ++m_HistoryRevision;
+        return true;
+    }
+
     bool EditorCameraController::Navigate(const EditorCameraInput& input, std::string& error) {
         if (!std::isfinite(input.seconds) || input.seconds < 0 || !std::isfinite(input.right) ||
             !std::isfinite(input.up) || !std::isfinite(input.forward) || !std::isfinite(input.lookX) ||

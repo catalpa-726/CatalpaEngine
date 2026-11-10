@@ -6,7 +6,7 @@
 namespace Catalpa::Editor {
     class InspectorPanel {
       public:
-        bool Draw(SceneDocument&, const EditorSelection&, const PanelText&, std::string& error);
+        bool Draw(SceneDocument&, const EditorSelection&, const PanelText&, AssetVersionRef<MaterialInstance>&, std::string& error);
 
       private:
         void DrawName(SceneDocument&, EntityReference, const IdentityComponent&, const PanelText&,

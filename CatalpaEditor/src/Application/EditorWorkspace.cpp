@@ -2,10 +2,12 @@
 #include "Panels/AudioMixerPanel.h"
 #include "catpch.h"
 #include "EditorWorkspace.h"
+#include "Panels/EditorText.h"
 #include "EditorProject.h"
 #include "Application/WorkspaceEditing.h"
 #include "Panels/BuildPanel.h"
 #include "Panels/ContentBrowserPanel.h"
+#include "Panels/FileBrowserView.h"
 #include "Panels/ConsolePanel.h"
 #include "Panels/DependencyPanel.h"
 #include "Platform/WorkspaceFiles.h"
@@ -13,13 +15,54 @@
 #include "Log/Log.h"
 #include "imgui.h"
 #include "imgui_internal.h"
-#include <nlohmann/json.hpp>
 
 namespace Catalpa::Editor {
     namespace {
         constexpr const char* DockspaceName = "Catalpa.Workspace.Dockspace";
         // 中央节点现在承载场景图像；侧边节点和保存的分割比例仍由原 DockSpace 管理。
         constexpr ImGuiDockNodeFlags DockFlags = ImGuiDockNodeFlags_None;
+        constexpr const char* ChineseLanguageName = "简体中文 (zh-CN)";
+
+        // 复用以 24 px 烘焙的字体图集，让窗口、菜单和弹窗采用同一个显示比例。
+        void ApplyWorkspaceFontSize(int pixels)
+        {
+            ImGui::GetStyle().FontScaleMain = static_cast<float>(pixels) / WorkspaceSettings::DefaultFontSize;
+        }
+
+        bool ValidateChineseGlyphs(const LocalizationCatalog& catalog, std::string& error)
+        {
+            const auto& io = ImGui::GetIO();
+            auto* baked = io.FontDefault && io.Fonts->IsBuilt()
+                ? io.FontDefault->GetFontBaked(io.FontDefault->LegacySize) : nullptr;
+            if (!baked) {
+                error = "Workspace font atlas is unavailable.";
+                return false;
+            }
+
+            // 核对已上传的静态字号；IsGlyphLoaded 只读索引，不按需烘焙，也不把替代字形视作命中。
+            const auto checkText = [&](std::string_view key, std::string_view value) {
+                const char* current = value.data();
+                const char* end = current + value.size();
+                while (current < end) {
+                    unsigned int codepoint = 0;
+                    const int length = ImTextCharFromUtf8(&codepoint, current, end);
+                    if (length <= 0 || codepoint == IM_UNICODE_CODEPOINT_INVALID ||
+                        !baked->IsGlyphLoaded(static_cast<ImWchar>(codepoint))) {
+                        std::ostringstream message;
+                        message << "Workspace font atlas lacks a glyph for " << key
+                                << " (U+" << std::hex << std::uppercase << codepoint << ").";
+                        error = message.str();
+                        return false;
+                    }
+                    current += length;
+                }
+                return true;
+            };
+            if (!checkText("language selector", ChineseLanguageName)) return false;
+            for (const auto& [key, value] : catalog.Strings())
+                if (!checkText(key, value)) return false;
+            return true;
+        }
 
         // 文件路径以 UTF-8 展示；磁盘访问始终保留 Windows 原生宽字符路径。
         std::string DisplayPath(const std::filesystem::path& path)
@@ -36,8 +79,8 @@ namespace Catalpa::Editor {
         }
     }
 
-    EditorWorkspace::EditorWorkspace(std::filesystem::path projectFile)
-        : Layer("EditorWorkspace"), m_ProjectFile(std::move(projectFile)) {}
+    EditorWorkspace::EditorWorkspace(std::filesystem::path projectFile, std::filesystem::path settingsFile)
+        : Layer("EditorWorkspace"), m_ProjectFile(std::move(projectFile)), m_SettingsPath(std::move(settingsFile)) {}
 
     EditorWorkspace::~EditorWorkspace() = default;
 
@@ -60,23 +103,20 @@ namespace Catalpa::Editor {
         else CAT_ERROR("{0}: {1}", m_Status, m_StatusError);
     }
 
-    void EditorWorkspace::LoadLanguage()
+    bool EditorWorkspace::LoadLanguage()
     {
-        if (m_Settings.language == "zh-CN" &&
-            (!ImGui::GetIO().FontDefault || !ImGui::GetIO().FontDefault->IsGlyphInFont(0x4e2d))) {
-            // 当前 ImGui 在 ImFont 上查询源字体覆盖；不触发新字号烘焙或替换现用字体。
-            CAT_WARN("Configured workspace font does not cover Chinese; retaining the available language.");
-            m_Settings.language = m_Catalog.Language();
-            return;
-        }
-        std::string bytes, error;
+        LocalizationCatalog next;
+        std::string error;
         const auto path =
             m_ExecutableDirectory / "Resources" / "Localization" / (m_Settings.language + ".json");
-        if (!ReadWorkspaceText(path, bytes, 512 * 1024, error) ||
-            !m_Catalog.Load(bytes, m_Settings.language, error)) {
+        if (!next.LoadFile(path, m_Settings.language, error) ||
+            (m_Settings.language == "zh-CN" && !ValidateChineseGlyphs(next, error))) {
             CAT_WARN("Language pack rejected; retaining {0}: {1}", m_Catalog.Language(), error);
             m_Settings.language = m_Catalog.Language();
+            return false;
         }
+        m_Catalog = std::move(next);
+        return true;
     }
 
     void EditorWorkspace::ApplyTheme()
@@ -151,6 +191,7 @@ namespace Catalpa::Editor {
         IMGUI_CHECKVERSION();
         m_Attached = true;
         ApplyTheme();
+        m_AssetBrowser = std::make_unique<FileBrowserView>(0x4153534554000010ULL);
         auto& app = Application::Get();
         m_Editing = std::make_unique<WorkspaceEditing>(app);
         std::string error;
@@ -159,9 +200,8 @@ namespace Catalpa::Editor {
             Report("status.paths_failed", "Cannot locate workspace files", error);
             return;
         }
-        m_SettingsPath = m_ExecutableDirectory / "Saved" / "Workspace.json";
+        if (m_SettingsPath.empty()) m_SettingsPath = m_ExecutableDirectory / "Saved" / "Workspace.json";
         m_BrowseDirectory = m_ExecutableDirectory / "Resources";
-        LoadLanguage();
         m_Build = std::make_unique<BuildPanel>(app.GetJobs(), app.GetAssets(), app.GetScenes());
         m_Content = std::make_unique<ContentBrowserPanel>();
         m_Console = std::make_unique<ConsolePanel>();
@@ -182,6 +222,8 @@ namespace Catalpa::Editor {
             m_Project = std::move(project);
         }
         const auto result = LoadWorkspaceSettings(m_SettingsPath, m_Settings, error);
+        LoadLanguage();
+        ApplyWorkspaceFontSize(m_Settings.editorFontSize);
         if (result == WorkspaceLoadResult::Failed) {
             m_AutoSave = false;
             Report("status.load_failed", "Workspace load failed; automatic saving is disabled", error);
@@ -190,7 +232,7 @@ namespace Catalpa::Editor {
             Report("status.ready", "Workspace ready");
         }
         Application::Get().GetWindow().SetVSync(m_Settings.vsync);
-        RefreshFiles();
+        m_AssetBrowser->Reset();
     }
 
     bool EditorWorkspace::SaveWorkspace()
@@ -248,6 +290,7 @@ namespace Catalpa::Editor {
     void EditorWorkspace::OnUpdate(Deltatime)
     {
         if (!m_Attached) return;
+        const bool networkWasVisible = m_Settings.showNetwork;
         Action action = std::exchange(m_Action, Action::None);
         const bool destructive = action == Action::OpenProject || action == Action::CloseProject || m_CloseRequested;
         if (destructive && !std::exchange(m_AllowDiscard,false) && m_Editing && m_Editing->HasDirtyDocuments()) {
@@ -271,7 +314,7 @@ namespace Catalpa::Editor {
                 m_SelectedFile.clear();
                 if (m_Content)
                     m_Content->Reset();
-                RefreshFiles();
+                m_AssetBrowser->Reset();
                 m_Settings.showContent = m_Settings.showBuild = true;
                 m_Dirty = true;
                 Report("status.project_opened", "Project opened");
@@ -279,7 +322,7 @@ namespace Catalpa::Editor {
         } else if (action == Action::CloseProject) {
             std::string error;
             if (m_Editing && !m_Editing->Reset(error))
-                Report("status.project_failed", "Project close failed", error);
+                Report("status.project_close_failed", "Project close failed", error);
             else {
                 if (m_Build)
                     m_Build->CloseProject();
@@ -290,7 +333,7 @@ namespace Catalpa::Editor {
                 if (m_Content)
                     m_Content->Reset();
                 m_BrowseDirectory = m_ExecutableDirectory / "Resources";
-                RefreshFiles();
+                m_AssetBrowser->Reset();
                 Report("status.project_closed", "Project closed");
             }
         } else if (action == Action::Reload)
@@ -298,8 +341,10 @@ namespace Catalpa::Editor {
         else if (action == Action::ResetLayout) {
             m_Settings.showScene = m_Settings.showAssets = m_Settings.showInspector = true;
             m_Settings.showSettings = false;
+            m_Settings.showHistory = true;
             m_Settings.showContent = m_Settings.showBuild = true;
             m_Settings.showConsole = m_Settings.showDependencies = false;
+            m_Settings.showAudioMixer = m_Settings.showNetwork = false;
             m_ResetLayout = true;
             m_Dirty = true;
             Report("status.reset", "Default layout restored");
@@ -312,19 +357,25 @@ namespace Catalpa::Editor {
             m_CloseRequested = false;
         } else if (m_AutoSave && !m_ResetLayout && m_FrameSeen
             && (m_Dirty || ImGui::GetIO().WantSaveIniSettings)) SaveWorkspace();
+        if (networkWasVisible && !m_Settings.showNetwork && m_Network)
+            m_Network->Close(Application::Get());
         if (m_Build) {
             const auto [width, height] = Application::Get().GetWindow().GetFramebufferSize();
             m_Build->Update({width, height});
         }
         if (m_Console)
             m_Console->Update();
+        // 切换标签后仍收尾已启动的缩略图任务，使已提交的材质图集及时停止渲染。
+        if (m_Content) m_Content->Update();
+        if (m_AssetBrowser) m_AssetBrowser->Update();
     }
 
     void EditorWorkspace::OnDetach()
     {
         if (!m_Attached) return;
         if (!m_SavedForExit && m_AutoSave && m_FrameSeen && ImGui::GetCurrentContext()) SaveWorkspace();
-        m_Files.clear();
+        m_AssetBrowser->Reset();
+        if (m_Content) m_Content->Reset();
         m_SelectedFile.clear();
         if (m_Network)
             m_Network->Close(Application::Get());
@@ -344,17 +395,33 @@ namespace Catalpa::Editor {
         const auto* viewport = ImGui::GetMainViewport();
         const ImGuiID dockId = ImHashStr(DockspaceName);
         if (viewport->WorkSize.x <= 0 || viewport->WorkSize.y <= 0) return;
-        if (!m_ResetLayout && ImGui::DockBuilderGetNode(dockId)) return;
+        if (!m_ResetLayout && ImGui::DockBuilderGetNode(dockId)) {
+            // Add the History pane to a workspace saved before it existed, keeping the user's other splits.
+            const auto sceneId = ImHashStr("###Catalpa.Scene");
+            const auto historyId = ImHashStr("###Catalpa.History");
+            if (!ImGui::FindWindowSettingsByID(historyId) && !ImGui::FindWindowByID(historyId)) {
+                const auto* previous = ImGui::FindWindowSettingsByID(sceneId);
+                auto* node = previous ? ImGui::DockBuilderGetNode(previous->DockId) : nullptr;
+                if (node && node->IsLeafNode() && node->ID != dockId) {
+                    const auto history = ImGui::DockBuilderSplitNode(node->ID, ImGuiDir_Down, .29f, nullptr, nullptr);
+                    ImGui::DockBuilderDockWindow("###Catalpa.History", history);
+                    ImGui::DockBuilderFinish(dockId);
+                }
+            }
+            return;
+        }
         ImGui::DockBuilderRemoveNode(dockId);
         ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_DockSpace | DockFlags);
         ImGui::DockBuilderSetNodePos(dockId, viewport->WorkPos);
         ImGui::DockBuilderSetNodeSize(dockId, viewport->WorkSize);
         ImGuiID center = dockId;
-        const ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.19f, nullptr, &center);
+        ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.19f, nullptr, &center);
         const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.27f, nullptr, &center);
         const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.26f, nullptr, &center);
         ImGui::DockBuilderDockWindow("###Catalpa.Viewport", center);
+        const ImGuiID history = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.29f, nullptr, &left);
         ImGui::DockBuilderDockWindow("###Catalpa.Scene", left);
+        ImGui::DockBuilderDockWindow("###Catalpa.History", history);
         ImGui::DockBuilderDockWindow("###Catalpa.Inspector", right);
         ImGui::DockBuilderDockWindow("###Catalpa.Settings", right);
         ImGui::DockBuilderDockWindow("###Catalpa.Assets", bottom);
@@ -372,6 +439,11 @@ namespace Catalpa::Editor {
         if (!ImGui::BeginMainMenuBar()) return;
         ImGui::TextUnformatted("CATALPA");
         if (ImGui::BeginMenu(Label("menu.file", "File", "File").c_str())) {
+            if (m_Editing && ImGui::MenuItem(Label("grove.open", "Open Grove courtyard", "OpenGrove").c_str(), nullptr, false, !m_Editing->CanReturnFromGrove()))
+                m_Editing->OpenGroveShowcase();
+            if (m_Editing && ImGui::MenuItem(Label("grove.return", "Return to previous scene", "ReturnGrove").c_str(), nullptr, false, m_Editing->CanReturnFromGrove()))
+                m_Editing->ReturnFromGrove();
+            ImGui::Separator();
             if (ImGui::MenuItem(Label("action.open_project", "Open Project...", "OpenProject").c_str()))
                 m_OpenProjectPopup = true;
             if (ImGui::MenuItem(Label("action.close_project", "Close Project", "CloseProject").c_str(),
@@ -389,6 +461,7 @@ namespace Catalpa::Editor {
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu(Label("menu.view", "View", "View").c_str())) {
+            m_Dirty |= ImGui::MenuItem(Label("panel.history", "History", "History").c_str(), nullptr, &m_Settings.showHistory);
             m_Dirty |= ImGui::MenuItem(Label("panel.scene", "Scene", "Scene").c_str(), nullptr, &m_Settings.showScene);
             m_Dirty |= ImGui::MenuItem(Label("panel.assets", "Assets", "Assets").c_str(), nullptr, &m_Settings.showAssets);
             m_Dirty |= ImGui::MenuItem(Label("panel.inspector", "Inspector", "Inspector").c_str(), nullptr,
@@ -404,11 +477,11 @@ namespace Catalpa::Editor {
             m_Dirty |= ImGui::MenuItem(Label("panel.dependencies", "Dependencies", "Dependencies").c_str(),
                                        nullptr, &m_Settings.showDependencies);
             if (ImGui::MenuItem(Label("panel.audio_mixer", "Audio mixer", "AudioMixerPanel").c_str(), nullptr,
-                                &m_ShowAudioMixer))
+                                &m_Settings.showAudioMixer))
                 m_Dirty = true;
             if (ImGui::MenuItem(Label("panel.network", "Loopback network", "NetworkPanel").c_str(), nullptr,
-                                &m_ShowNetwork)) {
-                if (!m_ShowNetwork && m_Network)
+                                &m_Settings.showNetwork)) {
+                if (!m_Settings.showNetwork && m_Network)
                     m_Network->Close(Application::Get());
                 m_Dirty = true;
             }
@@ -435,6 +508,14 @@ namespace Catalpa::Editor {
             }
             ImGui::EndMenu();
         }
+        if (m_Editing) {
+            // 宽窗口居中，窄窗口接在菜单后，避免遮挡已有菜单项。
+            const float strip = 4.f * ImGui::GetFrameHeight() + 3.f * ImGui::GetStyle().ItemSpacing.x;
+            ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), (ImGui::GetWindowWidth() - strip) * .5f));
+            m_Editing->PlayToolbar([this](const char* key, const char* fallback, const char* id) {
+                return id ? Label(key, fallback, id) : std::string(Text(key, fallback));
+            });
+        }
         ImGui::EndMainMenuBar();
         if (m_OpenProjectPopup) {
             ImGui::OpenPopup(Label("panel.open_project", "Open Project", "Catalpa.OpenProject").c_str());
@@ -458,11 +539,60 @@ namespace Catalpa::Editor {
         }
     }
 
+    void EditorWorkspace::DrawHistory()
+    {
+        if (!m_Settings.showHistory) return;
+        if (ImGui::Begin(Label("panel.history", "History", "Catalpa.History").c_str(), &m_Settings.showHistory)) {
+            const auto* doc = m_Editing ? m_Editing->CurrentDocument() : nullptr;
+            if (!doc || doc->History().Size() == 0) {
+                ImGui::TextDisabled("%s", Text("history.empty", "No edits yet"));
+            } else {
+                const auto& history = doc->History();
+                for (size_t index = history.Size(); index > 0; --index) {
+                    const size_t entry = index - 1;
+                    const bool applied = entry < history.Position();
+                    if (!applied) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+                    ImGui::Text("%zu  %s", index, Text(history.LabelKey(entry), "Edit"));
+                    if (!applied) ImGui::PopStyleColor();
+                }
+            }
+        }
+        ImGui::End();
+    }
+
+    void EditorWorkspace::DrawStatusBar()
+    {
+        const auto flags = ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+                           ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoNavFocus;
+        if (ImGui::BeginViewportSideBar("###Catalpa.Status", ImGui::GetMainViewport(), ImGuiDir_Down,
+                                        ImGui::GetFrameHeight(), flags | ImGuiWindowFlags_MenuBar)) {
+            if (ImGui::BeginMenuBar()) {
+                const auto* doc = m_Editing ? m_Editing->CurrentDocument() : nullptr;
+                if (doc) {
+                    std::string name = DisplayPath(doc->AuthorPath().filename());
+                    if (name.empty()) {
+                        const auto* scene = dynamic_cast<const SceneDocument*>(doc);
+                        name = scene && scene->Resolve() ? scene->Resolve()->GetName() : Text("document.untitled", "Untitled");
+                    }
+                    ImGui::TextUnformatted(name.c_str());
+                    ImGui::Separator();
+                    if (doc->History().Dirty()) ImGui::TextUnformatted(Text("document.modified", "Modified"));
+                    else if (!doc->AuthorPath().empty()) ImGui::TextUnformatted(Text("document.saved", "Saved"));
+                    else ImGui::TextUnformatted(Text("document.session", "Session scene"));
+                }
+                ImGui::EndMenuBar();
+            }
+        }
+        ImGui::End();
+    }
+
     void EditorWorkspace::DrawScene()
     {
         if (!m_Settings.showScene) return;
         if (ImGui::Begin(Label("panel.scene", "Scene", "Catalpa.Scene").c_str(), &m_Settings.showScene)) {
-            if (ImGui::Selectable(Label("scene.window", "Main Window", "MainWindow").c_str(), m_SelectedFile.empty())) {
+            const bool entitySelected = m_Editing && m_Editing->HasSceneSelection();
+            if (ImGui::Selectable(Label("scene.window", "Main Window", "MainWindow").c_str(), !entitySelected && m_SelectedFile.empty())) {
+                if (m_Editing) m_Editing->ClearSceneSelection();
                 m_SelectedFile.clear();
                 m_Settings.showInspector = true;
                 m_Dirty = true;
@@ -482,92 +612,22 @@ namespace Catalpa::Editor {
         ImGui::End();
     }
 
-    bool EditorWorkspace::IsInsideProject(const std::filesystem::path& path) const
-    {
-        if (!m_Project) return true;
-        std::error_code error;
-        const auto actual = std::filesystem::canonical(path, error);
-        if (error) return false;
-        const auto& root = m_Project->GetSession()->config.contentRoot;
-        // 浏览范围用真实路径精确比较，避免Windows可选大小写敏感目录的同名兄弟逃逸。
-        auto component = actual.begin();
-        for (const auto& expected : root) {
-            if (expected.empty()) continue;
-            if (component == actual.end() || *component != expected) return false;
-            ++component;
-        }
-        return true;
-    }
-
-    void EditorWorkspace::RefreshFiles()
-    {
-        m_Files.clear();
-        m_FileError.clear();
-        if (m_BrowseDirectory.empty()) return;
-        if (!IsInsideProject(m_BrowseDirectory)) {
-            m_FileError = Text("assets.outside_project", "Directory is outside the project content root.");
-            return;
-        }
-        std::error_code error;
-        std::filesystem::directory_iterator it(m_BrowseDirectory, error), end;
-        size_t visited = 0;
-        while (!error && it != end && visited++ < 512) {
-            const auto path = it->path();
-            const bool directory = it->is_directory(error);
-            if (error) break;
-            if (IsInsideProject(path)) m_Files.push_back({ path, DisplayPath(path.filename()), directory });
-            it.increment(error);
-        }
-        if (error) m_FileError = error.message();
-        else if (it != end) m_FileError = Text("assets.limit", "Showing the first 512 entries; open a smaller folder to see more.");
-        std::sort(m_Files.begin(), m_Files.end(), [](const FileEntry& a, const FileEntry& b) {
-            if (a.directory != b.directory) return a.directory > b.directory;
-            return a.name < b.name;
-        });
-    }
-
     void EditorWorkspace::DrawAssets()
     {
         if (!m_Settings.showAssets) return;
         if (ImGui::Begin(Label("panel.assets", "Assets", "Catalpa.Assets").c_str(), &m_Settings.showAssets)) {
-            ImGui::TextUnformatted(Text("assets.read_only", "Resource files (read-only)"));
-            if (m_Project) {
-                ImGui::Text("%s: %s", Text("assets.project", "Project"), m_Project->GetSession()->config.name.c_str());
+            const auto root = m_Project ? m_Project->GetSession()->config.contentRoot
+                                        : m_ExecutableDirectory / "Resources";
+            const PanelText text = [this](const char* key, const char* fallback, const char* id) {
+                return id ? Label(key, fallback, id) : std::string(Text(key, fallback));
+            };
+            const auto rootName = m_Project ? Text("browser.content", "Content") : Text("panel.assets", "Assets");
+            if (m_AssetBrowser->Draw(root, rootName, m_BrowseDirectory, m_SelectedFile, 0, text) &&
+                !m_SelectedFile.empty()) {
+                if (m_Editing) m_Editing->ClearSceneSelection();
+                m_Settings.showInspector = true;
+                m_Dirty = true;
             }
-            ImGui::TextWrapped("%s", DisplayPath(m_BrowseDirectory).c_str());
-            if (ImGui::Button(Label("assets.up", "Up", "Up").c_str()) && m_BrowseDirectory.has_parent_path()
-                && IsInsideProject(m_BrowseDirectory.parent_path())) {
-                m_BrowseDirectory = m_BrowseDirectory.parent_path();
-                RefreshFiles();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button(Label("assets.refresh", "Refresh", "Refresh").c_str())) RefreshFiles();
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(180);
-            ImGui::InputText(Label("assets.filter", "Filter", "Filter").c_str(), m_Filter.data(), m_Filter.size());
-            if (!m_FileError.empty()) ImGui::TextWrapped("%s", m_FileError.c_str());
-            ImGui::BeginChild("FileList", ImVec2(0, 0), ImGuiChildFlags_Borders);
-            std::filesystem::path enterDirectory;
-            for (const auto& entry : m_Files) {
-                if (entry.name.find(m_Filter.data()) == std::string::npos) continue;
-                // 文件名只用于显示，不让其中的 ## 或翻译改变控件 ID。
-                const std::string pathId = DisplayPath(entry.path);
-                ImGui::PushID(static_cast<int>(ImHashData(pathId.data(), pathId.size())));
-                const ImVec2 textPosition = ImGui::GetCursorScreenPos();
-                if (ImGui::Selectable("##File", m_SelectedFile == entry.path, ImGuiSelectableFlags_AllowDoubleClick,
-                    ImVec2(0, ImGui::GetTextLineHeightWithSpacing()))) {
-                    m_SelectedFile = entry.path;
-                    m_Settings.showInspector = true;
-                    m_Dirty = true;
-                    if (entry.directory && (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)
-                        || ImGui::IsKeyPressed(ImGuiKey_Enter))) enterDirectory = entry.path;
-                }
-                const std::string displayName = (entry.directory ? "> " : "  ") + entry.name;
-                ImGui::GetWindowDrawList()->AddText(textPosition, ImGui::GetColorU32(ImGuiCol_Text), displayName.c_str());
-                ImGui::PopID();
-            }
-            ImGui::EndChild();
-            if (!enterDirectory.empty()) { m_BrowseDirectory = enterDirectory; RefreshFiles(); }
         }
         ImGui::End();
     }
@@ -597,7 +657,7 @@ namespace Catalpa::Editor {
                 std::error_code error;
                 if (std::filesystem::is_regular_file(m_SelectedFile, error)) {
                     const auto bytes = std::filesystem::file_size(m_SelectedFile, error);
-                    if (!error) ImGui::Text("%llu bytes", static_cast<unsigned long long>(bytes));
+                    if (!error) ImGui::Text(UiFormat("ui.bytes", "%llu bytes"), static_cast<unsigned long long>(bytes));
                 }
                 if (error) ImGui::TextWrapped("%s", error.message().c_str());
                 ImGui::Separator();
@@ -618,11 +678,21 @@ namespace Catalpa::Editor {
                 m_Dirty = true;
             }
             int language = m_Settings.language == "zh-CN" ? 1 : 0;
-            const char* names[]{"English (en-US)", "简体中文 (zh-CN)"};
+            const char* names[]{"English (en-US)", ChineseLanguageName};
             if (ImGui::Combo(Label("setting.language", "Language", "WorkspaceLanguage").c_str(), &language,
                              names, 2)) {
                 m_Settings.language = language ? "zh-CN" : "en-US";
-                LoadLanguage();
+                if (LoadLanguage()) m_Dirty = true;
+            }
+            ImGui::TextUnformatted(Text("setting.font_size", "Interface font size"));
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::SliderInt("##WorkspaceFontSize", &m_Settings.editorFontSize,
+                             WorkspaceSettings::MinFontSize, WorkspaceSettings::MaxFontSize,
+                             "%d px", ImGuiSliderFlags_AlwaysClamp);
+            // 拖动时预览，松开后再触发工作区自动保存。
+            if (ImGui::IsItemDeactivatedAfterEdit()) m_Dirty = true;
+            if (ImGui::Button(Label("setting.reset_font_size", "Restore 24 px", "ResetWorkspaceFontSize").c_str())) {
+                m_Settings.editorFontSize = WorkspaceSettings::DefaultFontSize;
                 m_Dirty = true;
             }
             ImGui::TextUnformatted(Text("setting.theme", "Theme: Dark Gray / Emerald"));
@@ -631,7 +701,7 @@ namespace Catalpa::Editor {
             if (ImGui::Button(Label("action.reload", "Reload Workspace", "Reload").c_str())) m_Action = Action::Reload;
             if (ImGui::Button(Label("action.reset", "Reset Layout", "Reset").c_str())) m_Action = Action::ResetLayout;
             ImGui::Separator();
-            ImGui::TextWrapped("%s", Text("setting.persistence", "Panel visibility, VSync and layout are saved automatically and on exit. A previous save is kept as Workspace.json.bak."));
+            ImGui::TextWrapped("%s", Text("setting.persistence", "Font size, panel visibility, VSync and layout are saved automatically and on exit. A previous save is kept as Workspace.json.bak."));
             ImGui::TextWrapped("%s", DisplayPath(m_SettingsPath).c_str());
             ImGui::TextWrapped("%s", m_Status.c_str());
             if (m_Project) {
@@ -653,13 +723,14 @@ namespace Catalpa::Editor {
     void EditorWorkspace::OnImGuiRender()
     {
         if (!m_Attached) return;
+        EditorTextScope language(m_Catalog);
         if (m_Editing) m_Editing->SetProject(m_Project ? &m_Project->GetSession()->config : nullptr);
         DrawMenu();
         const auto discardPopup=Label("document.unsaved","Discard unsaved edits?","Catalpa.DiscardEdits");
         if (m_DiscardAction!=Action::None || m_DiscardExit) ImGui::OpenPopup(discardPopup.c_str());
         if (ImGui::BeginPopupModal(discardPopup.c_str(),nullptr,ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::TextUnformatted(Text("document.unsaved_message","This workspace contains unsaved edits."));
-            if (ImGui::Button("Save all and continue") && m_Editing && m_Editing->SaveAll()) {
+            if (ImGui::Button(UiLabel("ui.save_all_and_continue", "Save all and continue").c_str()) && m_Editing && m_Editing->SaveAll()) {
                 m_AllowDiscard = true;
                 m_Action = std::exchange(m_DiscardAction, Action::None);
                 m_CloseRequested = std::exchange(m_DiscardExit, false);
@@ -679,34 +750,43 @@ namespace Catalpa::Editor {
             }
             ImGui::EndPopup();
         }
+        DrawStatusBar();
         BuildDefaultLayout();
         ImGui::DockSpaceOverViewport(ImHashStr(DockspaceName), ImGui::GetMainViewport(), DockFlags);
-        const std::array before{m_Settings.showScene,    m_Settings.showAssets,      m_Settings.showInspector,
-                                m_Settings.showSettings, m_Settings.showContent,     m_Settings.showBuild,
-                                m_Settings.showConsole,  m_Settings.showDependencies};
+        const auto visiblePanels = [this] {
+            return std::array{m_Settings.showScene, m_Settings.showAssets, m_Settings.showInspector,
+                              m_Settings.showSettings, m_Settings.showContent, m_Settings.showBuild,
+                              m_Settings.showConsole, m_Settings.showDependencies, m_Settings.showHistory,
+                              m_Settings.showAudioMixer, m_Settings.showNetwork};
+        };
+        const auto before = visiblePanels();
         DrawScene();
+        // 切换回实体时解除旧文件选择，下次点击同一文件也会更新属性面板。
+        if (!m_SelectedFile.empty() && m_Editing && m_Editing->HasSceneSelection())
+            m_SelectedFile.clear();
+        DrawHistory();
         DrawAssets();
         DrawInspector();
         DrawSettings();
         const PanelText text = [this](const char* key, const char* fallback, const char* id) {
             return id ? Label(key, fallback, id) : std::string(Text(key, fallback));
         };
-        if (m_ShowAudioMixer) {
+        if (m_Settings.showAudioMixer) {
             if (!m_AudioMixer)
                 m_AudioMixer = std::make_unique<AudioMixerPanel>();
             if (ImGui::Begin(Label("panel.audio_mixer", "Audio mixer", "Catalpa.AudioMixer").c_str(),
-                             &m_ShowAudioMixer))
+                             &m_Settings.showAudioMixer))
                 m_AudioMixer->Draw(Application::Get(), text, m_StatusError);
             ImGui::End();
         }
-        if (m_ShowNetwork) {
+        if (m_Settings.showNetwork) {
             if (!m_Network)
                 m_Network = std::make_unique<NetworkDiagnosticsPanel>();
             if (ImGui::Begin(Label("panel.network", "Loopback network", "Catalpa.Network").c_str(),
-                             &m_ShowNetwork))
+                             &m_Settings.showNetwork))
                 m_Network->Draw(Application::Get(), text, m_StatusError);
             ImGui::End();
-            if (!m_ShowNetwork)
+            if (!m_Settings.showNetwork)
                 m_Network->Close(Application::Get());
         }
         if (m_Content && m_Build)
@@ -727,10 +807,9 @@ namespace Catalpa::Editor {
         }
         if (m_Dependencies && m_Build)
             m_Dependencies->Draw(m_Settings.showDependencies, m_Build->Result(), text);
-        const std::array after{m_Settings.showScene,    m_Settings.showAssets,      m_Settings.showInspector,
-                               m_Settings.showSettings, m_Settings.showContent,     m_Settings.showBuild,
-                               m_Settings.showConsole,  m_Settings.showDependencies};
-        m_Dirty |= before != after;
+        m_Dirty |= before != visiblePanels();
+        // 本帧所有窗口绘制结束后再切换，下一帧一次应用滑块或重新加载的字号。
+        ApplyWorkspaceFontSize(m_Settings.editorFontSize);
         m_FrameSeen = true;
     }
 }

@@ -7,7 +7,9 @@ namespace Catalpa::Editor {
     // 每个命令属于一个明确的文档。成功返回时变更已实际提交。
     class EditorCommand {
       public:
-        explicit EditorCommand(StableId document) : m_Document(document) {}
+        explicit EditorCommand(StableId document, const char* labelKey = "history.component")
+            : m_Document(document), m_LabelKey(labelKey) {}
+        const char* LabelKey() const noexcept { return m_LabelKey; }
 
         virtual ~EditorCommand() = default;
 
@@ -21,5 +23,6 @@ namespace Catalpa::Editor {
 
       private:
         StableId m_Document;
+        const char* m_LabelKey; // 静态语言键，切换语言后历史名称同步刷新。
     };
 }

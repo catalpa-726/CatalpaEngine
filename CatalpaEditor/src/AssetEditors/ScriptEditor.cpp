@@ -1,3 +1,4 @@
+#include "Panels/EditorText.h"
 #include "AssetEditors/ScriptEditor.h"
 #include "Commands/GraphCommands.h"
 #include "Scripting/ScriptAsset.h"
@@ -16,7 +17,7 @@ namespace Catalpa::Editor {
             m_Source = doc.Source();
         }
 
-        const bool changed = ImGui::InputTextMultiline("Author source", m_Buffer.data(), m_Buffer.size(), {-1, 380},
+        const bool changed = ImGui::InputTextMultiline(UiLabel("script.source", "Author source").c_str(), m_Buffer.data(), m_Buffer.size(), {-1, 380},
             ImGuiInputTextFlags_AllowTabInput);
         if (ImGui::IsItemActivated()) {
             static std::atomic_uint64_t next{1};
@@ -25,7 +26,7 @@ namespace Catalpa::Editor {
         if (changed && ChangeAuthorSource(doc, std::string(m_Buffer.data()), error, m_Group)) m_Source = doc.Source();
         if (ImGui::IsItemDeactivated()) m_Group = 0;
 
-        if (ImGui::Button("Validate source")) {
+        if (ImGui::Button(UiLabel("script.validate", "Validate source").c_str())) {
             bool valid = false;
             if (doc.TypeKey() == "prefab") {
                 PrefabAsset value;
@@ -46,14 +47,14 @@ namespace Catalpa::Editor {
         }
 
         if (doc.TypeKey() == "script")
-            ImGui::TextWrapped("Return a table with start(dt), update(dt), stop(dt). "
+            ImGui::TextWrapped(UiFormat("script.api_help", "Return a table with start(dt), update(dt), stop(dt). "
                 "Use scene.translate(x,y,z), scene.set_translation(x,y,z), scene.position(), self and properties. "
-                "require(name) resolves only declared cooked script modules.");
+                "require(name) resolves only declared cooked script modules."));
         else if (doc.TypeKey() == "prefab")
-            ImGui::TextWrapped("Prefab author JSON contains scene entities and stable nested slots. "
-                "Build this file before assigning or updating instances.");
+            ImGui::TextWrapped(UiFormat("prefab.source_help", "Prefab author JSON contains scene entities and stable nested slots. "
+                "Build this file before assigning or updating instances."));
         else
-            ImGui::TextWrapped("Material definition author JSON uses the ordinary material schema. "
-                "Validate and build it before creating dependent instances.");
+            ImGui::TextWrapped(UiFormat("material.source_help", "Material definition author JSON uses the ordinary material schema. "
+                "Validate and build it before creating dependent instances."));
     }
 }

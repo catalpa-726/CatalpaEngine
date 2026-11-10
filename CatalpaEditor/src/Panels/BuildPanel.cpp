@@ -1,3 +1,4 @@
+#include "Panels/EditorText.h"
 #include "catpch.h"
 #include "Panels/BuildPanel.h"
 #include "AssetPipeline/AssetCooker.h"
@@ -14,6 +15,32 @@
 #include "Core/Serialization/JsonArchive.h"
 
 namespace Catalpa::Editor {
+    namespace {
+        const char* BuildPhaseText(const std::string& phase) {
+            // AssetCooker reports progress from a worker. Resolve its labels in the active UI language.
+            static constexpr std::pair<std::string_view, const char*> phases[]{
+                {"Request failed", "build.phase.failed"},
+                {"Queued", "build.phase.queued"},
+                {"Request cancelled", "build.phase.cancelled"},
+                {"Request cancelled; cooked results were not loaded", "build.phase.cancelled_load"},
+                {"Loading cooked versions", "build.phase.loading"},
+                {"Cache hit; cooked assets ready", "build.phase.cached_ready"},
+                {"Cooked assets ready", "build.phase.ready"},
+                {"Model instantiated at the scene safe point", "build.phase.instantiated"},
+                {"Model preview ready", "build.phase.preview"},
+                {"Checking inputs and cache", "build.phase.checking"},
+                {"Cache hit; catalog published", "build.phase.cached"},
+                {"Importing read-only sources", "build.phase.importing"},
+                {"Cooking geometry, images, materials and models", "build.phase.cooking"},
+                {"Writing immutable cooked artifacts", "build.phase.writing"},
+                {"Cooked catalog published", "build.phase.published"},
+            };
+            for (const auto& [english, key] : phases)
+                if (english == phase) return UiText(key, phase.c_str());
+            return phase.c_str();
+        }
+    }
+
     BuildPanel::BuildPanel(JobSystem& jobs, AssetManager& assets, SceneManager& scenes)
         : m_Jobs(jobs), m_Assets(assets), m_Scenes(scenes) {}
 
@@ -558,8 +585,12 @@ namespace Catalpa::Editor {
 
     void BuildPanel::DrawImage(const ImageAsset& value) {
         const auto& image = value.image;
-        ImGui::Text("%u x %u, %s, semantic=%u", image.width, image.height,
-                    image.colorSpace == ImageColorSpace::SRGB ? "sRGB" : "Linear", unsigned(image.semantic));
+        const char* roles[]{UiText("graph.term.color", "Color"), UiText("graph.term.normal", "Normal"),
+                            UiText("texture.data", "Data"), UiText("texture.depth", "Depth")};
+        const auto role = static_cast<size_t>(image.semantic);
+        ImGui::Text(UiFormat("build.image_metadata", "%u x %u, %s, role: %s"), image.width, image.height,
+                    image.colorSpace == ImageColorSpace::SRGB ? "sRGB" : UiText("texture.linear", "Linear"),
+                    role < std::size(roles) ? roles[role] : UiText("texture.unknown", "Unknown"));
         if (!image.width || !image.height || image.subresources.empty() ||
             (image.format != PixelFormat::RGBA8_UNorm && image.format != PixelFormat::RGBA8_SRGB))
             return;
@@ -608,10 +639,10 @@ namespace Catalpa::Editor {
 
             if (m_Task) {
                 std::lock_guard lock(m_Task->mutex);
-                ImGui::TextUnformatted(m_Task->phase.c_str());
+                ImGui::TextUnformatted(BuildPhaseText(m_Task->phase));
                 ImGui::ProgressBar(m_Task->total ? float(m_Task->done) / float(m_Task->total) : 0);
             } else {
-                ImGui::TextWrapped("%s", m_Phase.c_str());
+                ImGui::TextWrapped("%s", BuildPhaseText(m_Phase));
                 if (m_Loading)
                     ImGui::ProgressBar(float(m_LoadCursor) / float(m_LoadOrder.size()));
             }
@@ -637,9 +668,12 @@ namespace Catalpa::Editor {
                             const auto position = ImGui::GetCursorScreenPos();
                             if (ImGui::Selectable("##Asset", m_Selected == record.id))
                                 m_Selected = record.id;
-                            const auto label = record.type.ToString() + " " + record.id.ToString();
+                            const auto& type = record.type.ToString();
+                            const auto name = text(("asset.type." + type).c_str(), type.c_str(), nullptr);
+                            const auto label = name + " " + record.id.ToString();
                             ImGui::GetWindowDrawList()->AddText(position, ImGui::GetColorU32(ImGuiCol_Text),
                                                                 label.c_str());
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", type.c_str());
                             ImGui::PopID();
                         }
                     ImGui::EndListBox();
@@ -658,7 +692,7 @@ namespace Catalpa::Editor {
                             m_OpenAsset = selected->id;
                         ImGui::EndDisabled();
                     }
-                    ImGui::Text("version: %llu", static_cast<unsigned long long>(selected->version));
+                    ImGui::Text(UiFormat("build.version", "version: %llu"), static_cast<unsigned long long>(selected->version));
                     if (selected->type.ToString() == "model") {
                         ImGui::BeginDisabled(Busy() || !m_AssetsReady);
                         if (ImGui::Button(
@@ -676,7 +710,7 @@ namespace Catalpa::Editor {
                         std::string error;
                         if (m_Assets.Acquire(selected->id, model, fallback, error) && !fallback &&
                             model.GetVersion() == selected->version) {
-                            ImGui::Text("nodes: %zu, mesh instances: %zu", model.Get()->nodes.size(),
+                            ImGui::Text(UiFormat("build.model_counts", "nodes: %zu, mesh instances: %zu"), model.Get()->nodes.size(),
                                         model.Get()->meshes.size());
                             if (ImGui::TreeNode(text("build.hierarchy", "Imported node hierarchy / local TRS",
                                                      "ImportedHierarchy")
@@ -686,7 +720,7 @@ namespace Catalpa::Editor {
                                 while (clipper.Step())
                                     for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
                                         const auto& node = model.Get()->nodes[size_t(i)];
-                                        ImGui::Text("%d parent=%d %s  T=(%.4g,%.4g,%.4g) S=(%.4g,%.4g,%.4g)",
+                                        ImGui::Text(UiFormat("build.node_transform", "%d parent=%d %s  T=(%.4g,%.4g,%.4g) S=(%.4g,%.4g,%.4g)"),
                                                     i, node.parent, node.name.c_str(),
                                                     node.local.translation.x, node.local.translation.y,
                                                     node.local.translation.z, node.local.scale.x,

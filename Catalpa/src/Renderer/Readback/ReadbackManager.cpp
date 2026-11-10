@@ -100,6 +100,8 @@ namespace Catalpa {
         if (completionStatus.IsSuccess()
             && m_Device.ReadBuffer(pending.destination, 0, std::as_writable_bytes(std::span{ &identityIndex, 1 }),
                 pending.completion).IsSuccess()) {
+            // 最高位标记选中轮廓；低 31 位仍对应显示帧的一基实例表。
+            identityIndex &= ~SelectedPickBit;
             result.status = PickingResultStatus::Ready;
             if (identityIndex != 0) {
                 if (identityIndex > pending.identities.size()) result.status = PickingResultStatus::Failed;

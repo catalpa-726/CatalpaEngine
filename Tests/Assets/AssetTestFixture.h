@@ -61,6 +61,9 @@ namespace Catalpa::Tests::AssetTest {
         }
         bool Mount(VirtualFileSystem& filesOut, std::string& error) const { return filesOut.MountReadOnly("test", root, 0, error); }
     };
+    // 两个编辑器 GPU 验收共用的独占 PNG 和 PBR 材质输入。
+    bool CreateThumbnailSources(Fixture& fixture, std::string& error);
+
     inline bool Drain(AssetManager& manager) {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
         do { manager.Pump(); if (manager.GetPendingCount() == 0) return true; std::this_thread::sleep_for(std::chrono::milliseconds(1)); }

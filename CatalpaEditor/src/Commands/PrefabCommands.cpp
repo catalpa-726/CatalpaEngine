@@ -15,7 +15,7 @@ namespace Catalpa::Editor {
         class PrefabEdit final : public EditorCommand {
           public:
             PrefabEdit(StableId owner,PersistentEntityId root,SceneSubtreeSnapshot candidate,bool replacing)
-                :EditorCommand(owner),m_Root(root),m_After(std::move(candidate)),m_Replacing(replacing){}
+                :EditorCommand(owner, replacing ? "history.prefab_update" : "history.prefab_add"),m_Root(root),m_After(std::move(candidate)),m_Replacing(replacing){}
             bool Apply(Document& document,std::string& error) override {
                 auto* doc=dynamic_cast<SceneDocument*>(&document);
                 if(!doc || doc->Id()!=Owner() || !doc->Resolve() || doc->Playing()) {error="Prefab document is unavailable";return false;}

@@ -18,6 +18,14 @@ namespace Catalpa {
         constexpr auto operator<=>(const RenderInstanceId&) const = default;
     };
 
+    // 只随独立编辑视图提交；同一实体派生的粒子和地形分块共用选中状态。
+    struct EditorViewDisplay {
+        RenderInstanceId selected;
+        bool showGrid = false;
+        std::optional<bool> showNormals; // 未指定时沿用当前渲染配置。
+    };
+    inline constexpr uint32_t SelectedPickBit = 0x80000000u;
+
     // 每个逻辑视图独占相机和像素尺寸；目标代次只标记重建，不持有GPU资源。
     struct RenderView {
         uint64_t id = 0;
@@ -29,6 +37,7 @@ namespace Catalpa {
         uint64_t targetGeneration = 1;
         // 独立视图由宿主提供刚性姿态，没有对应的 World 实体。
         bool independentCamera = false;
+        EditorViewDisplay editorDisplay;
     };
 
     // 检查值快照的身份、镜头、刚性姿态、最终float矩阵组合和逆，不查询World。

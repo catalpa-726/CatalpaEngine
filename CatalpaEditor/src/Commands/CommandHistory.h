@@ -9,6 +9,10 @@ namespace Catalpa::Editor {
         bool Undo(Document&, std::string& error);
         bool Redo(Document&, std::string& error);
 
+        size_t Size() const noexcept { return m_Entries.size(); }
+        size_t Position() const noexcept { return m_Position; }
+        const char* LabelKey(size_t index) const { return m_Entries.at(index)->LabelKey(); }
+
         bool CanUndo() const noexcept {
             return m_Position > 0;
         }

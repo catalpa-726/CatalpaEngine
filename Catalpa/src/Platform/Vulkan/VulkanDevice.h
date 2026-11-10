@@ -43,6 +43,7 @@ namespace Catalpa {
         VkPhysicalDevice GetPhysicalDevice() const { return m_PhysicalDevice; }
         VkPipelineCache GetPipelineCache() const;
 
+        std::unique_ptr<RHISwapchain> CreateWindowSwapchain(void* nativeWindow, const RHISwapchainDesc&, RHIStatus&) override;
         VkQueue GetPresentQueue() const { return m_PresentQueue; }
         VulkanQueue& GetGraphicsQueue() override { return *m_GraphicsQueue; }
         RHIQueue* GetQueue(QueueId) override;

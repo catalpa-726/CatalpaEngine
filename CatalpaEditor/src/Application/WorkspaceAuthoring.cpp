@@ -7,6 +7,7 @@
 #include "Scene/PrefabReconciler.h"
 #include "Scripting/BehaviorGraphAsset.h"
 #include "Core/Serialization/AuthorJson.h"
+#include "Panels/EditorText.h"
 #include "imgui.h"
 
 namespace Catalpa::Editor {
@@ -39,7 +40,7 @@ namespace Catalpa::Editor {
                     }
                 },value);
                 ImGui::SameLine();
-                if (ImGui::SmallButton("Remove property")) removed = name;
+                if (ImGui::SmallButton(UiLabel("ui.remove_property", "Remove property").c_str())) removed = name;
                 ImGui::PopID();
             }
             if (removed) { values.erase(*removed); changed = true; }
@@ -56,12 +57,12 @@ namespace Catalpa::Editor {
         ScriptComponent script;
         const bool scripted=scene->GetWorld().Has<ScriptComponent>(entity) && scene->GetWorld().Get(entity,script).IsSuccess();
         if(scripted) {
-            ImGui::TextWrapped("Script: %s",script.script.ToString().c_str());
-            bool changed=ImGui::Checkbox("Script enabled",&script.enabled);
+            ImGui::TextWrapped(UiFormat("ui.script", "Script: %s"),script.script.ToString().c_str());
+            bool changed=ImGui::Checkbox(UiLabel("ui.script_enabled", "Script enabled").c_str(),&script.enabled);
             changed|=Properties(script.properties, m_Error);
-            ImGui::InputText("New script property",m_PropertyName.data(),m_PropertyName.size());
-            ImGui::Combo("Property type", &m_PropertyType, "Bool\0Integer\0Number\0String\0Float3\0Entity\0");
-            if (ImGui::Button("Add property") && m_PropertyName[0]) {
+            ImGui::InputText(UiLabel("ui.new_script_property", "New script property").c_str(),m_PropertyName.data(),m_PropertyName.size());
+            ImGui::Combo(UiLabel("ui.property_type", "Property type").c_str(), &m_PropertyType, UiChoices({UiText("choice.bool", "Bool"), UiText("choice.integer", "Integer"), UiText("choice.number", "Number"), UiText("choice.string", "String"), UiText("choice.float3", "Float3"), UiText("choice.entity", "Entity")}).c_str());
+            if (ImGui::Button(UiLabel("ui.add_property", "Add property").c_str()) && m_PropertyName[0]) {
                 ScriptValue value;
                 switch (m_PropertyType) {
                     case 0: value = false; break;
@@ -76,10 +77,10 @@ namespace Catalpa::Editor {
                 else changed = true;
             }
             if(changed) EditScript(doc,id,script,m_Error);
-            if(ImGui::Button("Remove script")) EditScript(doc,id,std::nullopt,m_Error);
+            if(ImGui::Button(UiLabel("ui.remove_script", "Remove script").c_str())) EditScript(doc,id,std::nullopt,m_Error);
         }
-        ImGui::InputText("Script asset ID",m_ScriptAsset.data(),m_ScriptAsset.size());
-        if(ImGui::Button(scripted?"Assign different script":"Add script")) {
+        ImGui::InputText(UiLabel("ui.script_asset_id", "Script asset ID").c_str(),m_ScriptAsset.data(),m_ScriptAsset.size());
+        if(ImGui::Button(scripted?UiText("ui.assign_different_script", "Assign different script"):UiText("ui.add_script", "Add script"))) {
             AssetId asset;
             if(!AssetId::TryParse(m_ScriptAsset.data(),asset)) m_Error="Enter a cooked script asset ID";
             else {script.script=asset;EditScript(doc,id,script,m_Error);}
@@ -89,14 +90,14 @@ namespace Catalpa::Editor {
         BehaviorGraphComponent behavior;
         const bool graphed=scene->GetWorld().Has<BehaviorGraphComponent>(entity) && scene->GetWorld().Get(entity,behavior).IsSuccess();
         if(graphed) {
-            ImGui::TextWrapped("Behavior: %s",behavior.graph.ToString().c_str());
-            bool changed=ImGui::Checkbox("Behavior enabled",&behavior.enabled);
+            ImGui::TextWrapped(UiFormat("ui.behavior", "Behavior: %s"),behavior.graph.ToString().c_str());
+            bool changed=ImGui::Checkbox(UiLabel("ui.behavior_enabled", "Behavior enabled").c_str(),&behavior.enabled);
             changed|=Properties(behavior.variables, m_Error);
             AssetVersionRef<BehaviorGraphAsset> program;
             bool fallback = false;
             std::string ignored;
             if (m_App.GetAssets().Acquire(behavior.graph, program, fallback, ignored) && !fallback &&
-                ImGui::BeginCombo("Add initial variable override", "Choose a declared variable")) {
+                ImGui::BeginCombo(UiLabel("ui.add_initial_variable_override", "Add initial variable override").c_str(), UiText("ui.choose_a_declared_variable", "Choose a declared variable"))) {
                 for (const auto& [name, value] : program.Get()->variables)
                     if (!behavior.variables.contains(name) && ImGui::Selectable(name.c_str())) {
                         behavior.variables.emplace(name, value);
@@ -105,10 +106,10 @@ namespace Catalpa::Editor {
                 ImGui::EndCombo();
             }
             if(changed) EditBehaviorGraph(doc,id,behavior,m_Error);
-            if(ImGui::Button("Remove behavior")) EditBehaviorGraph(doc,id,std::nullopt,m_Error);
+            if(ImGui::Button(UiLabel("ui.remove_behavior", "Remove behavior").c_str())) EditBehaviorGraph(doc,id,std::nullopt,m_Error);
         }
-        ImGui::InputText("Behavior asset ID",m_BehaviorAsset.data(),m_BehaviorAsset.size());
-        if(ImGui::Button(graphed?"Assign different behavior":"Add behavior")) {
+        ImGui::InputText(UiLabel("ui.behavior_asset_id", "Behavior asset ID").c_str(),m_BehaviorAsset.data(),m_BehaviorAsset.size());
+        if(ImGui::Button(graphed?UiText("ui.assign_different_behavior", "Assign different behavior"):UiText("ui.add_behavior", "Add behavior"))) {
             AssetId asset;
             if(!AssetId::TryParse(m_BehaviorAsset.data(),asset)) m_Error="Enter a cooked behavior graph asset ID";
             else {behavior.graph=asset;EditBehaviorGraph(doc,id,behavior,m_Error);}
@@ -117,29 +118,29 @@ namespace Catalpa::Editor {
         PrefabInstanceComponent prefab;
         if(scene->GetWorld().Has<PrefabInstanceComponent>(entity) && scene->GetWorld().Get(entity,prefab).IsSuccess()) {
             ImGui::Separator();
-            ImGui::TextWrapped("Prefab %s / version %llu",prefab.source.ToString().c_str(),static_cast<unsigned long long>(prefab.sourceVersion));
-            if (ImGui::Button("Update base and preserve overrides") && UpdateAuthorPrefab(doc, m_App.GetAssets(), id, false, m_Error)) {
+            ImGui::TextWrapped(UiFormat("ui.prefab_version", "Prefab %s / version %llu"),prefab.source.ToString().c_str(),static_cast<unsigned long long>(prefab.sourceVersion));
+            if (ImGui::Button(UiLabel("ui.update_base_and_preserve_overrides", "Update base and preserve overrides").c_str()) && UpdateAuthorPrefab(doc, m_App.GetAssets(), id, false, m_Error)) {
                 m_Selection.Select(doc, scene->Resolve(id));
                 m_OverrideRoot = {};
             }
-            if (ImGui::Button("Revert supported overrides to loaded base") && UpdateAuthorPrefab(doc, m_App.GetAssets(), id, true, m_Error)) {
+            if (ImGui::Button(UiLabel("ui.revert_supported_overrides_to_loaded_base", "Revert supported overrides to loaded base").c_str()) && UpdateAuthorPrefab(doc, m_App.GetAssets(), id, true, m_Error)) {
                 m_Selection.Select(doc, scene->Resolve(id));
                 m_OverrideRoot = {};
             }
-            const bool refresh = ImGui::Button("Refresh current override paths");
+            const bool refresh = ImGui::Button(UiLabel("ui.refresh_current_override_paths", "Refresh current override paths").c_str());
             if (refresh || m_OverrideRoot != id) {
                 m_OverrideRoot = id;
                 m_OverridePaths.clear();
                 (void)PrefabReconciler::DescribeOverrides(*scene, id, m_OverridePaths, m_Error);
             }
-            for (const auto& path : m_OverridePaths) ImGui::TextWrapped("Override %s", path.c_str());
+            for (const auto& path : m_OverridePaths) ImGui::TextWrapped(UiFormat("ui.override", "Override %s"), path.c_str());
         }
     }
 
     void WorkspaceEditing::PrefabMenu() {
         auto* scene=ActiveScene();
         if(!scene || scene->Playing()) return;
-        if(ImGui::MenuItem("Create prefab from selected subtree")) {
+        if(ImGui::MenuItem(UiLabel("ui.create_prefab_from_selected_subtree", "Create prefab from selected subtree").c_str())) {
             const auto entity=m_Selection.Resolve(*scene);
             PrefabAsset prefab;std::string text;
             if(entity.HasValue() && PrefabDocument::FromSelection(*scene,scene->Resolve()->MakeReference(entity).persistent,prefab,m_Error) && WritePrefab(prefab,text,m_Error)) {
@@ -151,7 +152,7 @@ namespace Catalpa::Editor {
             } else if(m_Error.empty()) m_Error="Select an author entity first";
         }
         auto* prefab=dynamic_cast<AssetDocument*>(m_Documents.Find(m_OpenAsset));
-        if(prefab && prefab->TypeKey()=="prefab" && ImGui::MenuItem("Instantiate opened cooked prefab")) {
+        if(prefab && prefab->TypeKey()=="prefab" && ImGui::MenuItem(UiLabel("ui.instantiate_opened_cooked_prefab", "Instantiate opened cooked prefab").c_str())) {
             PersistentEntityId root;
             if(InstantiateAuthorPrefab(*scene,m_App.GetAssets(),prefab->Asset(),{},root,m_Error)) {
                 m_Selection.Select(*scene,scene->Resolve()->Resolve(root));m_Documents.Activate(scene->Id());

@@ -1,10 +1,18 @@
 #include "Graphs/GraphCanvas.h"
+#include "Panels/EditorText.h"
 #include "imgui_node_editor.h"
 #include "imgui.h"
 #include "Core/PlatformServices.h"
 
 namespace Catalpa::Editor {
     namespace ed = ax::NodeEditor;
+    std::string GraphTerm(std::string_view symbol) {
+        std::string key("graph.term.");
+        for (const char c : symbol)
+            key += c >= 'A' && c <= 'Z' ? char(c - 'A' + 'a') : c;
+        const std::string fallback(symbol);
+        return UiText(key.c_str(), fallback.c_str());
+    }
     StableId CanvasIdentity(StableId owner, std::string_view role) {
         const auto text=owner.ToString()+"/"+std::string(role);
         std::array<std::byte,32> hash;
