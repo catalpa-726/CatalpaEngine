@@ -23,7 +23,7 @@
     "scene.window": "主窗口",
     "scene.preview": "中央区域显示当前渲染预览。",
     "scene.scope": "通过内容浏览器构建源资源，再通过构建面板实例化模型。",
-    "workspace.docking": "拖动标签栏调整工作区；通过视图菜单重新打开面板。",
+    "workspace.docking": "拖动工具面板的标签页可分离为独立窗口，拖到停靠指示框上松开即可重新停靠。",
     "assets.read_only": "只读资源文件",
     "assets.project": "项目",
     "assets.outside_project": "目录位于项目内容根之外。",

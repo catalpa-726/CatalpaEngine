@@ -520,11 +520,17 @@ namespace Catalpa::Editor {
     }
 
     void WorkspaceEditing::DrawViewport(SceneDocument* doc, const PanelText& text, uint32_t centerDockId) {
-        // 新工作区默认居中；已有标签位置和独立窗口由 ImGui 随工作区布局恢复。
+        // 仅迁移这个稳定窗口：旧版保存的浮动位置或侧边 DockId 不影响其他面板。
         if (centerDockId)
-            ImGui::SetNextWindowDockID(centerDockId, ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowDockID(centerDockId, ImGuiCond_Always);
+        ImGuiWindowClass viewportClass;
+        viewportClass.DockNodeFlagsOverrideSet =
+            ImGuiDockNodeFlags_NoUndocking | ImGuiDockNodeFlags_NoDockingSplit |
+            ImGuiDockNodeFlags_NoDockingOverMe | ImGuiDockNodeFlags_NoWindowMenuButton;
+        ImGui::SetNextWindowClass(&viewportClass);
         const bool shown = ImGui::Begin(text("panel.viewport", "Scene Viewport", "Catalpa.Viewport").c_str(),
-                                        nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollWithMouse);
+                                        nullptr, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove |
+                                                     ImGuiWindowFlags_NoScrollWithMouse);
         if (!shown || !doc) {
             BlurPlayUI();
             m_Picking.Cancel(m_App);
@@ -712,6 +718,8 @@ namespace Catalpa::Editor {
             }
         }
         ImGuizmo::SetImGuiContext(ImGui::GetCurrentContext());
+        // ImGuizmo 在 BeginFrame 中创建透明的全屏辅助窗口；它应复用主窗口。
+        ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
         ImGuizmo::BeginFrame();
         DrawViewport(scene, text, centerDockId);
         if (auto* asset = dynamic_cast<AssetDocument*>(m_Documents.Find(m_OpenAsset))) {

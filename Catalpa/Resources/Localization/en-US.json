@@ -23,7 +23,7 @@
     "scene.window": "Main Window",
     "scene.preview": "The central area shows the current render preview.",
     "scene.scope": "Use Content Browser to build a source, then Build to instantiate the selected model. The central area previews the active scene.",
-    "workspace.docking": "Drag panel title bars to arrange the workspace. Use View to reopen panels.",
+    "workspace.docking": "Drag a tool panel by its tab to float it. Drop it on a docking guide to dock it again.",
     "assets.read_only": "Resource files (read-only)",
     "assets.project": "Project",
     "assets.outside_project": "Directory is outside the project content root.",

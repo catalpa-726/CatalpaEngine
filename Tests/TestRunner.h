@@ -12,6 +12,7 @@ namespace Catalpa::Tests {
     std::unique_ptr<Layer> CreateBrowserThumbnailGpuTest();
     std::unique_ptr<Layer> CreateGroveGpuTest();
     std::unique_ptr<Layer> CreateWorkspaceLanguageTest(const std::filesystem::path& directory);
+    std::unique_ptr<Layer> CreateWorkspaceDockingTest();
     std::unique_ptr<Layer> CreatePlatformWindowGpuTest();
 
     // Box 开发模式中的 CPU 契约检查；失败累计并最终返回非零退出码。

@@ -64,6 +64,7 @@ namespace Catalpa {
 #endif
         if(args.size()==1&&args[0].starts_with("--test-")) {
 #if !defined(CATALPA_DIST) && !defined(CATALPA_RUNTIME_ONLY)
+            if (args[0] == "--test-editor-docking") { options.testEditorDocking = true; return {}; }
             if (args[0] == "--test-editor-platform-windows") { options.testEditorPlatformWindows = true; return {}; }
             if (args[0] == "--test-editor-thumbnails") { options.testEditorThumbnails = true; return {}; }
             if (args[0] == "--test-editor-grove") { options.testEditorGrove = true; return {}; }
@@ -93,7 +94,7 @@ namespace Catalpa {
         CAT_INFO(
             "Usage: CatalpaBox [--project <absolute-file> | --run-package <absolute-file> | "
             "--inspect <absolute-file> | --package <tool arguments> | --test-s14-s17 | --test-s14-foundation "
-            "| --test-editor-platform-windows | --test-editor-thumbnails | --test-editor-grove | --test-s10-s13 | --test-s07-s09 | --test-s05-s06 | --test-s04 | --sample-reversed-z | "
+            "| --test-editor-docking | --test-editor-platform-windows | --test-editor-thumbnails | --test-editor-grove | --test-s10-s13 | --test-s07-s09 | --test-s05-s06 | --test-s04 | --sample-reversed-z | "
             "--test-editor-language <absolute-directory> | --sample-error-material | --cook-shaders <tool arguments> | --build-assets <tool arguments> | "
             "--cook-assets <tool arguments> | --help]. No arguments opens the workspace.");
 #endif

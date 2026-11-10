@@ -84,6 +84,10 @@ public:
     // CatalpaBox 是唯一启动应用；编辑器静态库只提供由宿主挂载的功能。
     explicit CatalpaBox(const Catalpa::BoxLaunchOptions& options) {
 #if !defined(CATALPA_DIST) && !defined(CATALPA_RUNTIME_ONLY)
+        if (options.testEditorDocking) {
+            PushOverlay(Catalpa::Tests::CreateWorkspaceDockingTest());
+            return;
+        }
         if (options.testEditorPlatformWindows) {
             PushOverlay(Catalpa::Tests::CreatePlatformWindowGpuTest());
             return;

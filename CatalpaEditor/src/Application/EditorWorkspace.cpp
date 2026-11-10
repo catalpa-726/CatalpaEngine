@@ -189,6 +189,10 @@ namespace Catalpa::Editor {
     {
         CAT_ASSERT(ImGui::GetCurrentContext(), "Workspace requires the application's ImGui context.");
         IMGUI_CHECKVERSION();
+        // 拖出停靠节点即成为独立系统窗口；在场景图像内操作不移动窗口。
+        auto& io = ImGui::GetIO();
+        m_PreviousNoAutoMerge = std::exchange(io.ConfigViewportsNoAutoMerge, true);
+        m_PreviousMoveFromTitleBarOnly = std::exchange(io.ConfigWindowsMoveFromTitleBarOnly, true);
         m_Attached = true;
         ApplyTheme();
         m_AssetBrowser = std::make_unique<FileBrowserView>(0x4153534554000010ULL);
@@ -387,6 +391,11 @@ namespace Catalpa::Editor {
         m_Console.reset();
         m_Dependencies.reset();
         m_Project.reset(); // 本工作区任务先取消并等待，再释放作者会话；Runtime调度器仍由Runtime收束。
+        if (ImGui::GetCurrentContext()) {
+            auto& io = ImGui::GetIO();
+            io.ConfigViewportsNoAutoMerge = m_PreviousNoAutoMerge;
+            io.ConfigWindowsMoveFromTitleBarOnly = m_PreviousMoveFromTitleBarOnly;
+        }
         m_Attached = false;
     }
 
@@ -607,7 +616,7 @@ namespace Catalpa::Editor {
                 m_Editing->SceneTree(text);
             }
             ImGui::Spacing();
-            ImGui::TextWrapped("%s", Text("workspace.docking", "Drag panel title bars to arrange the workspace. Use View to reopen panels."));
+            ImGui::TextWrapped("%s", Text("workspace.docking", "Drag a tool panel by its tab to float it. Drop it on a docking guide to dock it again."));
         }
         ImGui::End();
     }

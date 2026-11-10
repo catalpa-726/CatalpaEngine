@@ -74,6 +74,8 @@ namespace Catalpa::Editor {
         Action m_DiscardAction = Action::None;
         bool m_DiscardExit = false, m_AllowDiscard = false;
         bool m_Attached = false;
+        bool m_PreviousNoAutoMerge = false;
+        bool m_PreviousMoveFromTitleBarOnly = false;
         bool m_AutoSave = true;
         bool m_Dirty = false;
         bool m_ResetLayout = false;
