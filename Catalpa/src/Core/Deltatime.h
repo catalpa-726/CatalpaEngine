@@ -2,9 +2,8 @@
 
 namespace Catalpa {
 
-	// 保留 Layer 的墙钟秒接口；固定模拟 tick 统一使用 Core/Time/FrameTime。
-	class Deltatime
-	{
+	/* 保留 Layer 的墙钟秒接口；固定模拟 tick 统一使用 Core/Time/FrameTime。 */
+	class Deltatime {
 	public:
 		Deltatime(float time = 0.0f) : m_Time(time) {}
 

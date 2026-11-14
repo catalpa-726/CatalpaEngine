@@ -7,10 +7,10 @@ CATALPA_RUNTIME_ONLY = runtimeOnly
 outputdir = "%{cfg.system}-%{cfg.architecture}/%{cfg.buildcfg}"
 local vulkanSDK = os.getenv("VULKAN_SDK") or ""
 if not runtimeOnly then
-if not vulkanSDK or vulkanSDK == "" then error("VULKAN_SDK is required for the locked shader toolchain.") end
-for _, tool in ipairs { "Bin/slangc.exe", "Bin/slang-compiler.dll", "Bin/spirv-val.exe" } do
-    if not os.isfile(path.join(vulkanSDK, tool)) then error("Missing SDK tool: " .. path.join(vulkanSDK, tool)) end
-end
+    if not vulkanSDK or vulkanSDK == "" then error("VULKAN_SDK is required for the locked shader toolchain.") end
+    for _, tool in ipairs { "Bin/slangc.exe", "Bin/slang-compiler.dll", "Bin/spirv-val.exe" } do
+        if not os.isfile(path.join(vulkanSDK, tool)) then error("Missing SDK tool: " .. path.join(vulkanSDK, tool)) end
+    end
 
 end
 
@@ -153,10 +153,10 @@ include "Script/Build/GLAD.lua"
 include "Script/Build/EnkiTS.lua"
 -- SPIR-V反射由Tools私有消费；Runtime只读取cooked ShaderAsset。
 if not runtimeOnly then
-include "Script/Build/SPIRVReflect.lua"
--- 工具依赖均由Premake直接编译；Assimp的派生头也由Lua生成。
-include "Script/Build/AssetImport.lua"
-include "Script/Build/Assimp.lua"
+    include "Script/Build/SPIRVReflect.lua"
+    -- 工具依赖均由Premake直接编译；Assimp的派生头也由Lua生成。
+    include "Script/Build/AssetImport.lua"
+    include "Script/Build/Assimp.lua"
 end
 include "Script/Build/Authoring.lua"
 include "Script/Build/StageDependencies.lua"
@@ -168,7 +168,7 @@ project "Catalpa"
     kind "SharedLib"
 
     pchheader "catpch.h"
-	pchsource "Catalpa/src/catpch.cpp"
+    pchsource "Catalpa/src/catpch.cpp"
 
     files {
         "Catalpa/src/**.h",
@@ -207,8 +207,8 @@ project "Catalpa"
     filter "system:windows"
         -- 系统随机源与Unicode命令行；系统库，不引入第三方源码。
         links { "bcrypt", "shell32", "imm32" }
-		defines {
-			"CATALPA_BUILD_DLL",
+        defines {
+            "CATALPA_BUILD_DLL",
             "CATALPA_PLATFORM_WINDOW",
             "GLFW_INCLUDE_NONE",
             "CATALPA_ENABLE_ASSERTS",
@@ -218,135 +218,135 @@ project "Catalpa"
             "VMA_STATIC_VULKAN_FUNCTIONS=0",
             "VMA_DYNAMIC_VULKAN_FUNCTIONS=0",
             "VMA_BUFFER_DEVICE_ADDRESS=0"
-		}
+        }
 
 
 filter {}
 if buildBox then
-project "CatalpaBox"
-    location "CatalpaBox"
-    kind "ConsoleApp"
+    project "CatalpaBox"
+        location "CatalpaBox"
+        kind "ConsoleApp"
 
-    files {
-        "CatalpaBox/src/**.h",
-        "CatalpaBox/src/**.cpp",
-        -- 以公共头作为部署构建项，DLL 是额外输入，不编译此头。
-        "Catalpa/src/Catalpa.h",
-        "Catalpa/Resources/Localization/*.json",
-        "Catalpa/Resources/Config/*.json",
-        "Config/InputProfiles.json",
-        "Config/RendererProfiles.json"
-    }
+        files {
+            "CatalpaBox/src/**.h",
+            "CatalpaBox/src/**.cpp",
+            -- 以公共头作为部署构建项，DLL 是额外输入，不编译此头。
+            "Catalpa/src/Catalpa.h",
+            "Catalpa/Resources/Localization/*.json",
+            "Catalpa/Resources/Config/*.json",
+            "Config/InputProfiles.json",
+            "Config/RendererProfiles.json"
+        }
 
-    includedirs {
-        "Catalpa/third_party/spdlog/include",
-        "Catalpa/src",
-        "Catalpa/third_party",
-        "CatalpaEditor/src",
-        "Tools",
-        "%{IncludeDir.GLM}"
-    }
-
-    if runtimeOnly then
-        links { "Catalpa" }
-        defines { "CATALPA_RUNTIME_ONLY" }
-        removefiles { "CatalpaBox/src/BoxDefaultEnvironment.cpp", "CatalpaBox/src/BoxGameplay.cpp" }
-    else
-        links {
-            "Catalpa",
-            "CatalpaEditor",
+        includedirs {
+            "Catalpa/third_party/spdlog/include",
+            "Catalpa/src",
+            "Catalpa/third_party",
+            "CatalpaEditor/src",
             "Tools",
-            -- 最终宿主显式链接工具静态闭包，避免依赖StaticLib传递链接的差异。
-            "fastgltf", "simdjson", "simdutf", "MikkTSpace", "assimp", "AssimpZlib",
-            "imgui-node-editor", "nativefiledialog-extended", "Lua"
+            "%{IncludeDir.GLM}"
         }
-    end
 
-    -- 开发配置调用验证库；Dist 的入口由现有 CATALPA_DIST 分支禁用。
-    filter "configurations:Debug or Release"
-        if not runtimeOnly then
-            includedirs { "Tests" }
-            links { "Tests" }
+        if runtimeOnly then
+            links { "Catalpa" }
+            defines { "CATALPA_RUNTIME_ONLY" }
+            removefiles { "CatalpaBox/src/BoxDefaultEnvironment.cpp", "CatalpaBox/src/BoxGameplay.cpp" }
+        else
+            links {
+                "Catalpa",
+                "CatalpaEditor",
+                "Tools",
+                -- 最终宿主显式链接工具静态闭包，避免依赖StaticLib传递链接的差异。
+                "fastgltf", "simdjson", "simdutf", "MikkTSpace", "assimp", "AssimpZlib",
+                "imgui-node-editor", "nativefiledialog-extended", "Lua"
+            }
         end
-    filter {}
 
-    filter "system:windows"
-        links { "ole32", "uuid", "shell32" }
-        defines {
-            "CATALPA_PLATFORM_WINDOW"
-        }
+        -- 开发配置调用验证库；Dist 的入口由现有 CATALPA_DIST 分支禁用。
+        filter "configurations:Debug or Release"
+            if not runtimeOnly then
+                includedirs { "Tests" }
+                links { "Tests" }
+            end
+        filter {}
 
-    -- 消费方部署引擎 DLL；输入/输出跟踪覆盖只改 DLL 的增量构建。
-    filter { "system:windows", "files:**/Catalpa.h" }
-        buildmessage "Deploying Catalpa runtime"
-        buildinputs {
-            path.join(_MAIN_SCRIPT_DIR, "bin/" .. outputdir .. "/Catalpa/Catalpa.dll")
-        }
-        buildcommands {
-            '{MKDIR} "%{cfg.targetdir}"',
-            'if errorlevel 1 exit /b 1',
-            '{COPYFILE} "' .. path.join(_MAIN_SCRIPT_DIR, "bin/" .. outputdir .. '/Catalpa/Catalpa.dll') .. '" "%{cfg.targetdir}/Catalpa.dll"',
-            'if errorlevel 1 exit /b 1'
-        }
-        buildoutputs { "%{cfg.targetdir}/Catalpa.dll" }
-        compilebuildoutputs(false)
-        linkbuildoutputs(false)
+        filter "system:windows"
+            links { "ole32", "uuid", "shell32" }
+            defines {
+                "CATALPA_PLATFORM_WINDOW"
+            }
 
-    filter { "system:windows", "files:**/Localization/*.json" }
-        buildmessage "Copying workspace language pack"
-        -- 当前宿主部署工作区资源；命令 token 与错误检查保持分行。
-        buildcommands {
-            '{MKDIR} "%{cfg.targetdir}/Resources/Localization"',
-            'if errorlevel 1 exit /b 1',
-            '{COPYFILE} "%{file.abspath}" "%{cfg.targetdir}/Resources/Localization/%{file.name}"',
-            'if errorlevel 1 exit /b 1'
-        }
-        buildoutputs {
-            "%{cfg.targetdir}/Resources/Localization/%{file.name}"
-        }
-
-    -- 当前宿主部署运行配置；Application 按可执行目录读取，不依赖工作目录。
-    filter { "system:windows", "files:**/Config/*.json" }
-        buildmessage "Copying runtime configuration"
-        buildcommands {
-            '{MKDIR} "%{cfg.targetdir}/Resources/Config"',
-            'if errorlevel 1 exit /b 1',
-            '{COPYFILE} "%{file.abspath}" "%{cfg.targetdir}/Resources/Config/%{file.name}"',
-            'if errorlevel 1 exit /b 1'
-        }
-        buildoutputs { "%{cfg.targetdir}/Resources/Config/%{file.name}" }
-
-    filter {}
-    if not runtimeOnly then
-        CatalpaShaderBuild.AttachHostCook()
-        -- Grove 使用普通作者资产流程。宿主完成链接且内置着色器就绪后再制作示例。
-        local groveRoot = path.join(_MAIN_SCRIPT_DIR, "Projects/Grove")
-        local deployGrove = path.join(_MAIN_SCRIPT_DIR, "Script/deploy_grove.py")
-        local groveWork = path.join(_MAIN_SCRIPT_DIR, "bin-int", outputdir, "Grove")
-        local projectFile = path.join(groveRoot, "Grove.catalpaproj")
-        files { projectFile }
-        filter { "system:windows", "files:**/Grove.catalpaproj" }
-            buildmessage "Tracking Grove courtyard inputs"
-            buildinputs { path.join(groveRoot, "Content/Grove.glb"), path.join(groveRoot, "Content/Courtyard.hdr"),
-                          path.join(groveRoot, "Content/Grove.scene.json"), path.join(groveRoot, "Content/asset_metadata.json"),
-                          path.join(groveRoot, "BuildProfiles.json"), deployGrove }
+        -- 消费方部署引擎 DLL；输入/输出跟踪覆盖只改 DLL 的增量构建。
+        filter { "system:windows", "files:**/Catalpa.h" }
+            buildmessage "Deploying Catalpa runtime"
+            buildinputs {
+                path.join(_MAIN_SCRIPT_DIR, "bin/" .. outputdir .. "/Catalpa/Catalpa.dll")
+            }
             buildcommands {
-                '{MKDIR} "' .. groveWork .. '"',
+                '{MKDIR} "%{cfg.targetdir}"',
                 'if errorlevel 1 exit /b 1',
-                'type nul > "' .. groveWork .. '/inputs.stamp"',
+                '{COPYFILE} "' .. path.join(_MAIN_SCRIPT_DIR, "bin/" .. outputdir .. '/Catalpa/Catalpa.dll') .. '" "%{cfg.targetdir}/Catalpa.dll"',
                 'if errorlevel 1 exit /b 1'
             }
-            buildoutputs { path.join(groveWork, "inputs.stamp") }
+            buildoutputs { "%{cfg.targetdir}/Catalpa.dll" }
             compilebuildoutputs(false)
             linkbuildoutputs(false)
-        filter "system:windows"
-            postbuildcommands {
-                'python "' .. deployGrove .. '" --host "%{!cfg.buildtarget.abspath}" --work "' ..
-                    groveWork .. '" --configuration "%{cfg.buildcfg}"',
+
+        filter { "system:windows", "files:**/Localization/*.json" }
+            buildmessage "Copying workspace language pack"
+            -- 当前宿主部署工作区资源；命令 token 与错误检查保持分行。
+            buildcommands {
+                '{MKDIR} "%{cfg.targetdir}/Resources/Localization"',
+                'if errorlevel 1 exit /b 1',
+                '{COPYFILE} "%{file.abspath}" "%{cfg.targetdir}/Resources/Localization/%{file.name}"',
                 'if errorlevel 1 exit /b 1'
             }
+            buildoutputs {
+                "%{cfg.targetdir}/Resources/Localization/%{file.name}"
+            }
+
+        -- 当前宿主部署运行配置；Application 按可执行目录读取，不依赖工作目录。
+        filter { "system:windows", "files:**/Config/*.json" }
+            buildmessage "Copying runtime configuration"
+            buildcommands {
+                '{MKDIR} "%{cfg.targetdir}/Resources/Config"',
+                'if errorlevel 1 exit /b 1',
+                '{COPYFILE} "%{file.abspath}" "%{cfg.targetdir}/Resources/Config/%{file.name}"',
+                'if errorlevel 1 exit /b 1'
+            }
+            buildoutputs { "%{cfg.targetdir}/Resources/Config/%{file.name}" }
+
         filter {}
-    end
+        if not runtimeOnly then
+            CatalpaShaderBuild.AttachHostCook()
+            -- Grove 使用普通作者资产流程。宿主完成链接且内置着色器就绪后再制作示例。
+            local groveRoot = path.join(_MAIN_SCRIPT_DIR, "Projects/Grove")
+            local deployGrove = path.join(_MAIN_SCRIPT_DIR, "Script/deploy_grove.py")
+            local groveWork = path.join(_MAIN_SCRIPT_DIR, "bin-int", outputdir, "Grove")
+            local projectFile = path.join(groveRoot, "Grove.catalpaproj")
+            files { projectFile }
+            filter { "system:windows", "files:**/Grove.catalpaproj" }
+                buildmessage "Tracking Grove courtyard inputs"
+                buildinputs { path.join(groveRoot, "Content/Grove.glb"), path.join(groveRoot, "Content/Courtyard.hdr"),
+                              path.join(groveRoot, "Content/Grove.scene.json"), path.join(groveRoot, "Content/asset_metadata.json"),
+                              path.join(groveRoot, "BuildProfiles.json"), deployGrove }
+                buildcommands {
+                    '{MKDIR} "' .. groveWork .. '"',
+                    'if errorlevel 1 exit /b 1',
+                    'type nul > "' .. groveWork .. '/inputs.stamp"',
+                    'if errorlevel 1 exit /b 1'
+                }
+                buildoutputs { path.join(groveWork, "inputs.stamp") }
+                compilebuildoutputs(false)
+                linkbuildoutputs(false)
+            filter "system:windows"
+                postbuildcommands {
+                    'python "' .. deployGrove .. '" --host "%{!cfg.buildtarget.abspath}" --work "' ..
+                        groveWork .. '" --configuration "%{cfg.buildcfg}"',
+                    'if errorlevel 1 exit /b 1'
+                }
+            filter {}
+        end
 
 end
 
@@ -450,28 +450,28 @@ filter {}
 for _, consumer in ipairs { "Catalpa", "Tools", "CatalpaEditor", "CatalpaBox", "Tests" } do
     filter {}
     if buildBox or consumer ~= "CatalpaBox" then
-    project(consumer)
-        includedirs {
-            "Catalpa/third_party/meshoptimizer/src", "Catalpa/third_party/zstd/lib",
-            "Catalpa/third_party/KTX-Software/lib/include", "Catalpa/third_party/KTX-Software/external/dfdutils",
-            "Catalpa/third_party/freetype/include", "Catalpa/third_party/ozz-animation/include",
-            "Catalpa/third_party/JoltPhysics", "Catalpa/third_party/miniaudio", "Catalpa/third_party/RmlUi/Include",
-            "Catalpa/third_party/recastnavigation/Recast/Include", "Catalpa/third_party/recastnavigation/Detour/Include",
-            "Catalpa/third_party/recastnavigation/DetourCrowd/Include", "Catalpa/third_party/recastnavigation/DetourTileCache/Include"
-        }
-        defines { "RMLUI_STATIC_LIB", "KHRONOS_STATIC" }
+        project(consumer)
+            includedirs {
+                "Catalpa/third_party/meshoptimizer/src", "Catalpa/third_party/zstd/lib",
+                "Catalpa/third_party/KTX-Software/lib/include", "Catalpa/third_party/KTX-Software/external/dfdutils",
+                "Catalpa/third_party/freetype/include", "Catalpa/third_party/ozz-animation/include",
+                "Catalpa/third_party/JoltPhysics", "Catalpa/third_party/miniaudio", "Catalpa/third_party/RmlUi/Include",
+                "Catalpa/third_party/recastnavigation/Recast/Include", "Catalpa/third_party/recastnavigation/Detour/Include",
+                "Catalpa/third_party/recastnavigation/DetourCrowd/Include", "Catalpa/third_party/recastnavigation/DetourTileCache/Include"
+            }
+            defines { "RMLUI_STATIC_LIB", "KHRONOS_STATIC" }
     end
 end
 filter {}
 if buildBox then
-project "CatalpaBox"
-    if not runtimeOnly then
-        links { "meshoptimizer", "ktx", "astcenc", "zstd", "FreeType", "ozz_animation_offline", "ozz_animation",
-            "ozz_base", "Jolt", "miniaudio", "RmlUi", "Recast", "DetourCrowd", "DetourTileCache", "Detour", "winmm" }
-    end
-filter {}
+    project "CatalpaBox"
+        if not runtimeOnly then
+            links { "meshoptimizer", "ktx", "astcenc", "zstd", "FreeType", "ozz_animation_offline", "ozz_animation",
+                "ozz_base", "Jolt", "miniaudio", "RmlUi", "Recast", "DetourCrowd", "DetourTileCache", "Detour", "winmm" }
+        end
+    filter {}
 
-filter {}
+    filter {}
 end
 filter {}
 project "Catalpa"
@@ -493,28 +493,28 @@ filter {}
 
 filter {}
 if buildBox then
-project "CatalpaBox"
-    files {
-        "Catalpa/Resources/Fonts/Inter/extras/ttf/Inter-Regular.ttf",
-        "Catalpa/Resources/Fonts/Inter/InterVariable.ttf",
-        "Catalpa/Resources/Fonts/Inter/LICENSE.txt",
-        "Catalpa/Resources/Fonts/NotoSansSC/NotoSansSC-Regular.otf",
-        "Catalpa/Resources/Fonts/NotoSansSC/LICENSE.txt"
-    }
-    -- 每个字体和许可文件有独立输出；两个字族可分别更新且不会覆盖同名许可证。
-    for _, family in ipairs { "Inter", "NotoSansSC" } do
-        local destination = "%{cfg.targetdir}/Resources/Fonts/" .. family
-        filter { "system:windows", "files:**/Fonts/" .. family .. "/**" }
-        buildmessage ("Deploying " .. family .. " font resource")
-        buildcommands {
-            '{MKDIR} "' .. destination .. '"',
-            'if errorlevel 1 exit /b 1',
-            '{COPYFILE} "%{file.abspath}" "' .. destination .. '/%{file.name}"',
-            'if errorlevel 1 exit /b 1'
+    project "CatalpaBox"
+        files {
+            "Catalpa/Resources/Fonts/Inter/extras/ttf/Inter-Regular.ttf",
+            "Catalpa/Resources/Fonts/Inter/InterVariable.ttf",
+            "Catalpa/Resources/Fonts/Inter/LICENSE.txt",
+            "Catalpa/Resources/Fonts/NotoSansSC/NotoSansSC-Regular.otf",
+            "Catalpa/Resources/Fonts/NotoSansSC/LICENSE.txt"
         }
-        buildoutputs { destination .. "/%{file.name}" }
-    end
-filter {}
+        -- 每个字体和许可文件有独立输出；两个字族可分别更新且不会覆盖同名许可证。
+        for _, family in ipairs { "Inter", "NotoSansSC" } do
+            local destination = "%{cfg.targetdir}/Resources/Fonts/" .. family
+            filter { "system:windows", "files:**/Fonts/" .. family .. "/**" }
+            buildmessage ("Deploying " .. family .. " font resource")
+            buildcommands {
+                '{MKDIR} "' .. destination .. '"',
+                'if errorlevel 1 exit /b 1',
+                '{COPYFILE} "%{file.abspath}" "' .. destination .. '/%{file.name}"',
+                'if errorlevel 1 exit /b 1'
+            }
+            buildoutputs { destination .. "/%{file.name}" }
+        end
+    filter {}
 
 end
 filter {}

@@ -2,7 +2,11 @@
 local root = _MAIN_SCRIPT_DIR
 local vendor = path.join(root, "Catalpa/third_party")
 
--- 继承当前工作区配置/动态CRT，工程文件放out而非上游目录。
+--[[
+按当前工作区配置创建第三方静态库，使用动态 C 运行时。
+@param name Premake 项目名，同时用于生成目录和产物目录。
+@param languageName 库的源语言，省略时使用 C++，指定 C 时按 C11 编译。
+]]
 local function staticProject(name, languageName)
     filter {}
     project(name)

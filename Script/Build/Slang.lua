@@ -1,5 +1,7 @@
--- Slang唯一构建入口规则：递归跟踪全部模块，stage/entry由slangc的[shader]属性发现。
--- Catalpa库不依赖尚未链接的Box；Box链接完成后调用共享Tools命令生成已验证cooked产物。
+--[[
+Slang唯一构建入口规则：递归跟踪全部模块，stage/entry由slangc的[shader]属性发现。
+Catalpa库不依赖尚未链接的Box；Box链接完成后调用共享Tools命令生成已验证cooked产物。
+]]
 local engineRoot = _MAIN_SCRIPT_DIR
 local shaderRoot = path.join(engineRoot, "Catalpa/Resources/Shaders")
 local shaderFiles = os.matchfiles(path.join(shaderRoot, "**.slang"))
@@ -15,14 +17,17 @@ filter {}
     files { path.join(shaderRoot, "**.slang") }
 
 CatalpaShaderBuild = {}
+
 function CatalpaShaderBuild.AttachHostCook()
     local stampRoot = path.join(engineRoot, "bin-int", outputdir, "ShaderInputs")
     files { path.join(shaderRoot, "**.slang") }
     for _, source in ipairs(shaderFiles) do
         local relative = path.getrelative(shaderRoot, source)
         local stamp = path.join(stampRoot, relative .. ".stamp")
-        -- 这里只记录输入改变，不在链接前执行尚不存在的工具宿主。
-        -- 任意公共模块变更使生产步骤重新检查真实内容hash，无C++头生成及全引擎重编译。
+        --[[
+        这里只记录输入改变，不在链接前执行尚不存在的工具宿主。
+        任意公共模块变更使生产步骤重新检查真实内容hash，无C++头生成及全引擎重编译。
+        ]]
         filter { "system:windows", "files:" .. path.getrelative(os.getcwd(), source) }
             buildmessage ("Tracking Slang " .. relative)
             buildinputs(shaderFiles)

@@ -4,8 +4,8 @@ on:
   pull_request:
   workflow_dispatch:
 
-# The labelled runner has VS2022/v143, Python, Vulkan 1.3 SDK and the dependency
-# source cache already provisioned. No dependency versions are silently upgraded.
+# 带指定标签的运行器已配备 VS2022/v143、Python、Vulkan 1.3 SDK 和依赖源码缓存。
+# 工作流沿用预置的依赖版本。
 jobs:
   windows:
     runs-on: [self-hosted, Windows, X64, catalpa]

@@ -8,13 +8,11 @@
 
 namespace Catalpa {
 
-	class CATALPA_API Layer
-	{
+	class CATALPA_API Layer {
 	public:
 		Layer(const std::string& name = "Layer");
 		virtual ~Layer() = default;
 
-		// 挂载、帧更新、界面与事件钩子，由调用方选择调度。
 		virtual void OnAttach() {}
 		virtual void OnDetach() {}
 		virtual void OnImGuiRender() {}

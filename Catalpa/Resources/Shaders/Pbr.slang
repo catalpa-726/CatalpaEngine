@@ -46,7 +46,7 @@ float4 fragmentMain(MeshVertexOutput input, bool frontFace : SV_IsFrontFace) : S
     uint lutWidth, lutHeight;
     brdfTexture.GetDimensions(lutWidth, lutHeight);
     float2 halfTexel = 0.5 / float2(lutWidth, lutHeight);
-    // LUT坐标夹在像素中心，确保边界不依赖共享采样器的寻址模式。
+    /* LUT坐标夹在像素中心，确保边界不依赖共享采样器的寻址模式。 */
     float2 lutUV = clamp(float2(ndotv, roughness), halfTexel, 1.0 - halfTexel);
     float2 brdf = brdfTexture.SampleLevel(environmentSampler, lutUV, 0).rg;
     float occlusion = surfaceFlag(16u) ? lerp(1.0, occlusion_texture.Sample(occlusionSampler, uv).r,

@@ -1,14 +1,15 @@
 #pragma once
 #include "RHI/RHIHandle.h"
+
 #include <vector>
 
 namespace Catalpa {
-    class RHIDevice;
-    // 图临时物理buffer的唯一owner。计划销毁只归还owner；在飞命令继续保留原生引用。
-    struct RGTransientStorage final {
-        explicit RGTransientStorage(RHIDevice& value) : device(value) {}
-        ~RGTransientStorage();
-        RHIDevice& device;
-        std::vector<BufferHandle> buffers;
-    };
-} // namespace Catalpa
+	class RHIDevice;
+	/* 渲染图临时物理缓冲区的唯一所有者。销毁计划时归还所有权，在途命令保留其原生引用。 */
+	struct RGTransientStorage final {
+		explicit RGTransientStorage(RHIDevice& value) : device(value) {}
+		~RGTransientStorage();
+		RHIDevice& device;
+		std::vector<BufferHandle> buffers;
+	};
+} /* 命名空间 Catalpa */

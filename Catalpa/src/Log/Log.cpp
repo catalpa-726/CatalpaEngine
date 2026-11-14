@@ -1,5 +1,6 @@
 ﻿#include "catpch.h"
 #include "Log.h"
+
 #include "Log/LogSubscription.h"
 
 #include "spdlog/sinks/stdout_color_sinks.h"
@@ -19,7 +20,7 @@ namespace Catalpa {
 		m_AppLogger = spdlog::stdout_color_mt("CatalpaBox");
 		m_AppLogger->set_level(spdlog::level::trace);
 
-        LogSubscription::AttachToLoggers();
+		LogSubscription::AttachToLoggers();
 	}
 
 }

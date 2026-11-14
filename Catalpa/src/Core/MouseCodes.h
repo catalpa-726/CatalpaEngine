@@ -2,16 +2,12 @@
 
 #include "catpch.h"
 
-
-namespace Catalpa
-{
+namespace Catalpa {
 	using MouseCode = uint16_t;
 
-	namespace Mouse
-	{
-		enum : MouseCode
-		{
-			// From glfw3.h
+	namespace Mouse {
+		enum : MouseCode {
+			/* 键码取自 glfw3.h。 */
 			Button0 = 0,
 			Button1 = 1,
 			Button2 = 2,

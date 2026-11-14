@@ -14,6 +14,9 @@ REQUIRED = (
 )
 
 
+# 检查宿主资源目录的必需文件、JSON 大小和类型。
+# @param directory 待检查的已部署 Resources 目录。
+# @param tool_host 可选的工具宿主路径；提供时还会检查着色器清单引用的产物。
 def validate_resources(directory: Path, tool_host: Path | None = None):
     directory = directory.resolve(strict=True)
     for name in REQUIRED:

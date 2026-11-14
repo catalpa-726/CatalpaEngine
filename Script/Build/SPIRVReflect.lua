@@ -1,5 +1,7 @@
--- 编译 Tools 使用的 SPIR-V 反射静态库；不构建上游 CLI、示例或测试。
--- 使用随包的 SPIR-V 公共头，不链接 Vulkan 或向 Runtime 暴露工具依赖。
+--[[
+编译 Tools 使用的 SPIR-V 反射静态库；不构建上游 CLI、示例或测试。
+使用随包的 SPIR-V 公共头，不链接 Vulkan 或向 Runtime 暴露工具依赖。
+]]
 local engineRoot = _MAIN_SCRIPT_DIR
 local reflectRoot = path.join(engineRoot, "Catalpa/third_party/SPIRV-Reflect")
 

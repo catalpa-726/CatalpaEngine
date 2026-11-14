@@ -12,7 +12,7 @@ INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]([^>"]+)[>"]', re.MULTILINE)
 
 def public_headers():
     pending = [SOURCE / name for name in ('Catalpa.h', 'Core/Entry.h', 'Assets/AssetManager.h',
-                                         'Assets/PackageReader.h', 'Core/Jobs/JobSystem.h')]
+                                          'Assets/PackageReader.h', 'Core/Jobs/JobSystem.h')]
     result = {}
     while pending:
         file = pending.pop().resolve(strict=True)
@@ -50,7 +50,7 @@ def license_inputs():
             if item.get('sha256') and hashlib.sha256(file.read_bytes()).hexdigest() != item['sha256']:
                 raise ValueError(f'License differs from recorded evidence: {file}')
             result.add(file)
-    # Existing sources without a full lock record still ship their actual notices.
+    # 同时收集依赖目录中的许可声明，覆盖锁文件记录尚不完整的源码包。
     for directory in (ROOT / 'Catalpa/third_party').iterdir():
         if directory.is_dir():
             result.update(p for p in directory.iterdir() if p.is_file()
@@ -72,7 +72,7 @@ def main():
                 if include.startswith(('Tools/', 'AssetPipeline/', 'ShaderCompiler/', 'CatalpaEditor/')):
                     violations.append(f'{file.relative_to(ROOT)}: runtime includes {include}')
                 if directory in ('Renderer', 'RHI') and (include.startswith('Platform/Vulkan/')
-                                                       or include.startswith(('vulkan/', 'glad/'))):
+                                                         or include.startswith(('vulkan/', 'glad/'))):
                     violations.append(f'{file.relative_to(ROOT)}: native backend leaked: {include}')
     if violations:
         raise ValueError('\n'.join(violations))

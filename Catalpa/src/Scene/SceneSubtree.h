@@ -12,37 +12,47 @@
 #include "Scene/Components/PrefabInstanceComponent.h"
 
 namespace Catalpa {
-    // 撤销只保存作者局部值及固定资产引用。父关系按持久身份恢复，不复用旧 World 槽位。
-    class SceneSubtreeSnapshot {
-        friend class Scene;
-        friend class PrefabInstantiation;
-        friend class PrefabReconciler;
+	/* 撤销只保存作者局部值及固定资产引用。父关系按持久身份恢复，不复用旧 World 槽位。 */
+	class SceneSubtreeSnapshot {
+		friend class Scene;
+		friend class PrefabInstantiation;
+		friend class PrefabReconciler;
 
-        struct Node {
-            IdentityComponent identity;
-            PersistentEntityId parent;
-            Math::TransformTRS local;
-            std::optional<CameraComponent> camera;
-            std::optional<MeshRendererComponent> mesh;
-            std::optional<LightComponent> light;
-            std::optional<EnvironmentComponent> environment;
-            std::optional<ScriptComponent> script;
-            std::optional<BehaviorGraphComponent> behavior;
-            std::optional<PrefabInstanceComponent> prefab;
-            ArchiveValue::Object dynamicComponents;
-            std::vector<AssetDependencyValue> dynamicDependencies;
-            bool SameAuthorData(const Node&) const;
-        };
+		struct Node {
+			IdentityComponent identity;
+			PersistentEntityId parent;
+			Math::TransformTRS local;
+			std::optional<CameraComponent> camera;
+			std::optional<MeshRendererComponent> mesh;
+			std::optional<LightComponent> light;
+			std::optional<EnvironmentComponent> environment;
+			std::optional<ScriptComponent> script;
+			std::optional<BehaviorGraphComponent> behavior;
+			std::optional<PrefabInstanceComponent> prefab;
+			ArchiveValue::Object dynamicComponents;
+			std::vector<AssetDependencyValue> dynamicDependencies;
+			/**
+			 * @brief 比较快照节点的作者字段和所持资源版本，供重做操作核查。
+			 * Redo 删除前核对当前子树；外部新增的后代或改动不能被旧命令悄悄删除。
+			 *
+			 * @param[in] b 作为比较基准的另一个节点快照，仅比较作者数据。
+			 *
+			 * @return 两个节点所保存的作者数据及相关版本均相符时为 true。
+			 */
+			bool SameAuthorData(const Node&) const;
+		};
 
-        uint64_t m_World = 0;
-        EntityId m_ParentGeneration;
-        std::vector<Node> m_Nodes;
+		uint64_t m_World = 0;
+		EntityId m_ParentGeneration;
+		std::vector<Node> m_Nodes;
 
-      public:
-        PersistentEntityId Parent() const noexcept { return m_Nodes.empty() ? PersistentEntityId{} : m_Nodes.front().parent; }
-        template <class F> void ForEachIdentity(F&& f) const {
-            for (const auto& node : m_Nodes)
-                f(node.identity.persistent);
-        }
-    };
+	public:
+		PersistentEntityId Parent() const noexcept {
+			return m_Nodes.empty() ? PersistentEntityId{} : m_Nodes.front().parent;
+		}
+		template <class F> void ForEachIdentity(F&& f) const {
+			for (const auto& node : m_Nodes)
+				f(node.identity.persistent);
+		}
+	};
 }

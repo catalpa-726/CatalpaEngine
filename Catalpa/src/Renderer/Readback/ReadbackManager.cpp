@@ -1,135 +1,147 @@
 #include "catpch.h"
+
 #include "Renderer/Readback/ReadbackManager.h"
+
 #include "Renderer/RenderGraph/RenderGraph.h"
 #include "RHI/RHIDevice.h"
 
 namespace Catalpa {
 
-    ReadbackManager::~ReadbackManager()
-    {
-        for (auto& [ticket, pending] : m_Pending) m_Device.ReleaseBuffer(pending.destination);
-    }
+	ReadbackManager::~ReadbackManager() {
+		for (auto& [ticket, pending] : m_Pending)
+			m_Device.ReleaseBuffer(pending.destination);
+	}
 
-    RHIStatus ReadbackManager::Request(const PickingRequest& request, TextureViewHandle source,
-        std::shared_ptr<void> keepAlive, std::span<const RenderInstanceId> identities, uint64_t& ticket)
-    {
-        constexpr const char* operation = "ReadbackManager::Request";
-        if (!source.HasValue() || !keepAlive || request.requestId == 0 || request.surfaceId == 0
-            || m_NextTicket == UINT64_MAX || m_Pending.size() >= 32)
-            return { .code = RHIErrorCode::InvalidDescription, .operation = operation };
+	RHIStatus ReadbackManager::Request(const PickingRequest& request, TextureViewHandle source,
+	    std::shared_ptr<void> keepAlive, std::span<const RenderInstanceId> identities, uint64_t& ticket) {
+		constexpr const char* operation = "ReadbackManager::Request";
+		if (!source.HasValue() || !keepAlive || request.requestId == 0 || request.surfaceId == 0 ||
+		    m_NextTicket == UINT64_MAX || m_Pending.size() >= 32)
+			return {.code = RHIErrorCode::InvalidDescription, .operation = operation};
 
-        try {
-            Pending pending;
-            pending.request = request;
-            pending.source = source;
-            pending.keepAlive = std::move(keepAlive);
-            pending.identities.assign(identities.begin(), identities.end());
-            m_Pending.emplace(m_NextTicket, std::move(pending));
-            ticket = m_NextTicket++;
-            return {};
-        } catch (const std::bad_alloc&) {
-            return { .code = RHIErrorCode::OutOfMemory, .operation = operation };
-        }
-    }
+		try {
+			Pending pending;
+			pending.request = request;
+			pending.source = source;
+			pending.keepAlive = std::move(keepAlive);
+			pending.identities.assign(identities.begin(), identities.end());
+			m_Pending.emplace(m_NextTicket, std::move(pending));
+			ticket = m_NextTicket++;
+			return {};
+		} catch (const std::bad_alloc&) {
+			return {.code = RHIErrorCode::OutOfMemory, .operation = operation};
+		}
+	}
 
-    RHIStatus ReadbackManager::AddPasses(RenderGraph& graph)
-    {
-        for (auto& [ticket, pending] : m_Pending) {
-            if (pending.completion.HasValue() || pending.recorded) continue;
-            if (!pending.destination.HasValue()) {
-                const RHIBufferDesc desc{ .size = sizeof(uint32_t), .usage = RHIBufferUsage::TransferDestination,
-                    .memory = RHIMemoryDomain::Readback };
-                if (const auto status = m_Device.CreateBuffer(desc, pending.destination); !status.IsSuccess()) return status;
-            }
-            RGTexture source;
-            RGBuffer destination;
-            if (const auto status = graph.ImportTexture(pending.source, source); !status.IsSuccess()) return status;
-            if (const auto status = graph.ImportBuffer(pending.destination, destination); !status.IsSuccess()) return status;
-            const RHITextureBufferCopy copy{ .textureOffset = { static_cast<int32_t>(pending.request.x),
-                static_cast<int32_t>(pending.request.y) }, .extent = { 1, 1 } };
-            if (const auto status = graph.AddTextureReadbackPass("Picking pixel readback", source, destination, copy); !status.IsSuccess()) return status;
-            pending.recorded = true;
-        }
-        return {};
-    }
+	RHIStatus ReadbackManager::AddPasses(RenderGraph& graph) {
+		for (auto& [ticket, pending] : m_Pending) {
+			if (pending.completion.HasValue() || pending.recorded)
+				continue;
+			if (!pending.destination.HasValue()) {
+				const RHIBufferDesc desc{.size = sizeof(uint32_t),
+				    .usage = RHIBufferUsage::TransferDestination,
+				    .memory = RHIMemoryDomain::Readback};
+				if (const auto status = m_Device.CreateBuffer(desc, pending.destination); !status.IsSuccess())
+					return status;
+			}
+			RGTexture source;
+			RGBuffer destination;
+			if (const auto status = graph.ImportTexture(pending.source, source); !status.IsSuccess())
+				return status;
+			if (const auto status = graph.ImportBuffer(pending.destination, destination); !status.IsSuccess())
+				return status;
+			const RHITextureBufferCopy copy{
+			    .textureOffset = {static_cast<int32_t>(pending.request.x), static_cast<int32_t>(pending.request.y)},
+			    .extent = {1, 1}};
+			if (const auto status = graph.AddTextureReadbackPass("Picking pixel readback", source, destination, copy);
+			    !status.IsSuccess())
+				return status;
+			pending.recorded = true;
+		}
+		return {};
+	}
 
-    void ReadbackManager::OnSubmitted(RHICompletionPoint completion) noexcept
-    {
-        for (auto& [ticket, pending] : m_Pending)
-            if (pending.recorded) {
-                pending.completion = completion;
-                pending.recorded = false;
-            }
-    }
+	void ReadbackManager::OnSubmitted(RHICompletionPoint completion) noexcept {
+		for (auto& [ticket, pending] : m_Pending)
+			if (pending.recorded) {
+				pending.completion = completion;
+				pending.recorded = false;
+			}
+	}
 
-    void ReadbackManager::OnCancelled() noexcept
-    {
-        for (auto& [ticket, pending] : m_Pending) pending.recorded = false;
-    }
+	void ReadbackManager::OnCancelled() noexcept {
+		for (auto& [ticket, pending] : m_Pending)
+			pending.recorded = false;
+	}
 
-    void ReadbackManager::OnAccepted(std::span<const RHICompletionPoint> accepted) noexcept try {
-        for (auto& [ticket, pending] : m_Pending)
-            if (pending.recorded) {
-                RHIBufferStateSnapshot state;
-                if (!m_Device.GetBufferState(pending.destination, state).IsSuccess() ||
-                    state.state.access.access != RHIResourceAccess::HostRead)
-                    continue;
-                const auto last = state.state.lastUse;
-                if (last.HasValue() && std::any_of(accepted.begin(), accepted.end(), [&](const auto& p) {
-                        return p.device == last.device && p.queue == last.queue &&
-                               p.sequence >= last.sequence;
-                    })) {
-                    pending.completion = last;
-                    pending.recorded = false;
-                }
-            }
-    } catch (const std::bad_alloc&) { /* 未取得HostRead证明的ticket保留，下次安全点重试。 */
-    }
+	void ReadbackManager::OnAccepted(std::span<const RHICompletionPoint> accepted) noexcept try {
+		for (auto& [ticket, pending] : m_Pending)
+			if (pending.recorded) {
+				RHIBufferStateSnapshot state;
+				if (!m_Device.GetBufferState(pending.destination, state).IsSuccess() ||
+				    state.state.access.access != RHIResourceAccess::HostRead)
+					continue;
+				const auto last = state.state.lastUse;
+				if (last.HasValue() && std::any_of(accepted.begin(), accepted.end(), [&](const auto& p) {
+					    return p.device == last.device && p.queue == last.queue && p.sequence >= last.sequence;
+				    })) {
+					pending.completion = last;
+					pending.recorded = false;
+				}
+			}
+	} catch (const std::bad_alloc&) { /* 未取得HostRead证明的ticket保留，下次安全点重试。 */
+	}
 
-    bool ReadbackManager::Poll(uint64_t ticket, PickingResult& output)
-    {
-        const auto found = m_Pending.find(ticket);
-        if (found == m_Pending.end()) return false;
-        auto& pending = found->second;
-        PickingResult result{ .ticket = ticket, .request = pending.request };
-        if (!pending.completion.HasValue()) return false;
-        bool complete = false;
-        const auto completionStatus = m_Device.QueryCompletion(pending.completion, complete);
-        if (completionStatus.IsSuccess() && !complete) return false;
-        uint32_t identityIndex = 0;
-        if (completionStatus.IsSuccess()
-            && m_Device.ReadBuffer(pending.destination, 0, std::as_writable_bytes(std::span{ &identityIndex, 1 }),
-                pending.completion).IsSuccess()) {
-            // 最高位标记选中轮廓；低 31 位仍对应显示帧的一基实例表。
-            identityIndex &= ~SelectedPickBit;
-            result.status = PickingResultStatus::Ready;
-            if (identityIndex != 0) {
-                if (identityIndex > pending.identities.size()) result.status = PickingResultStatus::Failed;
-                else result.hit = pending.identities[identityIndex - 1];
-            }
-        }
-        // 释放逻辑owner即可，已接受的GPU命令仍由后端保活，取消不进行WaitIdle。
-        m_Device.ReleaseBuffer(pending.destination);
-        m_Pending.erase(found);
-        output = result;
-        return true;
-    }
+	bool ReadbackManager::Poll(uint64_t ticket, PickingResult& output) {
+		const auto found = m_Pending.find(ticket);
+		if (found == m_Pending.end())
+			return false;
+		auto& pending = found->second;
+		PickingResult result{.ticket = ticket, .request = pending.request};
+		if (!pending.completion.HasValue())
+			return false;
+		bool complete = false;
+		const auto completionStatus = m_Device.QueryCompletion(pending.completion, complete);
+		if (completionStatus.IsSuccess() && !complete)
+			return false;
+		uint32_t identityIndex = 0;
+		if (completionStatus.IsSuccess() &&
+		    m_Device
+		        .ReadBuffer(
+		            pending.destination, 0, std::as_writable_bytes(std::span{&identityIndex, 1}), pending.completion)
+		        .IsSuccess()) {
+			/* 最高位标记选中轮廓；低 31 位仍对应显示帧的一基实例表。 */
+			identityIndex &= ~SelectedPickBit;
+			result.status = PickingResultStatus::Ready;
+			if (identityIndex != 0) {
+				if (identityIndex > pending.identities.size())
+					result.status = PickingResultStatus::Failed;
+				else
+					result.hit = pending.identities[identityIndex - 1];
+			}
+		}
+		/* 取消时只须释放逻辑所有权。后端仍为已接受的 GPU 命令保活资源，无须调用 WaitIdle。 */
+		m_Device.ReleaseBuffer(pending.destination);
+		m_Pending.erase(found);
+		output = result;
+		return true;
+	}
 
-    void ReadbackManager::Cancel(uint64_t ticket) noexcept
-    {
-        const auto found = m_Pending.find(ticket);
-        if (found == m_Pending.end()) return;
-        // 主线程在图录制之外取消；调用者可直接丢弃ticket，不必为释放配额再Poll。
-        m_Device.ReleaseBuffer(found->second.destination);
-        m_Pending.erase(found);
-    }
+	void ReadbackManager::Cancel(uint64_t ticket) noexcept {
+		const auto found = m_Pending.find(ticket);
+		if (found == m_Pending.end())
+			return;
+		/* 主线程在渲染图录制之外取消读回。释放配额时可直接丢弃读回票据，无须再调用 Poll。 */
+		m_Device.ReleaseBuffer(found->second.destination);
+		m_Pending.erase(found);
+	}
 
-    void ReadbackManager::CancelSurface(uint64_t surfaceId) noexcept
-    {
-        for (auto it = m_Pending.begin(); it != m_Pending.end();)
-            if (it->second.request.surfaceId == surfaceId) {
-                m_Device.ReleaseBuffer(it->second.destination);
-                it = m_Pending.erase(it);
-            } else ++it;
-    }
+	void ReadbackManager::CancelSurface(uint64_t surfaceId) noexcept {
+		for (auto it = m_Pending.begin(); it != m_Pending.end();)
+			if (it->second.request.surfaceId == surfaceId) {
+				m_Device.ReleaseBuffer(it->second.destination);
+				it = m_Pending.erase(it);
+			} else
+				++it;
+	}
 }

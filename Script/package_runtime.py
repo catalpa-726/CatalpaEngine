@@ -32,7 +32,7 @@ def main():
     package = (manifest.parent / specification["package"]).resolve(strict=True)
     if package.suffix != ".catpkg" or not package.is_relative_to(manifest.parent):
         parser.error("Package must be a .catpkg under the manifest directory")
-    # Only the explicitly selected tool host performs bounded format/hash checks; no window is created.
+    # 使用选定的工具宿主检查格式与哈希，并限制输入规模；此步骤无需创建窗口。
     checked = subprocess.run([str(tool_host), "--inspect", str(package)], check=False)
     if checked.returncode:
         return checked.returncode
@@ -62,7 +62,7 @@ def main():
         parser.error('A deployment file collides with another file directory prefix')
     if any(name in ("run.cmd", "deployment.json", "runtime-manifest.json") for name in names) or len(set(names)) != len(names):
         parser.error("Deployment paths collide")
-    # Validate all paths before writes; inspect the copied closure before publishing its launch/manifest files.
+    # 写入前检查全部路径，再核验已复制的依赖文件，最后发布启动文件和清单。
     output.mkdir(parents=True, exist_ok=False)
     for source, relative in planned:
         target = output / relative
@@ -83,7 +83,7 @@ def main():
                 digest.update(block)
             hashes[name] = digest.hexdigest()
     (output / 'runtime-manifest.json').write_text(json.dumps({'schemaVersion': 1, 'files': hashes,
-        'validation': 'package inspected; runtime execution not performed by deployment'}, indent=2) + '\n', encoding='utf-8')
+                                                              'validation': 'package inspected; runtime execution not performed by deployment'}, indent=2) + '\n', encoding='utf-8')
     print(f"Runtime package: {output}")
     return 0
 

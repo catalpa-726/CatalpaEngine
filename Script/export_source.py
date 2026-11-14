@@ -36,7 +36,7 @@ def main():
         if path.relative_to(root).as_posix().casefold() == 'source-manifest.json':
             parser.error('A source file collides with the generated snapshot manifest')
     output.parent.mkdir(parents=True, exist_ok=True)
-    # Exclusive creation keeps a previous archive intact even when validation fails.
+    # 以独占方式创建新归档，验证失败也能保留已有归档。
     manifest = {}
     with zipfile.ZipFile(output, 'x', compression=zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(paths):
@@ -49,7 +49,7 @@ def main():
                     digest.update(block)
             manifest[name] = digest.hexdigest()
         archive.writestr('source-manifest.json', json.dumps({'schemaVersion': 1,
-            'dependenciesIncluded': args.with_dependencies, 'files': manifest}, indent=2) + '\n')
+                                                             'dependenciesIncluded': args.with_dependencies, 'files': manifest}, indent=2) + '\n')
     print(output)
 
 

@@ -1,0 +1,23 @@
+BasedOnStyle: LLVM
+Standard: c++20
+IndentWidth: 4
+TabWidth: 4
+UseTab: ForIndentation
+NamespaceIndentation: All
+AccessModifierOffset: -4
+ContinuationIndentWidth: 4
+AlignAfterOpenBracket: DontAlign
+AlignOperands: DontAlign
+AlignTrailingComments: Never
+ColumnLimit: 120
+PointerAlignment: Left
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+SortIncludes: Never
+SortUsingDeclarations: Never
+BreakStringLiterals: false
+ReflowComments: false
+FixNamespaceComments: false
+SkipMacroDefinitionBody: true
+WhitespaceSensitiveMacros: [CATALPA_IMPORT_STRINGIFY, CATALPA_IMPORT_STRINGIFY_IMPL, VMA_ASSERT]

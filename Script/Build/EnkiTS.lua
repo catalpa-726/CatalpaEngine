@@ -1,4 +1,4 @@
--- Build only the upstream C++ scheduler; retain examples and the C wrapper as source only.
+-- 只编译上游的 C++ 任务调度器；示例和 C 封装仅保留源码。
 local engineRoot = _MAIN_SCRIPT_DIR
 local enkiTSRoot = path.join(engineRoot, "Catalpa/third_party/enkiTS")
 
@@ -24,8 +24,10 @@ project "enkiTS"
         path.join(enkiTSRoot, "src")
     }
 
-    -- Consumers must also retain the upstream default of three task priorities.
-    -- No PCH is declared: the engine PCH belongs only to the Catalpa project.
-    -- Runtime and optimization settings follow the workspace configuration.
+    --[[
+    使用方应保留上游默认的三个任务优先级。
+    引擎的预编译头仅用于 Catalpa 工程，此处单独编译调度器。
+    运行时和优化选项沿用当前工作区配置。
+    ]]
 
 filter {}

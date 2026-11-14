@@ -2,16 +2,12 @@
 
 #include "catpch.h"
 
-
-namespace Catalpa
-{
+namespace Catalpa {
 	using KeyCode = uint16_t;
 
-	namespace Key
-	{
-		enum : KeyCode
-		{
-			// From glfw3.h
+	namespace Key {
+		enum : KeyCode {
+			/* 键码取自 glfw3.h。 */
 			Space = 32,
 			Apostrophe = 39, /* ' */
 			Comma = 44, /* , */
@@ -60,15 +56,15 @@ namespace Catalpa
 			Y = 89,
 			Z = 90,
 
-			LeftBracket = 91,  /* [ */
-			Backslash = 92,  /* \ */
-			RightBracket = 93,  /* ] */
-			GraveAccent = 96,  /* ` */
+			LeftBracket = 91, /* [ */
+			Backslash = 92, /* \ */
+			RightBracket = 93, /* ] */
+			GraveAccent = 96, /* ` */
 
-			World1 = 161, /* non-US #1 */
-			World2 = 162, /* non-US #2 */
+			World1 = 161, /* 非美式键盘扩展键 1。 */
+			World2 = 162, /* 非美式键盘扩展键 2。 */
 
-			/* Function keys */
+			/* 功能键。 */
 			Escape = 256,
 			Enter = 257,
 			Tab = 258,
@@ -114,7 +110,7 @@ namespace Catalpa
 			F24 = 313,
 			F25 = 314,
 
-			/* Keypad */
+			/* 数字小键盘。 */
 			KP0 = 320,
 			KP1 = 321,
 			KP2 = 322,

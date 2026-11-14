@@ -1,65 +1,76 @@
 import Common.Math;
 
-public struct LightData
-{
+public struct LightData {
     public float4 positionRange;
     public float4 directionOuterCos;
     public float4 colorIntensity;
     public float4 typeInnerCosShadow;
 };
-public struct LightingParameters
-{
+public struct LightingParameters {
     public float4 countEnvironment;
     public float4 shadowParameters;
     public float4 shadowViewProjection[4];
     public LightData lights[32];
-    public float4 fogColorDensity; // RGB为线性雾色，w为启用后的每米消光系数，0禁用。
+    public float4 fogColorDensity; /* RGB为线性雾色，w为启用后的每米消光系数，0禁用。 */
 };
 [[vk::binding(10, 0)]] public ConstantBuffer<LightingParameters> lightingData;
 [[vk::binding(11, 0)]] public Texture2D<float> shadowTexture;
 [[vk::binding(12, 0)]] public SamplerComparisonState shadowSampler;
 
-public float3 applyDistanceFog(float3 color, float3 worldPosition, float3 cameraPosition)
-{
+/**
+ * 根据相机到着色点的距离和每米消光系数，在线性 RGB 空间混合雾色。
+ * @param color 混合雾色之前的线性 RGB 颜色。
+ * @param worldPosition 着色点的世界坐标，单位为米。
+ * @param cameraPosition 相机的世界坐标，单位为米。
+ */
+public float3 applyDistanceFog(float3 color, float3 worldPosition, float3 cameraPosition) {
     float density = lightingData.fogColorDensity.w;
-    if (!(density > 0)) return color; // 避免零密度与无穷远距离相乘产生NaN。
-    // 先作半差再乘密度，避免大距离溢出后再与极小密度相乘而错误变成全雾。
+    if (!(density > 0))
+        return color; /* 避免零密度与无穷远距离相乘产生NaN。 */
+    /* 先作半差再乘密度，避免大距离溢出后再与极小密度相乘而错误变成全雾。 */
     float3 offset = (worldPosition * 0.5 - cameraPosition * 0.5) * density;
     float scale = max(abs(offset.x), max(abs(offset.y), abs(offset.z)));
-    if (isinf(scale)) return lightingData.fogColorDensity.rgb;
+    if (isinf(scale))
+        return lightingData.fogColorDensity.rgb;
     float opticalDepth = scale > 0 ? (2.0 * scale) * length(offset / scale) : 0;
     float transmission = exp(-opticalDepth);
     return color * transmission + lightingData.fogColorDensity.rgb * (1.0 - transmission);
 }
 
-public float shadowVisibility(float3 worldPosition)
-{
-    if (lightingData.shadowParameters.x < 0.5) return 1.0;
-    float4 projected = multiplyColumns(lightingData.shadowViewProjection[0], lightingData.shadowViewProjection[1],
+public float shadowVisibility(float3 worldPosition) {
+    if (lightingData.shadowParameters.x < 0.5)
+        return 1.0;
+    float4 projected = multiplyColumns(
+        lightingData.shadowViewProjection[0], lightingData.shadowViewProjection[1],
         lightingData.shadowViewProjection[2], lightingData.shadowViewProjection[3], float4(worldPosition, 1));
     float3 ndc = projected.xyz / projected.w;
     float2 uv = ndc.xy * 0.5 + 0.5;
-    if (any(uv < 0) || any(uv > 1) || ndc.z < 0 || ndc.z > 1) return 1.0;
+    if (any(uv < 0) || any(uv > 1) || ndc.z < 0 || ndc.z > 1)
+        return 1.0;
     float result = 0;
-    // 固定3x3 PCF；bias在CPU由世界米转换为光源ZO深度，不掩盖投影符号错误。
+    /* 固定3x3 PCF；bias在CPU由世界米转换为光源ZO深度，不掩盖投影符号错误。 */
     for (int y = -1; y <= 1; ++y)
         for (int x = -1; x <= 1; ++x)
             result += shadowTexture.SampleCmpLevelZero(shadowSampler,
-                uv + float2(x, y) * lightingData.shadowParameters.z, ndc.z - lightingData.shadowParameters.y);
+                                                       uv + float2(x, y) * lightingData.shadowParameters.z,
+                                                       ndc.z - lightingData.shadowParameters.y);
     return result / 9.0;
 }
 
-public float3 lightIncident(LightData light, float3 position, out float3 direction)
-{
-    if (light.typeInnerCosShadow.x < 0.5)
-    {
+/**
+ * 定向光直接使用照度，局部光按平方距离、作用范围及光锥衰减。
+ * @param light 单个光源的类型、颜色、强度及空间参数。
+ * @param position 着色点的世界坐标，单位为米。
+ * @param direction 输出从着色点指向光源的单位方向；超出局部光范围或方向退化时写入零向量。
+ */
+public float3 lightIncident(LightData light, float3 position, out float3 direction) {
+    if (light.typeInnerCosShadow.x < 0.5) {
         direction = -unitNormal(light.directionOuterCos.xyz);
-        return light.colorIntensity.rgb * light.colorIntensity.a; // lux。
+        return light.colorIntensity.rgb * light.colorIntensity.a; /* 定向光照度以勒克斯计。 */
     }
     float3 offset = light.positionRange.xyz - position;
     float maximumDistance = max(abs(offset.x), max(abs(offset.y), abs(offset.z)));
-    if (maximumDistance > light.positionRange.w)
-    {
+    if (maximumDistance > light.positionRange.w) {
         direction = float3(0);
         return float3(0);
     }
@@ -69,23 +80,28 @@ public float3 lightIncident(LightData light, float3 position, out float3 directi
     float cutoff = saturate(1.0 - pow(normalizedDistance, 4.0));
     float inverseDistance = 1.0 / max(actualDistance, 0.001);
     float attenuation = cutoff * cutoff;
-    if (light.typeInnerCosShadow.x > 1.5)
-    {
+    if (light.typeInnerCosShadow.x > 1.5) {
         float cone = dot(unitNormal(light.directionOuterCos.xyz), -direction);
         float inner = light.typeInnerCosShadow.y, outer = light.directionOuterCos.w;
         float spot = inner > outer ? saturate((cone - outer) / (inner - outer)) : step(outer, cone);
         attenuation *= spot * spot;
     }
-    // 先乘受检强度再两次除距离，避免1/r²先下溢而丢掉仍可表示的低照度。
-    return ((light.colorIntensity.rgb * light.colorIntensity.a) * inverseDistance) * inverseDistance * attenuation;
+    /* 先乘受检强度再两次除距离，避免1/r²先下溢而丢掉仍可表示的低照度。 */
+    return ((light.colorIntensity.rgb * light.colorIntensity.a) * inverseDistance) * inverseDistance *
+           attenuation;
 }
 
-// 每tile32灯与CPU正式容量一致；不支持compute时由CPU显式填充同格式列表。
-[[vk::binding(24,0)]] public ByteAddressBuffer culledLights;
+/* 每tile32灯与CPU正式容量一致；不支持compute时由CPU显式填充同格式列表。 */
+[[vk::binding(24, 0)]] public ByteAddressBuffer culledLights;
+
 public uint tileLightBase(float2 pixel) {
-    uint columns=culledLights.Load(0),rows=culledLights.Load(4);
-    uint2 tile=min(uint2(max(pixel,0))/16,uint2(columns,rows)-1);
-    return 16+(tile.y*columns+tile.x)*33*4;
+    uint columns = culledLights.Load(0), rows = culledLights.Load(4);
+    uint2 tile = min(uint2(max(pixel, 0)) / 16, uint2(columns, rows) - 1);
+    return 16 + (tile.y * columns + tile.x) * 33 * 4;
 }
-public uint tileLightCount(float2 pixel) {return min(culledLights.Load(tileLightBase(pixel)),32u);}
-public uint tileLightIndex(float2 pixel,uint index) {return culledLights.Load(tileLightBase(pixel)+4+index*4);}
+public uint tileLightCount(float2 pixel) {
+    return min(culledLights.Load(tileLightBase(pixel)), 32u);
+}
+public uint tileLightIndex(float2 pixel, uint index) {
+    return culledLights.Load(tileLightBase(pixel) + 4 + index * 4);
+}

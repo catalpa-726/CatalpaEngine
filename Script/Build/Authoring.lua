@@ -5,49 +5,48 @@ local dialogRoot = path.join(root, "Catalpa/third_party/nativefiledialog-extende
 local luaSource = path.join(root, IncludeDir.Lua)
 
 if not CATALPA_RUNTIME_ONLY then
-filter {}
-project "imgui-node-editor"
-    kind "StaticLib"
-    language "C++"
-    cppdialect "C++20"
-    staticruntime "Off"
+    filter {}
+    project "imgui-node-editor"
+        kind "StaticLib"
+        language "C++"
+        cppdialect "C++20"
+        staticruntime "Off"
 
-    location(path.join(root, "out/projects/imgui-node-editor"))
-    targetdir(path.join(root, "bin/" .. outputdir .. "/%{prj.name}"))
-    objdir(path.join(root, "bin-int/" .. outputdir .. "/%{prj.name}"))
+        location(path.join(root, "out/projects/imgui-node-editor"))
+        targetdir(path.join(root, "bin/" .. outputdir .. "/%{prj.name}"))
+        objdir(path.join(root, "bin-int/" .. outputdir .. "/%{prj.name}"))
 
-    files {
-        path.join(nodeRoot, "*.h"),
-        path.join(nodeRoot, "*.inl"),
-        path.join(nodeRoot, "crude_json.cpp"),
-        path.join(nodeRoot, "imgui_canvas.cpp"),
-        path.join(nodeRoot, "imgui_node_editor.cpp"),
-        path.join(nodeRoot, "imgui_node_editor_api.cpp")
-    }
-    includedirs { nodeRoot, path.join(root, IncludeDir.imgui) }
+        files {
+            path.join(nodeRoot, "*.h"),
+            path.join(nodeRoot, "*.inl"),
+            path.join(nodeRoot, "crude_json.cpp"),
+            path.join(nodeRoot, "imgui_canvas.cpp"),
+            path.join(nodeRoot, "imgui_node_editor.cpp"),
+            path.join(nodeRoot, "imgui_node_editor_api.cpp")
+        }
+        includedirs { nodeRoot, path.join(root, IncludeDir.imgui) }
 
-    -- 调用 Catalpa.dll 中的唯一 ImGui 实现，不链接示例自带的 ImGui。
-    links { "Catalpa" }
-    filter "system:windows"
-        defines { "IMGUI_API=__declspec(dllimport)" }
+        -- 调用 Catalpa.dll 中的唯一 ImGui 实现，不链接示例自带的 ImGui。
+        links { "Catalpa" }
+        filter "system:windows"
+            defines { "IMGUI_API=__declspec(dllimport)" }
 
-filter {}
-project "nativefiledialog-extended"
-    kind "StaticLib"
-    language "C++"
-    cppdialect "C++20"
-    staticruntime "Off"
+    filter {}
+    project "nativefiledialog-extended"
+        kind "StaticLib"
+        language "C++"
+        cppdialect "C++20"
+        staticruntime "Off"
 
-    location(path.join(root, "out/projects/nativefiledialog-extended"))
-    targetdir(path.join(root, "bin/" .. outputdir .. "/%{prj.name}"))
-    objdir(path.join(root, "bin-int/" .. outputdir .. "/%{prj.name}"))
+        location(path.join(root, "out/projects/nativefiledialog-extended"))
+        targetdir(path.join(root, "bin/" .. outputdir .. "/%{prj.name}"))
+        objdir(path.join(root, "bin-int/" .. outputdir .. "/%{prj.name}"))
 
-    files { path.join(dialogRoot, "src/include/*.h"), path.join(dialogRoot, "src/include/*.hpp") }
-    includedirs { path.join(root, IncludeDir.NativeFileDialog) }
-    filter "system:windows"
-        files { path.join(dialogRoot, "src/nfd_win.cpp") }
-        links { "ole32", "uuid", "shell32" }
-
+        files { path.join(dialogRoot, "src/include/*.h"), path.join(dialogRoot, "src/include/*.hpp") }
+        includedirs { path.join(root, IncludeDir.NativeFileDialog) }
+        filter "system:windows"
+            files { path.join(dialogRoot, "src/nfd_win.cpp") }
+            links { "ole32", "uuid", "shell32" }
 end
 
 filter {}

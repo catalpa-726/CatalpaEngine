@@ -40,8 +40,10 @@ project "imgui"
 
     filter {}
 
--- ImGuizmo 与唯一的 ImGui 实现共用 Catalpa.dll；Editor 仅导入并消费编辑意图。
--- 由根脚本在 Catalpa 项目中调用，不创建新目标，也不编译上游示例或其他控件。
+--[[
+ImGuizmo 与唯一的 ImGui 实现共用 Catalpa.dll；Editor 仅导入并消费编辑意图。
+由根脚本在 Catalpa 项目中调用，不创建新目标，也不编译上游示例或其他控件。
+]]
 CatalpaImGuiBuild = {}
 
 function CatalpaImGuiBuild.AttachGizmoImplementation()

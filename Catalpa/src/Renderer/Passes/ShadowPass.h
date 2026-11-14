@@ -4,10 +4,10 @@
 #include "RHI/RHIError.h"
 
 namespace Catalpa {
-    class RenderGraph;
-    // 首版单定向光shadow map；点/聚光仍参与照明，阴影预算不静默扩张。
-    class ShadowPass {
-    public:
-        [[nodiscard]] static RHIStatus Add(RenderGraph&, std::span<const RGIndexedDrawDesc> draws);
-    };
+	class RenderGraph;
+	/* 首版只为一个方向光生成阴影贴图，点光源和聚光灯仍参与照明。阴影所需资源受既定预算限制。 */
+	class ShadowPass {
+	public:
+		[[nodiscard]] static RHIStatus Add(RenderGraph&, std::span<const RGIndexedDrawDesc> draws);
+	};
 }

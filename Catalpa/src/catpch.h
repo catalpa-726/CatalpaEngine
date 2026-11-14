@@ -29,7 +29,7 @@
 
 #include <span>
 
-// S03.2 时间/输入/平台路径与确定性调度共用的标准库头。
+/* S03.2 时间/输入/平台路径与确定性调度共用的标准库头。 */
 #include <atomic>
 #include <compare>
 #include <filesystem>
@@ -39,17 +39,17 @@
 #include <optional>
 #include <thread>
 
-// S04 配置值、文件错误与平台参数转换共享标准头。
+/* S04 配置值、文件错误与平台参数转换共享标准头。 */
 #include <variant>
 #include <system_error>
 #include <cwchar>
 #include <streambuf>
 
-// S04受检领域载荷的运行期类型身份。
+/* S04受检领域载荷的运行期类型身份。 */
 #include <typeindex>
 
 #include <tuple>
 
-// 有界日志订阅及工具进度值快照共用，不传播UI对象到日志生产线程。
+/* 有界日志订阅及工具进度值快照共用，不传播UI对象到日志生产线程。 */
 #include <mutex>
 #include <deque>

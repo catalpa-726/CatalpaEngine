@@ -7,6 +7,9 @@ import subprocess
 import tempfile
 
 
+# 使用目标目录下的临时文件原子发布，已有内容相同时跳过写入。
+# @param path 要发布的目标文件路径。
+# @param data 目标文件的完整字节内容。
 def publish(path, data):
     if path.is_file() and path.read_bytes() == data:
         return

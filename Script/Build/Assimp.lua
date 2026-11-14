@@ -1,5 +1,7 @@
--- 直接用Premake编译用户提供的Assimp及随包zlib，保留默认格式/处理器。
--- 本文件只配置静态库和生成头，不执行外部构建器、下载或Git。
+--[[
+直接用Premake编译用户提供的Assimp及随包zlib，保留默认格式/处理器。
+本文件只配置静态库和生成头，不执行外部构建器、下载或Git。
+]]
 local engineRoot = _MAIN_SCRIPT_DIR
 local assimpRoot = path.join(engineRoot, "Catalpa/third_party/assimp")
 local generatedRoot = path.join(engineRoot, "out/generated/Assimp")
@@ -12,7 +14,11 @@ local function readText(filename)
     return text
 end
 
--- 只生成自己out目录的派生头；内容不变时不重写，避免无谓重编译。
+--[[
+在派生目录内写入 Assimp 配置头，已有内容相同时保留原文件。
+@param relative 相对于 out/generated/Assimp 的目标头文件路径。
+@param content 待写入的完整头文件内容。
+]]
 local function writeHeader(relative, content)
     local filename = path.join(generatedRoot, relative)
     if os.isfile(filename) and readText(filename) == content then return end
@@ -23,6 +29,11 @@ local function writeHeader(relative, content)
     assert(file:close())
 end
 
+--[[
+将 CMake 开关写为 #undef，并替换模板中所有命名占位符。
+@param template 相对于 Assimp 源码根目录的头文件模板路径。
+@param values 按占位符名称索引的替换值表，缺少条目时报告错误。
+]]
 local function configureHeader(template, values)
     local text = readText(path.join(assimpRoot, template))
     text = text:gsub("#cmakedefine%s+([%w_]+)[^\r\n]*", "/* #undef %1 */")
@@ -77,14 +88,16 @@ project "AssimpZlib"
         path.join(generatedRoot, "zlib/zconf.h")
     }
 
--- 与上游默认配置对应的普通C/C++实现清单；不把可选平台、工具或测试递归编入库。
--- 该清单包含默认importer/exporter及其随包依赖，并对共享实现去重。
+--[[
+与上游默认配置对应的普通C/C++实现清单；不把可选平台、工具或测试递归编入库。
+该清单包含默认importer/exporter及其随包依赖，并对共享实现去重。
+]]
 local assimpSources = {
-    -- Core_SRCS
+    -- 核心源码
     "code/Common/Assimp.cpp",
-    -- Logging_SRCS
+    -- 日志源码
     "code/Common/DefaultLogger.cpp",
-    -- Common_SRCS
+    -- 公共实现源码
     "code/Common/Compression.cpp",
     "code/Common/BaseImporter.cpp",
     "code/Common/BaseProcess.cpp",
@@ -114,13 +127,13 @@ local assimpSources = {
     "code/Common/AssertHandler.cpp",
     "code/Common/Exceptional.cpp",
     "code/Common/Base64.cpp",
-    -- CApi_SRCS
+    -- C 接口源码
     "code/CApi/CInterfaceIOWrapper.cpp",
-    -- Geometry_SRCS
+    -- 几何源码
     "code/Geometry/GeometryUtils.cpp",
-    -- MaterialSystem_SRCS
+    -- 材质系统源码
     "code/Material/MaterialSystem.cpp",
-    -- PostProcessing_SRCS
+    -- 后处理源码
     "code/PostProcessing/CalcTangentsProcess.cpp",
     "code/PostProcessing/ComputeUVMappingProcess.cpp",
     "code/PostProcessing/ConvertToLHProcess.cpp",
@@ -152,127 +165,127 @@ local assimpSources = {
     "code/PostProcessing/ArmaturePopulate.cpp",
     "code/PostProcessing/GenBoundingBoxesProcess.cpp",
     "code/PostProcessing/SplitByBoneCountProcess.cpp",
-    -- STEPParser_SRCS
+    -- STEP 解析源码
     "code/AssetLib/STEPParser/STEPFileReader.cpp",
     "code/AssetLib/STEPParser/STEPFileEncoding.cpp",
-    -- glTFCommon_src
+    -- glTF 公共实现源码
     "code/AssetLib/glTFCommon/glTFCommon.cpp",
-    -- Exporter_SRCS
+    -- 导出框架源码
     "code/Common/Exporter.cpp",
     "code/CApi/AssimpCExport.cpp",
-    -- FBX_COMMON_SRCS
+    -- FBX 公共实现源码
     "code/AssetLib/FBX/FBXUtil.cpp",
-    -- Pugixml_SRCS
+    -- Pugixml 解析库源码
     "code/../contrib/pugixml/src/pugixml.cpp",
-    -- Clipper_SRCS
+    -- Clipper 裁剪库源码
     "code/../contrib/clipper/clipper.cpp",
-    -- Poly2Tri_SRCS
+    -- Poly2Tri 三角剖分库源码
     "code/../contrib/poly2tri/poly2tri/common/shapes.cc",
     "code/../contrib/poly2tri/poly2tri/sweep/advancing_front.cc",
     "code/../contrib/poly2tri/poly2tri/sweep/cdt.cc",
     "code/../contrib/poly2tri/poly2tri/sweep/sweep.cc",
     "code/../contrib/poly2tri/poly2tri/sweep/sweep_context.cc",
-    -- unzip_SRCS
+    -- ZIP 解包源码
     "code/../contrib/unzip/ioapi.c",
     "code/../contrib/unzip/unzip.c",
-    -- ziplib_SRCS
+    -- ZIP 打包源码
     "code/../contrib/zip/src/zip.c",
-    -- openddl_parser_SRCS
+    -- OpenDDL 解析库源码
     "code/../contrib/openddlparser/code/OpenDDLParser.cpp",
     "code/../contrib/openddlparser/code/DDLNode.cpp",
     "code/../contrib/openddlparser/code/OpenDDLCommon.cpp",
     "code/../contrib/openddlparser/code/OpenDDLExport.cpp",
     "code/../contrib/openddlparser/code/Value.cpp",
     "code/../contrib/openddlparser/code/OpenDDLStream.cpp",
-    -- open3dgc_SRCS
+    -- Open3DGC 几何编解码库源码
     "code/../contrib/Open3DGC/o3dgcArithmeticCodec.cpp",
     "code/../contrib/Open3DGC/o3dgcDynamicVectorDecoder.cpp",
     "code/../contrib/Open3DGC/o3dgcDynamicVectorEncoder.cpp",
     "code/../contrib/Open3DGC/o3dgcTools.cpp",
     "code/../contrib/Open3DGC/o3dgcTriangleFans.cpp",
-    -- IMPORTER:AMF
+    -- AMF 导入器
     "code/AssetLib/AMF/AMFImporter.cpp",
     "code/AssetLib/AMF/AMFImporter_Geometry.cpp",
     "code/AssetLib/AMF/AMFImporter_Material.cpp",
     "code/AssetLib/AMF/AMFImporter_Postprocess.cpp",
-    -- IMPORTER:3DS
+    -- 3DS 导入器
     "code/AssetLib/3DS/3DSConverter.cpp",
     "code/AssetLib/3DS/3DSLoader.cpp",
-    -- IMPORTER:AC
+    -- AC 导入器
     "code/AssetLib/AC/ACLoader.cpp",
-    -- IMPORTER:ASE
+    -- ASE 导入器
     "code/AssetLib/ASE/ASELoader.cpp",
     "code/AssetLib/ASE/ASEParser.cpp",
-    -- IMPORTER:ASSBIN
+    -- ASSBIN 导入器
     "code/AssetLib/Assbin/AssbinLoader.cpp",
-    -- IMPORTER:B3D
+    -- B3D 导入器
     "code/AssetLib/B3D/B3DImporter.cpp",
-    -- IMPORTER:BVH
+    -- BVH 导入器
     "code/AssetLib/BVH/BVHLoader.cpp",
-    -- IMPORTER:COLLADA
+    -- COLLADA 导入器
     "code/AssetLib/Collada/ColladaHelper.cpp",
     "code/AssetLib/Collada/ColladaLoader.cpp",
     "code/AssetLib/Collada/ColladaParser.cpp",
-    -- IMPORTER:DXF
+    -- DXF 导入器
     "code/AssetLib/DXF/DXFLoader.cpp",
-    -- IMPORTER:CSM
+    -- CSM 导入器
     "code/AssetLib/CSM/CSMLoader.cpp",
-    -- IMPORTER:HMP
+    -- HMP 导入器
     "code/AssetLib/HMP/HMPLoader.cpp",
-    -- IMPORTER:IRRMESH
+    -- IRRMESH 导入器
     "code/AssetLib/Irr/IRRMeshLoader.cpp",
     "code/AssetLib/Irr/IRRShared.cpp",
-    -- IMPORTER:IQM
+    -- IQM 导入器
     "code/AssetLib/IQM/IQMImporter.cpp",
-    -- IMPORTER:IRR
+    -- IRR 导入器
     "code/AssetLib/Irr/IRRLoader.cpp",
-    -- IMPORTER:LWO
+    -- LWO 导入器
     "code/AssetLib/LWO/LWOAnimation.cpp",
     "code/AssetLib/LWO/LWOBLoader.cpp",
     "code/AssetLib/LWO/LWOLoader.cpp",
     "code/AssetLib/LWO/LWOMaterial.cpp",
-    -- IMPORTER:LWS
+    -- LWS 导入器
     "code/AssetLib/LWS/LWSLoader.cpp",
-    -- IMPORTER:MD2
+    -- MD2 导入器
     "code/AssetLib/MD2/MD2Loader.cpp",
-    -- IMPORTER:MD3
+    -- MD3 导入器
     "code/AssetLib/MD3/MD3Loader.cpp",
-    -- IMPORTER:MD5
+    -- MD5 导入器
     "code/AssetLib/MD5/MD5Loader.cpp",
     "code/AssetLib/MD5/MD5Parser.cpp",
-    -- IMPORTER:MDC
+    -- MDC 导入器
     "code/AssetLib/MDC/MDCLoader.cpp",
-    -- IMPORTER:MDL
+    -- MDL 导入器
     "code/AssetLib/MDL/MDLLoader.cpp",
     "code/AssetLib/MDL/MDLMaterialLoader.cpp",
     "code/AssetLib/MDL/HalfLife/HL1MDLLoader.cpp",
     "code/AssetLib/MDL/HalfLife/UniqueNameGenerator.cpp",
-    -- IMPORTER:NFF
+    -- NFF 导入器
     "code/AssetLib/NFF/NFFLoader.cpp",
-    -- IMPORTER:NDO
+    -- NDO 导入器
     "code/AssetLib/NDO/NDOLoader.cpp",
-    -- IMPORTER:OFF
+    -- OFF 导入器
     "code/AssetLib/OFF/OFFLoader.cpp",
-    -- IMPORTER:OBJ
+    -- OBJ 导入器
     "code/AssetLib/Obj/ObjFileImporter.cpp",
     "code/AssetLib/Obj/ObjFileMtlImporter.cpp",
     "code/AssetLib/Obj/ObjFileParser.cpp",
-    -- IMPORTER:OGRE
+    -- OGRE 导入器
     "code/AssetLib/Ogre/OgreImporter.cpp",
     "code/AssetLib/Ogre/OgreStructs.cpp",
     "code/AssetLib/Ogre/OgreBinarySerializer.cpp",
     "code/AssetLib/Ogre/OgreXmlSerializer.cpp",
     "code/AssetLib/Ogre/OgreMaterial.cpp",
-    -- IMPORTER:OPENGEX
+    -- OPENGEX 导入器
     "code/AssetLib/OpenGEX/OpenGEXImporter.cpp",
-    -- IMPORTER:PLY
+    -- PLY 导入器
     "code/AssetLib/Ply/PlyLoader.cpp",
     "code/AssetLib/Ply/PlyParser.cpp",
-    -- IMPORTER:MS3D
+    -- MS3D 导入器
     "code/AssetLib/MS3D/MS3DLoader.cpp",
-    -- IMPORTER:COB
+    -- COB 导入器
     "code/AssetLib/COB/COBLoader.cpp",
-    -- IMPORTER:BLEND
+    -- BLEND 导入器
     "code/AssetLib/Blender/BlenderLoader.cpp",
     "code/AssetLib/Blender/BlenderDNA.cpp",
     "code/AssetLib/Blender/BlenderScene.cpp",
@@ -280,7 +293,7 @@ local assimpSources = {
     "code/AssetLib/Blender/BlenderBMesh.cpp",
     "code/AssetLib/Blender/BlenderTessellator.cpp",
     "code/AssetLib/Blender/BlenderCustomData.cpp",
-    -- IMPORTER:IFC
+    -- IFC 导入器
     "code/AssetLib/IFC/IFCLoader.cpp",
     "code/AssetLib/IFC/IFCReaderGen1_2x3.cpp",
     "code/AssetLib/IFC/IFCReaderGen2_2x3.cpp",
@@ -291,9 +304,9 @@ local assimpSources = {
     "code/AssetLib/IFC/IFCCurve.cpp",
     "code/AssetLib/IFC/IFCBoolean.cpp",
     "code/AssetLib/IFC/IFCOpenings.cpp",
-    -- IMPORTER:XGL
+    -- XGL 导入器
     "code/AssetLib/XGL/XGLLoader.cpp",
-    -- IMPORTER:FBX
+    -- FBX 导入器
     "code/AssetLib/FBX/FBXImporter.cpp",
     "code/AssetLib/FBX/FBXParser.cpp",
     "code/AssetLib/FBX/FBXTokenizer.cpp",
@@ -308,27 +321,27 @@ local assimpSources = {
     "code/AssetLib/FBX/FBXDeformer.cpp",
     "code/AssetLib/FBX/FBXBinaryTokenizer.cpp",
     "code/AssetLib/FBX/FBXDocumentUtil.cpp",
-    -- IMPORTER:Q3D
+    -- Q3D 导入器
     "code/AssetLib/Q3D/Q3DLoader.cpp",
-    -- IMPORTER:Q3BSP
+    -- Q3BSP 导入器
     "code/AssetLib/Q3BSP/Q3BSPFileParser.cpp",
     "code/AssetLib/Q3BSP/Q3BSPFileImporter.cpp",
-    -- IMPORTER:RAW
+    -- RAW 导入器
     "code/AssetLib/Raw/RawLoader.cpp",
-    -- IMPORTER:SIB
+    -- SIB 导入器
     "code/AssetLib/SIB/SIBImporter.cpp",
-    -- IMPORTER:SMD
+    -- SMD 导入器
     "code/AssetLib/SMD/SMDLoader.cpp",
-    -- IMPORTER:STL
+    -- STL 导入器
     "code/AssetLib/STL/STLLoader.cpp",
-    -- IMPORTER:TERRAGEN
+    -- TERRAGEN 导入器
     "code/AssetLib/Terragen/TerragenLoader.cpp",
-    -- IMPORTER:3D
+    -- 3D 导入器
     "code/AssetLib/Unreal/UnrealLoader.cpp",
-    -- IMPORTER:X
+    -- X 导入器
     "code/AssetLib/X/XFileImporter.cpp",
     "code/AssetLib/X/XFileParser.cpp",
-    -- IMPORTER:X3D
+    -- X3D 导入器
     "code/AssetLib/X3D/X3DImporter.cpp",
     "code/AssetLib/X3D/X3DImporter_Geometry2D.cpp",
     "code/AssetLib/X3D/X3DImporter_Geometry3D.cpp",
@@ -343,54 +356,54 @@ local assimpSources = {
     "code/AssetLib/X3D/X3DGeoHelper.cpp",
     "code/AssetLib/X3D/X3DXmlHelper.cpp",
     "code/AssetLib/VRML/VrmlConverter.cpp",
-    -- IMPORTER:GLTF
+    -- GLTF 导入器
     "code/AssetLib/glTF/glTFImporter.cpp",
     "code/AssetLib/glTF2/glTF2Importer.cpp",
-    -- IMPORTER:3MF
+    -- 3MF 导入器
     "code/AssetLib/3MF/XmlSerializer.cpp",
     "code/AssetLib/3MF/D3MFImporter.cpp",
     "code/AssetLib/3MF/D3MFOpcPackage.cpp",
-    -- IMPORTER:MMD
+    -- MMD 导入器
     "code/AssetLib/MMD/MMDImporter.cpp",
     "code/AssetLib/MMD/MMDPmxParser.cpp",
-    -- EXPORTER:OBJ
+    -- OBJ 导出器
     "code/AssetLib/Obj/ObjExporter.cpp",
-    -- EXPORTER:OPENGEX
+    -- OPENGEX 导出器
     "code/AssetLib/OpenGEX/OpenGEXExporter.cpp",
-    -- EXPORTER:PLY
+    -- PLY 导出器
     "code/AssetLib/Ply/PlyExporter.cpp",
-    -- EXPORTER:3DS
+    -- 3DS 导出器
     "code/AssetLib/3DS/3DSExporter.cpp",
-    -- EXPORTER:ASSBIN
+    -- ASSBIN 导出器
     "code/AssetLib/Assbin/AssbinExporter.cpp",
     "code/AssetLib/Assbin/AssbinFileWriter.cpp",
-    -- EXPORTER:ASSXML
+    -- ASSXML 导出器
     "code/AssetLib/Assxml/AssxmlExporter.cpp",
     "code/AssetLib/Assxml/AssxmlFileWriter.cpp",
-    -- EXPORTER:COLLADA
+    -- COLLADA 导出器
     "code/AssetLib/Collada/ColladaExporter.cpp",
-    -- EXPORTER:FBX
+    -- FBX 导出器
     "code/AssetLib/FBX/FBXExporter.cpp",
     "code/AssetLib/FBX/FBXExportNode.cpp",
     "code/AssetLib/FBX/FBXExportProperty.cpp",
-    -- EXPORTER:STL
+    -- STL 导出器
     "code/AssetLib/STL/STLExporter.cpp",
-    -- EXPORTER:X
+    -- X 导出器
     "code/AssetLib/X/XFileExporter.cpp",
-    -- EXPORTER:X3D
+    -- X3D 导出器
     "code/AssetLib/X3D/X3DExporter.cpp",
-    -- EXPORTER:GLTF
+    -- GLTF 导出器
     "code/AssetLib/glTF/glTFExporter.cpp",
     "code/AssetLib/glTF2/glTF2Exporter.cpp",
-    -- EXPORTER:3MF
+    -- 3MF 导出器
     "code/AssetLib/3MF/D3MFExporter.cpp",
-    -- EXPORTER:PBRT
+    -- PBRT 导出器
     "code/Pbrt/PbrtExporter.cpp",
-    -- EXPORTER:ASSJSON
+    -- ASSJSON 导出器
     "code/AssetLib/Assjson/cencode.c",
     "code/AssetLib/Assjson/json_exporter.cpp",
     "code/AssetLib/Assjson/mesh_splitter.cpp",
-    -- EXPORTER:STEP
+    -- STEP 导出器
     "code/AssetLib/Step/StepExporter.cpp",
 }
 

@@ -1,235 +1,267 @@
 #include "catpch.h"
+
 #include "Renderer/RenderScene.h"
+
 #include "Camera/CameraProjection.h"
 #include "Geometry/MeshValidation.h"
 #include "Materials/MaterialValidation.h"
 #include "Lighting/LightValidation.h"
 #include "Renderer/Lighting/LightData.h"
 
-
 namespace Catalpa {
-    namespace {
-        // 消费者入口拒绝任意非有限矩阵，避免坏包污染已接受的快照。
-        bool IsFinite(const Math::Mat4& matrix) noexcept
-        {
-            for (int column = 0; column < 4; ++column)
-                for (int row = 0; row < 4; ++row)
-                    if (!std::isfinite(matrix[column][row])) return false;
-            return true;
-        }
-    }
+	namespace {
+		/**
+		 * @brief 消费者入口拒绝任意非有限矩阵，避免坏包污染已接受的快照。
+		 *
+		 * @param[in] matrix 待逐元素检查的 4×4 矩阵，任一非有限分量都会使检查失败。
+		 *
+		 * @return 矩阵全部 16 个元素均为有限值时返回 true。
+		 */
+		bool IsFinite(const Math::Mat4& matrix) noexcept {
+			for (int column = 0; column < 4; ++column)
+				for (int row = 0; row < 4; ++row)
+					if (!std::isfinite(matrix[column][row]))
+						return false;
+			return true;
+		}
+	}
 
-    Math::MathStatus BuildRenderMeshInstance(RenderInstanceId id, const MeshResourceRef& mesh,
-        const Math::Mat4& world, const Math::Vec4& color, RenderMeshInstance& output) noexcept
-    {
-        if (!id.HasValue()) return { Math::MathError::OutOfRange, "Mesh instance identity is invalid" };
-        if (const auto status = ValidateMeshResource(mesh); !status.IsSuccess()) return { Math::MathError::OutOfRange, status.message };
-        for (int channel = 0; channel < 4; ++channel)
-            if (!std::isfinite(color[channel]) || color[channel] < 0.0f || (channel == 3 && color[channel] > 1.0f))
-                return { Math::MathError::OutOfRange, "Mesh instance color is outside its finite linear range" };
-        Math::Mat4 inverse{ 1.0f };
-        if (const auto status = Math::InverseAffine(world, inverse); !status.IsSuccess()) return status;
-        RenderMeshInstance candidate;
-        candidate.id = id;
-        candidate.mesh = mesh;
-        candidate.worldMatrix = world;
-        // n_world=(M^-1)^T*n_local；不能把非均匀缩放的normal当position直接乘M。
-        candidate.normalMatrix = glm::transpose(Math::Mat3{ inverse });
-        for (int column = 0; column < 3; ++column)
-            for (int row = 0; row < 3; ++row)
-                if (!std::isfinite(candidate.normalMatrix[column][row]))
-                    return { Math::MathError::NonFinite, "Mesh normal matrix is not finite" };
-        if (const auto status = TransformBounds(mesh->GetData().localBounds, world, candidate.worldBounds); !status.IsSuccess()) return status;
-        candidate.color = color;
-        output = std::move(candidate);
-        return {};
-    }
+	Math::MathStatus BuildRenderMeshInstance(RenderInstanceId id, const MeshResourceRef& mesh, const Math::Mat4& world,
+	    const Math::Vec4& color, RenderMeshInstance& output) noexcept {
+		if (!id.HasValue())
+			return {Math::MathError::OutOfRange, "Mesh instance identity is invalid"};
+		if (const auto status = ValidateMeshResource(mesh); !status.IsSuccess())
+			return {Math::MathError::OutOfRange, status.message};
+		for (int channel = 0; channel < 4; ++channel)
+			if (!std::isfinite(color[channel]) || color[channel] < 0.0f || (channel == 3 && color[channel] > 1.0f))
+				return {Math::MathError::OutOfRange, "Mesh instance color is outside its finite linear range"};
+		Math::Mat4 inverse{1.0f};
+		if (const auto status = Math::InverseAffine(world, inverse); !status.IsSuccess())
+			return status;
+		RenderMeshInstance candidate;
+		candidate.id = id;
+		candidate.mesh = mesh;
+		candidate.worldMatrix = world;
+		/* n_world=(M^-1)^T*n_local；不能把非均匀缩放的normal当position直接乘M。 */
+		candidate.normalMatrix = glm::transpose(Math::Mat3{inverse});
+		for (int column = 0; column < 3; ++column)
+			for (int row = 0; row < 3; ++row)
+				if (!std::isfinite(candidate.normalMatrix[column][row]))
+					return {Math::MathError::NonFinite, "Mesh normal matrix is not finite"};
+		if (const auto status = TransformBounds(mesh->GetData().localBounds, world, candidate.worldBounds);
+		    !status.IsSuccess())
+			return status;
+		candidate.color = color;
+		output = std::move(candidate);
+		return {};
+	}
 
-    Math::MathStatus RenderScene::Apply(RenderFramePacket packet)
-    {
-        if (packet.sequence == 0 || packet.sequence <= m_Frame.sequence)
-            return { Math::MathError::OutOfRange, "Render frame sequence is stale or invalid" };
-        if (packet.sceneIdentity == 0 && (!packet.transforms.empty() || !packet.views.empty()
-            || !packet.instances.empty() || !packet.lights.empty() || packet.environment))
-            return { Math::MathError::OutOfRange, "Render frame records require a source scene identity" };
-        const auto& time = packet.time;
-        if (!std::isfinite(time.realDeltaSeconds) || time.realDeltaSeconds < 0.0
-            || !std::isfinite(time.fixedDeltaSeconds) || time.fixedDeltaSeconds <= 0.0
-            || !std::isfinite(time.simulationSeconds) || time.simulationSeconds < 0.0
-            || !std::isfinite(time.interpolationAlpha) || time.interpolationAlpha < 0.0 || time.interpolationAlpha > 1.0
-            || !std::isfinite(time.droppedSeconds) || time.droppedSeconds < 0.0 || time.firstTick == 0
-            || (time.tickCount != 0 && static_cast<uint64_t>(time.tickCount - 1) > std::numeric_limits<uint64_t>::max() - time.firstTick))
-            return { Math::MathError::OutOfRange, "Render frame time is invalid or overflows the tick range" };
-        try {
-            std::map<RenderInstanceId, const RenderSkinningInput*> skins;
-            for (const auto& skin : packet.skinning) {
-                std::string error;
-                const bool previouslyValidated =
-                    std::any_of(m_Frame.skinning.begin(), m_Frame.skinning.end(), [&](const auto& previous) {
-                        return previous.binding.GetId() == skin.binding.GetId() &&
-                               previous.binding.GetVersion() == skin.binding.GetVersion() &&
-                               previous.binding.Get() == skin.binding.Get();
-                    });
-                if (!skin.binding.HasValue() || !skin.binding.Get()->meshVersion.HasValue() ||
-                    !skin.binding.Get()->skeletonVersion.HasValue() ||
-                    skin.palette.size() != skin.binding.Get()->skeletonVersion.Get()->joints.size() ||
-                    (!previouslyValidated && !ValidateMeshSkinBinding(*skin.binding.Get(), error)) ||
-                    !skins.emplace(skin.id, &skin).second)
-                    return {Math::MathError::OutOfRange, "Invalid or duplicate fixed skinning input"};
-            }
+	Math::MathStatus RenderScene::Apply(RenderFramePacket packet) {
+		if (packet.sequence == 0 || packet.sequence <= m_Frame.sequence)
+			return {Math::MathError::OutOfRange, "Render frame sequence is stale or invalid"};
+		if (packet.sceneIdentity == 0 &&
+		    (!packet.transforms.empty() || !packet.views.empty() || !packet.instances.empty() ||
+		        !packet.lights.empty() || packet.environment))
+			return {Math::MathError::OutOfRange, "Render frame records require a source scene identity"};
+		const auto& time = packet.time;
+		if (!std::isfinite(time.realDeltaSeconds) || time.realDeltaSeconds < 0.0 ||
+		    !std::isfinite(time.fixedDeltaSeconds) || time.fixedDeltaSeconds <= 0.0 ||
+		    !std::isfinite(time.simulationSeconds) || time.simulationSeconds < 0.0 ||
+		    !std::isfinite(time.interpolationAlpha) || time.interpolationAlpha < 0.0 || time.interpolationAlpha > 1.0 ||
+		    !std::isfinite(time.droppedSeconds) || time.droppedSeconds < 0.0 || time.firstTick == 0 ||
+		    (time.tickCount != 0 &&
+		        static_cast<uint64_t>(time.tickCount - 1) > std::numeric_limits<uint64_t>::max() - time.firstTick))
+			return {Math::MathError::OutOfRange, "Render frame time is invalid or overflows the tick range"};
+		try {
+			std::map<RenderInstanceId, const RenderSkinningInput*> skins;
+			for (const auto& skin : packet.skinning) {
+				std::string error;
+				const bool previouslyValidated =
+				    std::any_of(m_Frame.skinning.begin(), m_Frame.skinning.end(), [&](const auto& previous) {
+					    return previous.binding.GetId() == skin.binding.GetId() &&
+					        previous.binding.GetVersion() == skin.binding.GetVersion() &&
+					        previous.binding.Get() == skin.binding.Get();
+				    });
+				if (!skin.binding.HasValue() || !skin.binding.Get()->meshVersion.HasValue() ||
+				    !skin.binding.Get()->skeletonVersion.HasValue() ||
+				    skin.palette.size() != skin.binding.Get()->skeletonVersion.Get()->joints.size() ||
+				    (!previouslyValidated && !ValidateMeshSkinBinding(*skin.binding.Get(), error)) ||
+				    !skins.emplace(skin.id, &skin).second)
+					return {Math::MathError::OutOfRange, "Invalid or duplicate fixed skinning input"};
+			}
 
-            std::set<RenderInstanceId> instances;
-            for (const auto& transform : packet.transforms) {
-                if (!transform.id.HasValue() || transform.id.scene != packet.sceneIdentity || !instances.insert(transform.id).second)
-                    return { Math::MathError::OutOfRange, "Render transform identity is foreign, invalid or duplicated" };
-                if (!IsFinite(transform.worldMatrix)) return { Math::MathError::NonFinite, "Render transform matrix is not finite" };
-                if (transform.worldMatrix[0][3] != 0.0f || transform.worldMatrix[1][3] != 0.0f
-                    || transform.worldMatrix[2][3] != 0.0f || transform.worldMatrix[3][3] != 1.0f)
-                    return { Math::MathError::NonAffine, "Render transform must preserve the affine world convention" };
-            }
-            std::set<RenderInstanceId> geometryInstances;
-            uint64_t additiveTriangles = 0;
-            constexpr uint64_t maximumAdditiveTriangles = 1'000'000;
-            for (const auto& instance : packet.instances) {
-                if (instance.id.scene != packet.sceneIdentity || !instances.contains(instance.id)
-                    || !geometryInstances.insert(instance.id).second)
-                    return { Math::MathError::OutOfRange, "Mesh instance has foreign, duplicated or missing transform identity" };
-                const auto source = std::find_if(packet.transforms.begin(), packet.transforms.end(),
-                    [&](const RenderTransform& transform) { return transform.id == instance.id; });
-                for (int column = 0; column < 4; ++column)
-                    for (int row = 0; row < 4; ++row)
-                        if (instance.worldMatrix[column][row] != source->worldMatrix[column][row])
-                            return { Math::MathError::OutOfRange, "Mesh instance and transform snapshot disagree" };
-                // 纯CPU旧测试可无资产身份；真实渲染缓存入口要求完整固定版本和槽映射。
-                if (instance.meshVersion.HasValue()) {
-                    std::string error;
-                    if (!ValidateMeshAsset(*instance.meshVersion.Get(), error) || instance.meshVersion.Get()->mesh != instance.mesh
-                        || instance.materials.size() != instance.meshVersion.Get()->materialSlots.size())
-                        return { Math::MathError::OutOfRange, "Mesh version and material slots disagree with snapshot" };
-                    for (const auto& material : instance.materials)
-                        if (!material.HasValue() || !ValidateMaterialInstance(*material.Get(), error))
-                            return { Math::MathError::OutOfRange, "Material snapshot requires a validated fixed version" };
-                    for (const auto& material : instance.materials)
-                        if (material.Get()->definition.Get()->shadingModel == MaterialShadingModel::Pbr
-                            && (instance.color.x > 1 || instance.color.y > 1 || instance.color.z > 1))
-                            return { Math::MathError::OutOfRange, "PBR instance tint is reflectance in [0,1]; HDR energy belongs in emissive" };
-                    if (instance.color.x > 1.0e8f || instance.color.y > 1.0e8f || instance.color.z > 1.0e8f)
-                        return { Math::MathError::OutOfRange, "Surface instance tint exceeds the explicit 1e8 finite shading budget" };
-                    // 单submesh可包含重叠三角形；按所有潜在Additive三角形计预算，不能只数draw。
-                    for (const auto& submesh : instance.mesh->GetData().submeshes)
-                        if (instance.materials[submesh.materialSlot].Get()->renderState.blend == MaterialBlendMode::Additive) {
-                            const uint64_t count = submesh.indexCount / 3;
-                            if (count > maximumAdditiveTriangles - additiveTriangles)
-                                return { Math::MathError::OutOfRange, "Frame exceeds the explicit one-million Additive triangle budget" };
-                            additiveTriangles += count;
-                        }
-                } else if (!instance.materials.empty())
-                    return { Math::MathError::OutOfRange, "Material snapshot requires mesh asset identity" };
-                RenderMeshInstance expected;
-                if (const auto status = BuildRenderMeshInstance(instance.id, instance.mesh, instance.worldMatrix, instance.color, expected); !status.IsSuccess()) return status;
-                if (const auto entry = skins.find(instance.id); entry != skins.end()) {
-                    const auto& skin = *entry->second;
-                    if (instance.meshVersion.Get() != skin.binding.Get()->meshVersion.Get() ||
-                        instance.meshVersion.GetId() != skin.binding.Get()->meshVersion.GetId() ||
-                        instance.meshVersion.GetVersion() != skin.binding.Get()->meshVersion.GetVersion())
-                        return {Math::MathError::OutOfRange,
-                                "Skinning input and render mesh versions disagree"};
-                    Aabb local;
-                    for (const auto& matrix : skin.palette) {
-                        Aabb transformed, merged;
-                        if (const auto status =
-                                TransformBounds(instance.mesh->GetData().localBounds, matrix, transformed);
-                            !status.IsSuccess())
-                            return status;
-                        if (const auto status = MergeBounds(local, transformed, merged); !status.IsSuccess())
-                            return status;
-                        local = merged;
-                    }
-                    if (const auto status =
-                            TransformBounds(local, instance.worldMatrix, expected.worldBounds);
-                        !status.IsSuccess())
-                        return status;
-                    skins.erase(entry);
-                }
-                for (int column = 0; column < 3; ++column)
-                    for (int row = 0; row < 3; ++row) {
-                        const double actual = instance.normalMatrix[column][row], required = expected.normalMatrix[column][row];
-                        if (!std::isfinite(actual) || std::abs(actual - required) > Math::RecompositionTolerance * std::abs(required))
-                            return { Math::MathError::OutOfRange, "Mesh normal matrix disagrees with inverse transpose" };
-                    }
-                if (const auto status = ValidateBounds(instance.worldBounds); !status.IsSuccess()) return status;
-                if (instance.worldBounds.empty != expected.worldBounds.empty)
-                    return { Math::MathError::OutOfRange, "Mesh world bounds have inconsistent empty state" };
-                if (!expected.worldBounds.empty)
-                    for (int axis = 0; axis < 3; ++axis)
-                        if (instance.worldBounds.minimum[axis] > expected.worldBounds.minimum[axis]
-                            || instance.worldBounds.maximum[axis] < expected.worldBounds.maximum[axis])
-                            return { Math::MathError::OutOfRange, "Mesh world bounds are not conservative" };
-            }
-            if (!skins.empty())
-                return {Math::MathError::OutOfRange, "Skinning input has no mesh instance"};
-            std::set<uint64_t> views;
-            if (packet.lights.size() > MaximumRenderLights)
-                return { Math::MathError::OutOfRange, "Render light count exceeds the explicit 32-light budget" };
-            std::set<RenderInstanceId> lightIds;
-            for (const auto& light : packet.lights) {
-                std::string error;
-                if (!instances.contains(light.id) || !lightIds.insert(light.id).second
-                    || !ValidateLightParameters(light.parameters, error))
-                    return { Math::MathError::OutOfRange, "Render light identity or parameters are invalid" };
-                double length2 = 0;
-                for (int axis = 0; axis < 3; ++axis) {
-                    if (!std::isfinite(light.position[axis]) || !std::isfinite(light.direction[axis]))
-                        return { Math::MathError::NonFinite, "Render light position or direction is not finite" };
-                    length2 += double(light.direction[axis]) * light.direction[axis];
-                }
-                if (std::abs(length2 - 1.0) > 2.0e-4)
-                    return { Math::MathError::OutOfRange, "Render light direction must have unit length" };
-                const auto source = std::find_if(packet.transforms.begin(), packet.transforms.end(),
-                    [&](const auto& transform) { return transform.id == light.id; });
-                Math::Vec3 direction;
-                if (!TryGetWorldLightDirection(source->worldMatrix, direction))
-                    return { Math::MathError::OutOfRange, "Render light source direction is degenerate" };
-                for (int axis = 0; axis < 3; ++axis)
-                    if (light.position[axis] != source->worldMatrix[3][axis]
-                        || std::abs(light.direction[axis] - direction[axis]) > 2.0e-5f)
-                        return { Math::MathError::OutOfRange, "Render light and source transform snapshot disagree" };
-            }
-            if (packet.environment) {
-                std::string error;
-                if (!ValidateEnvironmentSettings(packet.environment->settings, error))
-                    return { Math::MathError::OutOfRange, "Render environment settings are invalid" };
-                const auto& version = packet.environment->version;
-                if (version.HasValue()) {
-                    if (version.GetId() != packet.environment->asset.id)
-                        return { Math::MathError::OutOfRange, "Render environment fixed version identity disagrees with its handle" };
-                    if ((!m_Frame.environment || m_Frame.environment->version.Get() != version.Get())
-                        && !ValidateEnvironmentAsset(*version.Get(), error))
-                        return { Math::MathError::OutOfRange, "Render environment fixed version is invalid" };
-                }
-            }
-            for (const auto& view : packet.views) {
-                if (!views.insert(view.id).second)
-                    return { Math::MathError::OutOfRange, "Duplicate render view identity" };
-                if (const auto status = ValidateRenderView(view); !status.IsSuccess()) return status;
-                if (view.independentCamera) continue;
-                if (!view.camera.HasValue() || view.camera.scene != packet.sceneIdentity || !instances.contains(view.camera))
-                    return { Math::MathError::OutOfRange, "Scene camera has a foreign or missing source transform" };
-                // 实体相机还须对应同一源身份，不能借另一实体的姿态。
-                const auto source = std::find_if(packet.transforms.begin(), packet.transforms.end(),
-                    [&](const RenderTransform& transform) { return transform.id == view.camera; });
-                for (int column = 0; column < 4; ++column)
-                    for (int row = 0; row < 4; ++row)
-                        if (view.matrices.inverseView[column][row] != source->worldMatrix[column][row])
-                            return { Math::MathError::OutOfRange, "Render camera and source transform snapshot disagree" };
-            }
-            m_Frame = std::move(packet);
-            return {};
-        } catch (const std::bad_alloc&) {
-            return { Math::MathError::OutOfRange, "Cannot allocate render frame validation state" };
-        }
-    }
+			std::set<RenderInstanceId> instances;
+			for (const auto& transform : packet.transforms) {
+				if (!transform.id.HasValue() || transform.id.scene != packet.sceneIdentity ||
+				    !instances.insert(transform.id).second)
+					return {Math::MathError::OutOfRange, "Render transform identity is foreign, invalid or duplicated"};
+				if (!IsFinite(transform.worldMatrix))
+					return {Math::MathError::NonFinite, "Render transform matrix is not finite"};
+				if (transform.worldMatrix[0][3] != 0.0f || transform.worldMatrix[1][3] != 0.0f ||
+				    transform.worldMatrix[2][3] != 0.0f || transform.worldMatrix[3][3] != 1.0f)
+					return {Math::MathError::NonAffine, "Render transform must preserve the affine world convention"};
+			}
+			std::set<RenderInstanceId> geometryInstances;
+			uint64_t additiveTriangles = 0;
+			constexpr uint64_t maximumAdditiveTriangles = 1'000'000;
+			for (const auto& instance : packet.instances) {
+				if (instance.id.scene != packet.sceneIdentity || !instances.contains(instance.id) ||
+				    !geometryInstances.insert(instance.id).second)
+					return {Math::MathError::OutOfRange,
+					    "Mesh instance has foreign, duplicated or missing transform identity"};
+				const auto source = std::find_if(packet.transforms.begin(), packet.transforms.end(),
+				    [&](const RenderTransform& transform) { return transform.id == instance.id; });
+				for (int column = 0; column < 4; ++column)
+					for (int row = 0; row < 4; ++row)
+						if (instance.worldMatrix[column][row] != source->worldMatrix[column][row])
+							return {Math::MathError::OutOfRange, "Mesh instance and transform snapshot disagree"};
+				/* 纯CPU旧测试可无资产身份；真实渲染缓存入口要求完整固定版本和槽映射。 */
+				if (instance.meshVersion.HasValue()) {
+					std::string error;
+					if (!ValidateMeshAsset(*instance.meshVersion.Get(), error) ||
+					    instance.meshVersion.Get()->mesh != instance.mesh ||
+					    instance.materials.size() != instance.meshVersion.Get()->materialSlots.size())
+						return {Math::MathError::OutOfRange, "Mesh version and material slots disagree with snapshot"};
+					for (const auto& material : instance.materials)
+						if (!material.HasValue() || !ValidateMaterialInstance(*material.Get(), error))
+							return {
+							    Math::MathError::OutOfRange, "Material snapshot requires a validated fixed version"};
+					for (const auto& material : instance.materials)
+						if (material.Get()->definition.Get()->shadingModel == MaterialShadingModel::Pbr &&
+						    (instance.color.x > 1 || instance.color.y > 1 || instance.color.z > 1))
+							return {Math::MathError::OutOfRange,
+							    "PBR instance tint is reflectance in [0,1]; HDR energy belongs in emissive"};
+					if (instance.color.x > 1.0e8f || instance.color.y > 1.0e8f || instance.color.z > 1.0e8f)
+						return {Math::MathError::OutOfRange,
+						    "Surface instance tint exceeds the explicit 1e8 finite shading budget"};
+					/* 单submesh可包含重叠三角形；按所有潜在Additive三角形计预算，不能只数draw。 */
+					for (const auto& submesh : instance.mesh->GetData().submeshes)
+						if (instance.materials[submesh.materialSlot].Get()->renderState.blend ==
+						    MaterialBlendMode::Additive) {
+							const uint64_t count = submesh.indexCount / 3;
+							if (count > maximumAdditiveTriangles - additiveTriangles)
+								return {Math::MathError::OutOfRange,
+								    "Frame exceeds the explicit one-million Additive triangle budget"};
+							additiveTriangles += count;
+						}
+				} else if (!instance.materials.empty())
+					return {Math::MathError::OutOfRange, "Material snapshot requires mesh asset identity"};
+				RenderMeshInstance expected;
+				if (const auto status = BuildRenderMeshInstance(
+				        instance.id, instance.mesh, instance.worldMatrix, instance.color, expected);
+				    !status.IsSuccess())
+					return status;
+				if (const auto entry = skins.find(instance.id); entry != skins.end()) {
+					const auto& skin = *entry->second;
+					if (instance.meshVersion.Get() != skin.binding.Get()->meshVersion.Get() ||
+					    instance.meshVersion.GetId() != skin.binding.Get()->meshVersion.GetId() ||
+					    instance.meshVersion.GetVersion() != skin.binding.Get()->meshVersion.GetVersion())
+						return {Math::MathError::OutOfRange, "Skinning input and render mesh versions disagree"};
+					Aabb local;
+					for (const auto& matrix : skin.palette) {
+						Aabb transformed, merged;
+						if (const auto status =
+						        TransformBounds(instance.mesh->GetData().localBounds, matrix, transformed);
+						    !status.IsSuccess())
+							return status;
+						if (const auto status = MergeBounds(local, transformed, merged); !status.IsSuccess())
+							return status;
+						local = merged;
+					}
+					if (const auto status = TransformBounds(local, instance.worldMatrix, expected.worldBounds);
+					    !status.IsSuccess())
+						return status;
+					skins.erase(entry);
+				}
+				for (int column = 0; column < 3; ++column)
+					for (int row = 0; row < 3; ++row) {
+						const double actual = instance.normalMatrix[column][row],
+						             required = expected.normalMatrix[column][row];
+						if (!std::isfinite(actual) ||
+						    std::abs(actual - required) > Math::RecompositionTolerance * std::abs(required))
+							return {Math::MathError::OutOfRange, "Mesh normal matrix disagrees with inverse transpose"};
+					}
+				if (const auto status = ValidateBounds(instance.worldBounds); !status.IsSuccess())
+					return status;
+				if (instance.worldBounds.empty != expected.worldBounds.empty)
+					return {Math::MathError::OutOfRange, "Mesh world bounds have inconsistent empty state"};
+				if (!expected.worldBounds.empty)
+					for (int axis = 0; axis < 3; ++axis)
+						if (instance.worldBounds.minimum[axis] > expected.worldBounds.minimum[axis] ||
+						    instance.worldBounds.maximum[axis] < expected.worldBounds.maximum[axis])
+							return {Math::MathError::OutOfRange, "Mesh world bounds are not conservative"};
+			}
+			if (!skins.empty())
+				return {Math::MathError::OutOfRange, "Skinning input has no mesh instance"};
+			std::set<uint64_t> views;
+			if (packet.lights.size() > MaximumRenderLights)
+				return {Math::MathError::OutOfRange, "Render light count exceeds the explicit 32-light budget"};
+			std::set<RenderInstanceId> lightIds;
+			for (const auto& light : packet.lights) {
+				std::string error;
+				if (!instances.contains(light.id) || !lightIds.insert(light.id).second ||
+				    !ValidateLightParameters(light.parameters, error))
+					return {Math::MathError::OutOfRange, "Render light identity or parameters are invalid"};
+				double length2 = 0;
+				for (int axis = 0; axis < 3; ++axis) {
+					if (!std::isfinite(light.position[axis]) || !std::isfinite(light.direction[axis]))
+						return {Math::MathError::NonFinite, "Render light position or direction is not finite"};
+					length2 += double(light.direction[axis]) * light.direction[axis];
+				}
+				if (std::abs(length2 - 1.0) > 2.0e-4)
+					return {Math::MathError::OutOfRange, "Render light direction must have unit length"};
+				const auto source = std::find_if(packet.transforms.begin(), packet.transforms.end(),
+				    [&](const auto& transform) { return transform.id == light.id; });
+				Math::Vec3 direction;
+				if (!TryGetWorldLightDirection(source->worldMatrix, direction))
+					return {Math::MathError::OutOfRange, "Render light source direction is degenerate"};
+				for (int axis = 0; axis < 3; ++axis)
+					if (light.position[axis] != source->worldMatrix[3][axis] ||
+					    std::abs(light.direction[axis] - direction[axis]) > 2.0e-5f)
+						return {Math::MathError::OutOfRange, "Render light and source transform snapshot disagree"};
+			}
+			if (packet.environment) {
+				std::string error;
+				if (!ValidateEnvironmentSettings(packet.environment->settings, error))
+					return {Math::MathError::OutOfRange, "Render environment settings are invalid"};
+				const auto& version = packet.environment->version;
+				if (version.HasValue()) {
+					if (version.GetId() != packet.environment->asset.id)
+						return {Math::MathError::OutOfRange,
+						    "Render environment fixed version identity disagrees with its handle"};
+					if ((!m_Frame.environment || m_Frame.environment->version.Get() != version.Get()) &&
+					    !ValidateEnvironmentAsset(*version.Get(), error))
+						return {Math::MathError::OutOfRange, "Render environment fixed version is invalid"};
+				}
+			}
+			for (const auto& view : packet.views) {
+				if (!views.insert(view.id).second)
+					return {Math::MathError::OutOfRange, "Duplicate render view identity"};
+				if (const auto status = ValidateRenderView(view); !status.IsSuccess())
+					return status;
+				if (view.independentCamera)
+					continue;
+				if (!view.camera.HasValue() || view.camera.scene != packet.sceneIdentity ||
+				    !instances.contains(view.camera))
+					return {Math::MathError::OutOfRange, "Scene camera has a foreign or missing source transform"};
+				/* 实体相机还须对应同一源身份，不能借另一实体的姿态。 */
+				const auto source = std::find_if(packet.transforms.begin(), packet.transforms.end(),
+				    [&](const RenderTransform& transform) { return transform.id == view.camera; });
+				for (int column = 0; column < 4; ++column)
+					for (int row = 0; row < 4; ++row)
+						if (view.matrices.inverseView[column][row] != source->worldMatrix[column][row])
+							return {
+							    Math::MathError::OutOfRange, "Render camera and source transform snapshot disagree"};
+			}
+			m_Frame = std::move(packet);
+			return {};
+		} catch (const std::bad_alloc&) {
+			return {Math::MathError::OutOfRange, "Cannot allocate render frame validation state"};
+		}
+	}
 
-    void RenderScene::Clear() noexcept { m_Frame = {}; }
+	void RenderScene::Clear() noexcept {
+		m_Frame = {};
+	}
 
 }

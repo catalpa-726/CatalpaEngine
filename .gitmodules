@@ -54,17 +54,17 @@
 	path = Catalpa/third_party/lua
 	url = https://github.com/lua/lua.git
 
-# GLM, EnTT, enkiTS and SPIRV-Reflect currently come from complete upstream archives.
-# These entries declare submodule paths/URLs; gitlink registration is not performed here.
-# Ordinary source files are ignored; acquisition facts remain in Dependencies.lock.json.
+# GLM、EnTT、enkiTS 和 SPIRV-Reflect 来自完整的上游源码包。
+# 以下条目声明子模块路径与地址，子模块提交引用（gitlink）须单独登记。
+# Git 忽略普通依赖源码文件，来源信息记录在 Dependencies.lock.json 中。
 
-# Asset import dependencies above are user-provided directories; no gitlink registration or acquisition audit was performed.
-# ImGuizmo is user-provided; only the compiled header/source and LICENSE were compared with upstream.
-# Its path/URL declaration does not register a gitlink or stage the ignored source tree.
-# Authoring dependencies are user-provided. Lua uses the official release's src/ layout;
-# its upstream Git mirror keeps sources at the root, and Premake accepts both layouts.
+# 以上资产导入依赖由用户提供，当前仅记录目录，尚未登记 gitlink 或核验来源。
+# ImGuizmo 由用户提供；已与上游核对参与编译的头文件、实现文件和 LICENSE。
+# 此处只声明路径与地址，登记 gitlink 和暂存被忽略的源码需要单独操作。
+# 创作工具依赖由用户提供。Lua 官方发行包将源码放在 src/ 目录中，
+# 上游 Git 镜像将源码放在根目录；Premake 支持这两种布局。
 
-# User-provided S14-S17 directories; declarations do not register gitlinks.
+# S14–S17 的依赖目录由用户提供，这些声明仅记录其路径与地址。
 [submodule "Catalpa/third_party/meshoptimizer"]
 	path = Catalpa/third_party/meshoptimizer
 	url = https://github.com/zeux/meshoptimizer.git
