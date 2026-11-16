@@ -3,6 +3,7 @@
 #include "Panels/PanelText.h"
 #include "Panels/BrowserDirectoryCache.h"
 #include "Panels/BrowserThumbnails.h"
+#include <utility>
 
 namespace Catalpa::Editor {
 	/* 项目 Assets 与导入浏览器使用相同的导航规则，导入选项仍由调用者管理。 */
@@ -14,6 +15,16 @@ namespace Catalpa::Editor {
 		 */
 		void Reset();
 		void Update() { m_Thumbnails.BeginFrame(); }
+		/**
+		 * @brief 取出上一次绘制中用户激活的普通文件。
+		 * @return 文件的规范路径；没有打开请求或请求已取走时返回空路径。
+		 */
+		std::filesystem::path TakeOpened() { return std::exchange(m_Opened, {}); }
+		/**
+		 * @brief 取出本帧鼠标或键盘选中的普通文件；重复选择同一文件也会产生请求。
+		 * @return 选中的文件路径；没有待处理的选择时返回空路径。
+		 */
+		std::filesystem::path TakeClicked() { return std::exchange(m_Clicked, {}); }
 		/**
 		 * @brief 在给定根目录内绘制目录树和文件列表，更新浏览位置及选择。
 		 *
@@ -32,7 +43,7 @@ namespace Catalpa::Editor {
 	private:
 		void DrawFolder(const std::filesystem::path&, std::string_view, const std::filesystem::path& current,
 		    std::filesystem::path& navigate, unsigned depth, unsigned& budget);
-		std::filesystem::path m_Root;
+		std::filesystem::path m_Root, m_Opened, m_Clicked;
 		BrowserDirectoryCache m_Folders;
 		std::array<char, 128> m_Filter{};
 		bool m_Grid = true;

@@ -9,7 +9,14 @@ namespace Catalpa {
 
 	class WindowsWindow : public Window {
 	public:
+		/**
+		 * @brief 在当前 UI 线程持有 STA COM apartment，并创建原生窗口。
+		 * @param[in] props 标题和初始客户区尺寸。
+		 * @note 必须在同一线程销毁；窗口的 COM 引用持续到依赖窗口的运行时服务已关闭。
+		 * @throws std::runtime_error 当前线程无法初始化为 STA 时抛出诊断。
+		 */
 		WindowsWindow(const WindowProps& props);
+		/** @brief 销毁原生窗口后释放其持有的 COM 初始化引用。 */
 		virtual ~WindowsWindow();
 
 		WindowsWindow(const WindowsWindow&) = delete;

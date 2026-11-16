@@ -12,6 +12,22 @@ namespace Catalpa::Editor {
 
 		constexpr size_t MaxWorkspaceBytes = 1024 * 1024;
 
+		/* 读取、范围校验和保存共用同一组字段，避免混用距离、角度与缩放比例。 */
+		struct ViewportNumber {
+			const char* key;
+			float ViewportSettings::* member;
+			float minimum, maximum;
+		};
+		constexpr ViewportNumber ViewportNumbers[]{
+		    {"camera_speed", &ViewportSettings::cameraSpeed, ViewportSettings::MinCameraSpeed,
+		        ViewportSettings::MaxCameraSpeed},
+		    {"translation_step", &ViewportSettings::translationStep, ViewportSettings::MinTranslationStep,
+		        ViewportSettings::MaxTranslationStep},
+		    {"rotation_step", &ViewportSettings::rotationStep, ViewportSettings::MinRotationStep,
+		        ViewportSettings::MaxRotationStep},
+		    {"scale_step_percent", &ViewportSettings::scaleStepPercent, ViewportSettings::MinScaleStepPercent,
+		        ViewportSettings::MaxScaleStepPercent}};
+
 		/**
 		 * @brief 为序列化的布局字节计算固定格式的校验值。
 		 * 对解码后的布局原始字节做 64 位 FNV-1a，固定输出 16 位小写十六进制。
@@ -125,6 +141,13 @@ namespace Catalpa::Editor {
 		 * @return 全部工作区字段满足保存约束时为 true，校验失败时为 false。
 		 */
 		bool ValidateSettings(const WorkspaceSettings& settings, std::string& error) {
+			for (const auto& field : ViewportNumbers) {
+				const float value = settings.viewport.*field.member;
+				if (!(value >= field.minimum && value <= field.maximum)) {
+					error = std::string("Workspace viewport.") + field.key + " is outside the supported range.";
+					return false;
+				}
+			}
 			if (settings.language != "en-US" && settings.language != "zh-CN")
 				error = "Unsupported workspace language.";
 			else if (settings.editorFontSize < WorkspaceSettings::MinFontSize ||
@@ -136,8 +159,24 @@ namespace Catalpa::Editor {
 				error = "Workspace layout contains an embedded null byte.";
 			else if (!IsValidUtf8(settings.layout))
 				error = "Workspace layout is not valid UTF-8.";
-			else
+			else {
+				if (settings.recentProjects.size() > WorkspaceSettings::MaxRecentProjects) {
+					error = "Too many recent workspace projects.";
+					return false;
+				}
+				for (const auto& name : settings.recentProjects) {
+					if (name.empty() || name.find('\0') != name.npos || !IsValidUtf8(name)) {
+						error = "Recent project path is not valid UTF-8.";
+						return false;
+					}
+					const auto path = std::filesystem::u8path(name);
+					if (!path.is_absolute() || path.lexically_normal() != path) {
+						error = "Recent project must use a normalized absolute path.";
+						return false;
+					}
+				}
 				return true;
+			}
 			return false;
 		}
 
@@ -170,13 +209,16 @@ namespace Catalpa::Editor {
 			return WorkspaceLoadResult::Failed;
 		}
 		const auto version = document.find("schema_version");
-		if (version == document.end() || !version->is_number_integer() || (*version != 1 && *version != 2)) {
-			error = "Unsupported workspace schema_version; expected integer 1 or 2.";
+		if (version == document.end() || !version->is_number_integer() ||
+		    (*version != 1 && *version != 2 && *version != 3)) {
+			error = "Unsupported workspace schema_version; expected integer 1, 2 or 3.";
 			return WorkspaceLoadResult::Failed;
 		}
-		/* v1 没有字号字段，沿用 24 px；v2 完整保存用户选择的字号。 */
-		const bool hasFontSize = *version == 2;
-		if (document.size() != (hasFontSize ? 7u : 6u)) {
+		/* v2 起保存字号，v3 起保存完整的视口偏好；旧配置沿用相应字段的默认值。 */
+		const bool hasFontSize = *version != 1;
+		const bool hasViewport = *version == 3;
+		const auto recent = document.find("recent_projects");
+		if (document.size() != 6u + hasFontSize + hasViewport + (recent != document.end())) {
 			error = "Workspace field count does not match its schema_version.";
 			return WorkspaceLoadResult::Failed;
 		}
@@ -195,6 +237,47 @@ namespace Catalpa::Editor {
 		}
 
 		WorkspaceSettings parsed;
+		if (hasViewport) {
+			const auto viewport = document.find("viewport");
+			if (viewport == document.end() || !viewport->is_object() ||
+			    viewport->size() != std::size(ViewportNumbers) + 1) {
+				error = "Workspace viewport must contain the navigation speed and all transform snap settings.";
+				return WorkspaceLoadResult::Failed;
+			}
+			const auto snap = viewport->find("snap_enabled");
+			if (snap == viewport->end() || !snap->is_boolean()) {
+				error = "Workspace viewport.snap_enabled must be a boolean.";
+				return WorkspaceLoadResult::Failed;
+			}
+			parsed.viewport.snapEnabled = snap->get<bool>();
+			for (const auto& field : ViewportNumbers) {
+				const auto entry = viewport->find(field.key);
+				if (entry == viewport->end() || !entry->is_number() ||
+				    std::abs(entry->get<double>()) > std::numeric_limits<float>::max()) {
+					error = std::string("Workspace viewport.") + field.key + " must be a representable number.";
+					return WorkspaceLoadResult::Failed;
+				}
+				parsed.viewport.*field.member = entry->get<float>();
+			}
+		}
+		/* 老布局里没有保存的开关沿用当时的默认值；新安装和显式重置使用新默认布局。 */
+		parsed.showBuild = true;
+		parsed.showConsole = false;
+		parsed.showHistory = true;
+		if (recent != document.end()) {
+			if (!recent->is_array() || recent->size() > WorkspaceSettings::MaxRecentProjects) {
+				error = "Invalid recent project list.";
+				return WorkspaceLoadResult::Failed;
+			}
+			for (const auto& entry : *recent) {
+				const auto* name = entry.get_ptr<const std::string*>();
+				if (!name) {
+					error = "Recent project paths must be strings.";
+					return WorkspaceLoadResult::Failed;
+				}
+				parsed.recentProjects.push_back(*name);
+			}
+		}
 		if (hasFontSize) {
 			const auto size = document.find("editor_font_size");
 			if (size == document.end() || !size->is_number_integer() || *size < WorkspaceSettings::MinFontSize ||
@@ -248,8 +331,12 @@ namespace Catalpa::Editor {
 		error.clear();
 		if (!ValidateSettings(settings, error))
 			return false;
-		const nlohmann::json document{{"schema_version", 2}, {"language", settings.language},
-		    {"editor_font_size", settings.editorFontSize}, {"vsync", settings.vsync},
+		nlohmann::json viewport{{"snap_enabled", settings.viewport.snapEnabled}};
+		for (const auto& field : ViewportNumbers)
+			viewport[field.key] = settings.viewport.*field.member;
+		const nlohmann::json document{{"schema_version", 3}, {"language", settings.language},
+		    {"editor_font_size", settings.editorFontSize}, {"viewport", std::move(viewport)}, {"vsync", settings.vsync},
+		    {"recent_projects", settings.recentProjects},
 		    {"panels",
 		        {{"scene", settings.showScene}, {"assets", settings.showAssets}, {"history", settings.showHistory},
 		            {"inspector", settings.showInspector}, {"settings", settings.showSettings},

@@ -1,6 +1,7 @@
 #include "catpch.h"
 
 #include "AssetPipeline/AssetBuildContext.h"
+#include "AssetPipeline/AssetImportRegistry.h"
 
 #include "Core/PlatformServices.h"
 
@@ -405,7 +406,121 @@ namespace Catalpa::Tools {
 		return false;
 	}
 
+	/* 只有确定不存在的普通路径才允许缺图。失效链接、沙箱越界、非文件和权限错误仍需报告。 */
+	bool AssetBuildContext::ProbeTexture(
+	    const std::filesystem::path& path, std::filesystem::path& selected, std::string& error) const {
+		namespace fs = std::filesystem;
+		selected.clear();
+		const auto inside = [&](const fs::path& p) {
+			return std::any_of(
+			    m_Roots.begin(), m_Roots.end(), [&](const auto& root) { return IsPathWithinRoot(p, root); });
+		};
+		if (!inside(path.lexically_normal()) || !inside(fs::weakly_canonical(path))) {
+			error = "Texture reference escapes declared source roots: " + AssetPathText(path);
+			return false;
+		}
+		for (auto prefix = path; !prefix.empty(); prefix = prefix.parent_path()) {
+			std::error_code code;
+			const auto status = fs::symlink_status(prefix, code);
+			if (code == std::errc::no_such_file_or_directory || (!code && status.type() == fs::file_type::not_found)) {
+				if (prefix == prefix.root_path())
+					break;
+				continue;
+			}
+			if (code) {
+				error = "Cannot inspect texture path " + AssetPathText(prefix) + ": " + code.message();
+				return false;
+			}
+			const auto real = fs::canonical(prefix);
+			if (!inside(real) || (prefix == path ? !fs::is_regular_file(real) : !fs::is_directory(real))) {
+				error = "Texture path has an invalid target: " + AssetPathText(prefix);
+				return false;
+			}
+			if (prefix == path)
+				selected = real;
+			return true;
+		}
+		error = "Texture source root is unavailable: " + AssetPathText(path);
+		return false;
+	}
+
+	bool AssetBuildContext::ProbeObjTextureCandidate(
+	    const std::filesystem::path& path, std::filesystem::path& selected, std::string& error) {
+		if (!ProbeTexture(path, selected, error))
+			return false;
+		if (!selected.empty())
+			return true;
+		m_MissingTextures.insert(path);
+		if (m_MissingTextures.size() > 4096) {
+			error = "Missing texture candidate limit exceeded";
+			return false;
+		}
+		return true;
+	}
+
+	bool AssetBuildContext::ResolveObjTexture(
+	    std::string_view reference, std::filesystem::path& selected, std::string& error) try {
+		namespace fs = std::filesystem;
+		if (request.settings.dependencyRemaps.contains(reference))
+			return Resolve(request.source, reference, selected, error, SourceReferenceSyntax::FilePath);
+		std::string text(reference);
+		std::replace(text.begin(), text.end(), '\\', '/');
+		auto relative = fs::u8path(text);
+		if (text.empty() || text.find('\0') != text.npos || text.find("://") != text.npos ||
+		    text.starts_with("data:") || relative.filename().empty() ||
+		    (!relative.is_absolute() && relative.has_root_path())) {
+			error = "Invalid OBJ texture reference: " + text;
+			return false;
+		}
+		/* 外部制作机器的绝对位置仅提供文件名，不读取外部目录。 */
+		const bool foreign = relative.is_absolute() &&
+		    std::none_of(m_Roots.begin(), m_Roots.end(),
+		        [&](const auto& root) { return IsPathWithinRoot(relative.lexically_normal(), root); });
+		if (foreign)
+			relative = relative.filename();
+		if (AssetPathText(relative.relative_path()).find_first_of(":*?\"<>|") != std::string::npos) {
+			error = "Invalid OBJ texture filename: " + text;
+			return false;
+		}
+		std::set<fs::path> candidates;
+		const auto probe = [&](const fs::path& owner) {
+			const auto path = owner.parent_path() / relative;
+			fs::path file;
+			if (!ProbeObjTextureCandidate(path, file, error))
+				return false;
+			if (!file.empty())
+				candidates.insert(std::move(file));
+			return true;
+		};
+		for (const auto& dep : m_Dependencies)
+			if (AssetSourceExtension(dep.path) == ".mtl" && !probe(dep.path))
+				return false;
+		if (candidates.empty() && !probe(request.source))
+			return false;
+		if (candidates.size() > 1) {
+			error = "Ambiguous texture dependency across material libraries: " + text;
+			return false;
+		}
+		selected = candidates.empty() ? fs::path{} : *candidates.begin();
+		if (foreign && !selected.empty())
+			Diagnose(AssetDiagnosticLevel::Warning, text,
+			    "Packaged texture resolved beside the model: " + AssetPathText(selected));
+		return true;
+	} catch (const std::exception& exception) {
+		error = exception.what();
+		return false;
+	}
+
 	bool AssetBuildContext::InputsUnchanged(std::string& e) const try {
+		for (const auto& path : m_MissingTextures) {
+			std::filesystem::path current;
+			if (!CheckCancelled(e) || !ProbeTexture(path, current, e))
+				return false;
+			if (!current.empty()) {
+				e = "Previously missing texture appeared before publication: " + AssetPathText(path);
+				return false;
+			}
+		}
 		for (const auto& [uri, selected] : m_RelocatedTextures) {
 			if (!CheckCancelled(e))
 				return false;

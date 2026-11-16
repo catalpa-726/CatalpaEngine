@@ -15,8 +15,10 @@
 #include "Core/Serialization/SchemaMigrationRegistry.h"
 #include "Core/IO/VirtualFileSystem.h"
 #include "Assets/AssetManifest.h"
+#include "Assets/BuiltinAssetIds.h"
 #include "Assets/AssetDependencyGraph.h"
 #include "Panels/EditorText.h"
+#include "Panels/FormLayout.h"
 #include "imgui.h"
 #include "Viewport/ToolbarButton.h"
 
@@ -155,6 +157,7 @@ namespace Catalpa::Editor {
 		    !DocumentRecovery::Save(doc, target, m_Project->contentRoot, m_Error))
 			return false;
 		RemoveRecovery(doc.Id());
+		m_AssetActions.indexed = false;
 		return true;
 	}
 
@@ -502,6 +505,85 @@ namespace Catalpa::Editor {
 		m_Closing = {};
 	}
 
+	bool WorkspaceEditing::IsStandardUnlit(const MaterialInstance& source) {
+		const auto definition = source.definition.GetId();
+		return definition == BuiltinAssetIds::DefaultUnlitDefinition ||
+		    definition == BuiltinAssetIds::CookedUnlitDefinition;
+	}
+
+	void WorkspaceEditing::CreatePbrDraft(const MaterialInstance* source) {
+		if (m_PlayDocument.HasValue())
+			return;
+		AssetVersionRef<MaterialInstance> standard, draft;
+		bool fallback = false;
+		if (!m_App.GetAssets().Acquire(BuiltinAssetIds::DefaultPbrInstance, standard, fallback, m_Error))
+			return;
+		if (fallback) {
+			m_Error = "The standard PBR material is unavailable.";
+			return;
+		}
+		auto instance = standard.GetShared();
+		if (source) {
+			const auto* color = FindMaterialParameter(*source, "base_color");
+			if (!IsStandardUnlit(*source) || !color) {
+				m_Error = "Only the standard unlit material supports copying its base color.";
+				return;
+			}
+			MaterialParameterOverride base{"base_color", *color};
+			MaterialStateOverrides state;
+			state.cull = source->renderState.cull;
+			if (!CreateMaterialInstance(standard.Get()->definition, std::span{&base, 1}, state, 1, instance, m_Error))
+				return;
+		}
+		StableId identity;
+		if (!GenerateStableId(identity, m_Error) ||
+		    !AssetVersionRef<MaterialInstance>::TryCreate(AssetId{identity}, 1, instance, draft, m_Error))
+			return;
+		CancelPendingOpen();
+		if (auto* doc = m_Documents.Open(std::move(draft), m_Error)) {
+			doc->History().MarkUnsaved();
+			m_OpenAsset = doc->Id();
+			m_AskDiscard = false;
+			ActivateAsset(*doc);
+		}
+	}
+
+	void WorkspaceEditing::CreateAssetDraft(std::string_view type) {
+		if (!m_Project || m_PlayDocument.HasValue())
+			return;
+		if (type == "material_instance") {
+			CreatePbrDraft();
+			return;
+		}
+		std::string source;
+		if (type == "script")
+			source = "return {\n    update = function(dt)\n        scene.translate(0, dt, 0)\n    end\n}\n";
+		else if (type == "material_graph") {
+			if (!Tools::WriteMaterialGraph(Tools::DefaultMaterialGraph(), source, m_Error))
+				return;
+		} else if (type == "behavior_graph") {
+			BehaviorGraphAsset graph;
+			BehaviorNode node;
+			if (!GenerateStableId(node.id, m_Error))
+				return;
+			node.type = "Update";
+			graph.nodes.push_back(node);
+			if (!WriteBehaviorGraph(graph, source, m_Error))
+				return;
+		} else
+			return;
+		CancelPendingOpen();
+		StableId random;
+		AssetId identity;
+		if (!GenerateStableId(random, m_Error) || !AssetId::TryParse(random.ToString(), identity))
+			return;
+		if (auto* doc = m_Documents.OpenSource(identity, std::string(type), std::move(source), {}, m_Error)) {
+			doc->History().MarkUnsaved();
+			m_OpenAsset = doc->Id();
+			ActivateAsset(*doc);
+		}
+	}
+
 	/**
 	 * @brief 绘制文档切换和管理菜单。
 	 */
@@ -516,44 +598,19 @@ namespace Catalpa::Editor {
 			if (InstallAuthorScene(scene, {}))
 				m_Documents.Active()->History().MarkUnsaved();
 		}
-		const auto create = [&](const char* label, std::string_view type, std::string source) {
-			if (!ImGui::MenuItem(label))
-				return;
-			CancelPendingOpen();
-			AssetId id;
-			std::string ignored;
-			StableId random;
-			if (!GenerateStableId(random, m_Error) || !AssetId::TryParse(random.ToString(), id))
-				return;
-			auto* doc = m_Documents.OpenSource(id, std::string(type), std::move(source), {}, m_Error);
-			if (doc) {
-				doc->History().MarkUnsaved();
-				m_OpenAsset = doc->Id();
-				ActivateAsset(*doc);
-			}
-		};
-		create(UiLabel("ui.new_lua_script", "New Lua script").c_str(), "script",
-		    "return {\n    update = function(dt)\n        scene.translate(0, dt, 0)\n    end\n}\n");
-		std::string graphText;
-		Tools::MaterialGraphSource material = Tools::DefaultMaterialGraph();
-		if (Tools::WriteMaterialGraph(material, graphText, m_Error))
-			create(UiLabel("ui.new_material_graph", "New material graph").c_str(), "material_graph", graphText);
-		BehaviorGraphAsset behavior;
-		StableId entry;
-		std::string ignored;
-		if (GenerateStableId(entry, ignored)) {
-			BehaviorNode node;
-			node.id = entry;
-			node.type = "Update";
-			behavior.nodes.push_back(node);
-			if (WriteBehaviorGraph(behavior, graphText, ignored))
-				create(UiLabel("ui.new_behavior_graph", "New behavior graph").c_str(), "behavior_graph", graphText);
-		}
+		if (ImGui::MenuItem(UiLabel("ui.new_lua_script", "New Lua script").c_str()))
+			CreateAssetDraft("script");
+		if (ImGui::MenuItem(UiLabel("ui.new_material", "New material").c_str()))
+			CreateAssetDraft("material_instance");
+		if (ImGui::MenuItem(UiLabel("ui.new_material_graph", "New material graph").c_str()))
+			CreateAssetDraft("material_graph");
+		if (ImGui::MenuItem(UiLabel("ui.new_behavior_graph", "New behavior graph").c_str()))
+			CreateAssetDraft("behavior_graph");
 		if (ImGui::MenuItem(UiLabel("ui.open_author_document", "Open author document...").c_str())) {
 			std::filesystem::path file;
 			bool cancelled = false;
 			if (SelectAuthorFile(false, m_Project->contentRoot, file, cancelled, m_Error) && !cancelled)
-				OpenAuthor(file);
+				OpenSourceAsset(file);
 		}
 		auto* active = m_Documents.Active();
 		if (ImGui::MenuItem(UiLabel("ui.save", "Save").c_str(), nullptr, false, active != nullptr))
@@ -642,10 +699,12 @@ namespace Catalpa::Editor {
 				}
 			}
 		}
+		/* 关闭请求与恢复项保存在文档状态中，等待同层空闲后再打开弹窗。 */
+		const auto closeTitle = UiLabel("ui.unsaved_document", "Unsaved document");
 		if (m_Closing.HasValue())
-			ImGui::OpenPopup(UiLabel("ui.unsaved_document", "Unsaved document").c_str());
-		if (ImGui::BeginPopupModal(UiLabel("ui.unsaved_document", "Unsaved document").c_str(), nullptr,
-		        ImGuiWindowFlags_AlwaysAutoResize)) {
+			ImGui::OpenPopup(closeTitle.c_str(), ImGuiPopupFlags_NoOpenOverExistingPopup);
+		PrepareEditorModal();
+		if (ImGui::BeginPopupModal(closeTitle.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
 			auto* doc = m_Documents.Find(m_Closing);
 			ImGui::TextUnformatted(UiText("ui.save_changes_before_closing", "Save changes before closing?"));
 			if (ImGui::Button(UiLabel("ui.save", "Save").c_str()) && doc && SaveDocument(*doc)) {
@@ -671,11 +730,16 @@ namespace Catalpa::Editor {
 				if (doc->History().Dirty())
 					(void)DocumentRecovery::Checkpoint(*doc, m_RecoveryRoot, m_Error);
 		}
-		if (m_Recovery.empty())
-			return;
-		ImGui::OpenPopup(UiLabel("ui.recovered_author_document", "Recovered author document").c_str());
-		if (ImGui::BeginPopupModal(UiLabel("ui.recovered_author_document", "Recovered author document").c_str(),
-		        nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+		const auto recoveryTitle = UiLabel("ui.recovered_author_document", "Recovered author document");
+		if (!m_Recovery.empty())
+			ImGui::OpenPopup(recoveryTitle.c_str(), ImGuiPopupFlags_NoOpenOverExistingPopup);
+		PrepareEditorModal();
+		if (ImGui::BeginPopupModal(recoveryTitle.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+			if (m_Recovery.empty()) {
+				ImGui::CloseCurrentPopup();
+				ImGui::EndPopup();
+				return;
+			}
 			ImGui::TextWrapped(
 			    UiFormat("ui.a_separate_recovery_copy_is_available", "A separate recovery copy is available: %s"),
 			    Tools::AssetPathText(m_Recovery.back()).c_str());
@@ -724,6 +788,7 @@ namespace Catalpa::Editor {
 			return false;
 		m_PlayDocument = {};
 		m_PlayPaused = false;
+		m_GameView = false;
 		return true;
 	}
 
@@ -736,9 +801,10 @@ namespace Catalpa::Editor {
 			m_Gizmo.Cancel(m_Error);
 			m_Picking.Cancel(m_App);
 			if (doc->StartPlay(m_App.GetAssets(), m_Error)) {
-				if (m_App.SetEditorPlayScene(doc->PlayHandle(), false, m_Error))
+				if (m_App.SetEditorPlayScene(doc->PlayHandle(), false, m_Error)) {
 					m_PlayDocument = doc->Id();
-				else {
+					m_GameView = true;
+				} else {
 					std::string ignored;
 					doc->StopPlay(ignored);
 				}

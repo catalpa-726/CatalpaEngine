@@ -17,6 +17,7 @@ namespace Catalpa::Editor {
 	class NetworkDiagnosticsPanel;
 	class AudioMixerPanel;
 	class WorkspaceEditing;
+	class ExportPanel;
 
 	/* 编辑工作区由宿主应用挂载；只借用引擎服务和既有 ImGui 上下文。 */
 	class EditorWorkspace final : public Layer {
@@ -72,6 +73,19 @@ namespace Catalpa::Editor {
 		void DrawAssets();
 		void DrawInspector();
 		void DrawSettings();
+		void DrawProjectLauncher();
+		/**
+		 * @brief 用系统选择器打开项目文件或识别项目根目录。
+		 * @param[in] folder 为 true 时选择目录并检查其中的项目描述，否则选择单个项目文件。
+		 */
+		void ChooseProject(bool folder);
+		/**
+		 * @brief 排队到下一帧执行项目切换，以复用未保存文档的确认流程。
+		 * @param[in] path 已选择的项目文件绝对路径。
+		 */
+		void QueueProject(const std::filesystem::path&);
+		/** @brief 将当前已打开项目移到最近项目首位，最多保存十二项。 */
+		void RememberProject();
 		void Report(const char* key, const char* fallback, std::string error = {});
 
 		WorkspaceSettings m_Settings;
@@ -83,10 +97,16 @@ namespace Catalpa::Editor {
 		std::unique_ptr<ContentBrowserPanel> m_Content;
 		std::unique_ptr<ConsolePanel> m_Console;
 		std::unique_ptr<DependencyPanel> m_Dependencies;
+		std::unique_ptr<ExportPanel> m_Export;
 		std::unique_ptr<WorkspaceEditing> m_Editing;
 		ProjectSettingsPanel m_ProjectSettings;
 		std::array<char, 2048> m_ProjectPathInput{};
 		bool m_OpenProjectPopup = false;
+		bool m_NewProjectPopup = false;
+		std::array<char, 121> m_NewProjectName{};
+		std::filesystem::path m_NewProjectParent;
+		std::vector<std::filesystem::path> m_ProjectCandidates;
+		std::string m_ProjectDialogError;
 		std::filesystem::path m_ExecutableDirectory;
 		std::filesystem::path m_SettingsPath;
 		std::filesystem::path m_BrowseDirectory;

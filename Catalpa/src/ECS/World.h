@@ -6,8 +6,10 @@
 #include <functional>
 #include <cstddef>
 #include <memory>
+#include <string>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace Catalpa {
 
@@ -61,6 +63,13 @@ namespace Catalpa {
 		 * @return 有效实体的组件统计完成时返回成功，否则返回实体校验状态。
 		 */
 		[[nodiscard]] WorldStatus CountComponents(EntityId entity, size_t& count) const;
+		/**
+		 * @brief 获取实体当前实际持有的组件类型名称，供只读检查使用。
+		 * @param[in] entity 当前世界中的有效实体。
+		 * @param[out] names 成功时按名称排序并替换输出，失败时保留原值。
+		 * @return 实体代次有效且读取成功时返回成功状态。
+		 */
+		[[nodiscard]] WorldStatus ListComponentTypes(EntityId entity, std::vector<std::string>& names) const;
 		/**
 		 * @brief 检查世界当前是否处于不能卸载的访问状态。
 		 * 所有者卸载前查询：读回调、组件变更或命令提交期间不可销毁 World。

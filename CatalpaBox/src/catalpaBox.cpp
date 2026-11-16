@@ -2,7 +2,6 @@
 
 #if !defined(CATALPA_RUNTIME_ONLY)
 #include "Application/EditorWorkspace.h"
-#include "BoxDefaultEnvironment.h"
 #include "BoxGameplay.h"
 #endif
 #include "Core/PlatformServices.h"
@@ -27,28 +26,16 @@ public:
 	void OnAttach() override {
 		CAT_INFO("Box layer attached.");
 		auto& application = Catalpa::Application::Get();
-		if (!m_Gameplay.Attach(application.GetScenes(), application.GetAssets(), m_ReversedZ, m_ErrorMaterial)) {
+		if (!m_Gameplay.Attach(application.GetScenes(), application.GetAssets(), m_ReversedZ, m_ErrorMaterial))
 			application.RequestClose(1);
-			return;
-		}
-
-		/* 默认天空只属于刚创建的样例场景，后台处理不会覆盖随后打开的作者场景。 */
-		std::string error;
-		if (!m_Environment.Start(application.GetScenes(), application.GetAssets(), application.GetJobs(),
-		        application.GetScenes().GetActiveHandle(), error))
-			CAT_WARN("Default sky unavailable: {0}", error);
 	}
 
 	void OnDetach() override {
-		m_Environment.Stop();
 		m_Gameplay.Detach();
 		CAT_INFO("Box layer detached.");
 	}
 
-	void OnUpdate(Catalpa::Deltatime) override {
-		m_Environment.Update();
-		m_Gameplay.ReportHierarchyOnce();
-	}
+	void OnUpdate(Catalpa::Deltatime) override { m_Gameplay.ReportHierarchyOnce(); }
 
 	void OnEvent(Catalpa::Event& event) override {
 		Catalpa::EventDispatcher dispatcher(event);
@@ -60,7 +47,6 @@ public:
 
 private:
 	Catalpa::BoxGameplay m_Gameplay;
-	Catalpa::BoxDefaultEnvironment m_Environment;
 	bool m_ReversedZ = false;
 	bool m_ErrorMaterial = false;
 };
@@ -95,6 +81,18 @@ public:
 #if !defined(CATALPA_DIST) && !defined(CATALPA_RUNTIME_ONLY)
 		if (options.testEditorDocking) {
 			PushOverlay(Catalpa::Tests::CreateWorkspaceDockingTest());
+			return;
+		}
+		if (options.testEditorModals) {
+			PushOverlay(Catalpa::Tests::CreateWorkspaceModalTest());
+			return;
+		}
+		if (options.testEditorGraphs) {
+			PushOverlay(Catalpa::Tests::CreateWorkspaceGraphTest());
+			return;
+		}
+		if (options.testEditorObjDrop) {
+			PushOverlay(Catalpa::Tests::CreateWorkspaceModelDropTest());
 			return;
 		}
 		if (options.testEditorPlatformWindows) {

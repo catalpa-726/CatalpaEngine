@@ -3,6 +3,7 @@
 #include "Scene/Components/AnimatorComponent.h"
 #include "Scene/Components/SkinnedMeshRendererComponent.h"
 #include "Scene/ModelInstantiation.h"
+#include "Scene/SceneSubtree.h"
 
 #include "Scene/Components/MeshRendererComponent.h"
 #include "Materials/MaterialValidation.h"
@@ -328,5 +329,23 @@ namespace Catalpa {
 			error = exception.what();
 			return false;
 		}
+	}
+
+	bool ModelInstantiation::PreparePlacement(const Scene& staged, EntityId root, const Scene& destination,
+	    SceneSubtreeSnapshot& output, std::string& error) {
+		SceneSubtreeSnapshot candidate;
+		const auto status = staged.CaptureForUndo(root, candidate);
+		if (!status.IsSuccess() || candidate.Parent().HasValue()) {
+			error = status.IsSuccess() ? "Model placement requires an independent root" : status.message;
+			return false;
+		}
+		for (const auto& node : candidate.m_Nodes)
+			if (destination.Resolve(node.identity.persistent).HasValue()) {
+				error = "Model placement identity collision";
+				return false;
+			}
+		candidate.m_World = destination.GetWorld().GetIdentity();
+		output = std::move(candidate);
+		return true;
 	}
 }

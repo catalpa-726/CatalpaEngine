@@ -17,6 +17,8 @@ namespace Catalpa::Tools {
 			key["inputs"].push_back({AssetPathText(d.path), d.sha256, d.bytes});
 		for (const auto& [uri, selected] : c.RelocatedTextures())
 			key["relocatedTextures"][uri] = AssetPathText(selected);
+		for (const auto& path : c.MissingTextures())
+			key["missingTextures"].push_back(AssetPathText(path));
 		const auto text = key.dump();
 		return AssetBuildDigest(std::as_bytes(std::span(text.data(), text.size())));
 	}

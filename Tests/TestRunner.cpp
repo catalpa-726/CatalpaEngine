@@ -151,6 +151,7 @@ namespace Catalpa::Tests {
 			RunAdvancedGraphTests(context);
 			RunSurfaceContractsTests(context);
 			RunEditorCommandTests(context);
+			RunEditorWorkflowTests(context);
 			RunSimulationLifecycleTests(context);
 		} catch (const std::exception& error) {
 			context.Check(false, error.what());

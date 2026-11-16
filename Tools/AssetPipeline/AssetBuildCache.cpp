@@ -46,6 +46,54 @@ namespace Catalpa::Tools {
 		}
 	}
 
+	bool AssetBuildCache::ReadSettings(
+	    const ProjectConfig& project, AssetId owner, AssetImportSettings& output, std::string& error) {
+		try {
+			const auto indexPath = std::filesystem::path("requests") / (owner.ToString() + ".json");
+			if (!std::filesystem::exists(project.derivedDataRoot / indexPath)) {
+				output = {};
+				error.clear();
+				return true;
+			}
+			std::vector<std::byte> bytes;
+			nlohmann::json index, report;
+			constexpr size_t limit = 4 * 1024 * 1024;
+			if (!ReadBounded(project.derivedDataRoot, indexPath, limit, bytes, error) || !Parse(bytes, index, error))
+				return false;
+			const auto& key = index.at("key").get_ref<const std::string&>();
+			if (index.at("schema") != 1 || key.size() != 64 ||
+			    key.find_first_not_of("0123456789abcdef") != std::string::npos)
+				throw std::runtime_error("Invalid build recipe index: " + AssetPathText(indexPath));
+			if (!ReadBounded(project.cookedRoot, std::filesystem::path("versions") / key / "SourceMap.json", limit,
+			        bytes, error))
+				return false;
+			if (AssetBuildDigest(bytes) != index.at("reportHash").get_ref<const std::string&>())
+				throw std::runtime_error("Import settings report no longer matches the cache: " + key);
+			if (!Parse(bytes, report, error))
+				return false;
+			if (report.at("key") != key)
+				throw std::runtime_error("Import settings report refers to another version: " + key);
+			AssetImportSettings settings;
+			const auto& value = report.at("settings");
+			settings.unitScale = value.at("unitScale");
+			settings.sourceUp = value.at("up").get<std::string>();
+			settings.generateNormals = value.at("normals");
+			settings.generateTangents = value.at("tangents");
+			value.at("dependencyRemaps").get_to(settings.dependencyRemaps);
+			settings.maxVertices = value.at("maxVertices");
+			settings.maxIndices = value.at("maxIndices");
+			settings.maxNodes = value.at("maxNodes");
+			settings.maxSourceBytes = value.at("maxSourceBytes");
+			settings.maxWorkingBytes = value.at("maxWorkingBytes");
+			output = std::move(settings);
+			error.clear();
+			return true;
+		} catch (const std::exception& e) {
+			error = e.what();
+			return false;
+		}
+	}
+
 	bool AssetBuildCache::Load(
 	    AssetBuildContext& c, std::string_view signature, AssetBuildResult& out, std::string& e) {
 		try {
@@ -67,6 +115,17 @@ namespace Catalpa::Tools {
 
 			/* 试探旧索引时单独记录依赖。未命中后，导入器只承担实际打开的文件和工作预算。 */
 			AssetBuildContext probe = c;
+			if (const auto missing = doc.find("missingTextures"); missing != doc.end()) {
+				if (!missing->is_array() || missing->size() > 4096)
+					return false;
+				for (const auto& path : *missing) {
+					std::filesystem::path selected;
+					if (!probe.ProbeObjTextureCandidate(
+					        std::filesystem::u8path(path.get_ref<const std::string&>()), selected, e) ||
+					    !selected.empty())
+						return false;
+				}
+			}
 			if (const auto aliases = doc.find("relocatedTextures"); aliases != doc.end()) {
 				if (!aliases->is_object() || aliases->size() > 4096)
 					return false;
@@ -189,6 +248,8 @@ namespace Catalpa::Tools {
 			doc["files"].push_back({{"path", AssetPathText(f.path)}, {"sha256", f.sha256}, {"bytes", f.bytes}});
 		for (const auto& [uri, selected] : c.RelocatedTextures())
 			doc["relocatedTextures"][uri] = AssetPathText(selected);
+		for (const auto& path : c.MissingTextures())
+			doc["missingTextures"].push_back(AssetPathText(path));
 		const auto target = Index(c);
 		const auto& root = c.request.project.derivedDataRoot;
 		if (!IsPathWithinRoot(std::filesystem::weakly_canonical(target.parent_path()), root)) {

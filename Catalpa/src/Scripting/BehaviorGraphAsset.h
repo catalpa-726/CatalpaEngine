@@ -14,6 +14,8 @@ namespace Catalpa {
 	struct BehaviorGraphAsset {
 		std::vector<BehaviorNode> nodes;
 		std::map<std::string, double, std::less<>> variables;
+		/* 烹饪时记录相对项目源根的路径，用于运行时错误定位。 */
+		std::string sourceLabel;
 	};
 	struct BehaviorNodeDescription {
 		std::string_view name;

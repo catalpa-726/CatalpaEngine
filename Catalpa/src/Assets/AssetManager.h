@@ -98,6 +98,12 @@ namespace Catalpa {
 		 */
 		bool InstallPackage(std::shared_ptr<const PackageReader>, std::string& error);
 		/**
+		 * @brief 按依赖顺序逐批准入当前包的入口资产，包中延迟加载的子资产保持按需读取。
+		 * @param[out] error 缺少加载器、超出硬预算或解码失败的具体资产诊断。
+		 * @return 本帧正常推进或已就绪时为 true；失败时由包会话收束。
+		 */
+		bool AdvancePackageLoad(std::string& error);
+		/**
 		 * @brief 卸载资源包。
 		 *
 		 * @param[out] error 失败时接收原因说明。

@@ -7,6 +7,8 @@
 #include "Lighting/LightValidation.h"
 #include "ECS/ComponentRegistry.h"
 #include "ECS/Detail/WorldComponentType.h"
+#include "Core/PlatformServices.h"
+#include "Core/Serialization/AuthorJson.h"
 
 namespace Catalpa {
 	const ComponentType& ComponentTraits<LightComponent>::Get() {
@@ -218,6 +220,148 @@ namespace Catalpa {
 		return {WorldError::AllocationFailed, "Cannot snapshot subtree"};
 	}
 
+	WorldStatus Scene::ValidateSubtreeCopy(const SceneSubtreeSnapshot& snapshot) const try {
+		if (!CanEditNow() || snapshot.m_World != m_World.GetIdentity() || snapshot.m_Nodes.empty())
+			return {WorldError::ForeignWorld, "Clipboard belongs to another scene or scene is busy"};
+		/* 重做也重新检查引用；捕获后或撤销期间的外部修改不能制造悬空作者引用。 */
+		std::set<PersistentEntityId> restoring;
+		std::set<uint64_t> views;
+		for (const auto& node : snapshot.m_Nodes) {
+			restoring.insert(node.identity.persistent);
+			if (node.camera && !views.insert(node.camera->viewId).second)
+				return {WorldError::AlreadyExists, "Subtree contains duplicate camera view identities"};
+		}
+		const auto validReference = [&](PersistentEntityId id) {
+			return !id.HasValue() || restoring.contains(id) || Resolve(id).HasValue();
+		};
+		const auto validValues = [&](const ScriptValues& fields) {
+			for (const auto& [key, value] : fields)
+				if (const auto* id = std::get_if<PersistentEntityId>(&value); id && !validReference(*id))
+					return false;
+			return true;
+		};
+		for (const auto& node : snapshot.m_Nodes) {
+			if ((node.script && !validValues(node.script->properties)) ||
+			    (node.behavior && !validValues(node.behavior->variables)))
+				return {WorldError::InvalidEntity, "Subtree external entity reference was removed"};
+			if (const auto skin = node.dynamicComponents.find("catalpa.skinned_mesh");
+			    skin != node.dynamicComponents.end())
+				if (const auto* field = skin->second.Find("animator"))
+					if (const auto* text = std::get_if<std::string>(&field->data)) {
+						PersistentEntityId animator;
+						if (!PersistentEntityId::TryParse(*text, animator) || !validReference(animator))
+							return {WorldError::InvalidEntity, "Subtree animator reference was removed"};
+					}
+		}
+		if (!views.empty()) {
+			const auto status = m_World.ForEach([&](EntityId entity) {
+				if (!m_World.Has<CameraComponent>(entity))
+					return WorldStatus{};
+				CameraComponent camera;
+				if (auto result = m_World.Get(entity, camera); !result.IsSuccess())
+					return result;
+				return views.contains(camera.viewId)
+				    ? WorldStatus{WorldError::AlreadyExists, "Camera view identity was reused"}
+				    : WorldStatus{};
+			});
+			if (!status.IsSuccess())
+				return status;
+		}
+		return {};
+	} catch (const std::exception&) {
+		return {WorldError::AllocationFailed, "Cannot validate clipboard references"};
+	}
+
+	WorldStatus Scene::PrepareSubtreeCopy(const SceneSubtreeSnapshot& source, SceneSubtreeSnapshot& output) const try {
+		if (!CanEditNow() || source.m_World != m_World.GetIdentity() || source.m_Nodes.empty())
+			return {WorldError::ForeignWorld, "Clipboard belongs to another scene or scene is busy"};
+		if (Resolve(source.Parent()) != source.m_ParentGeneration)
+			return {WorldError::InvalidEntity, "Clipboard parent was removed or replaced"};
+		std::string error;
+		std::map<PersistentEntityId, PersistentEntityId> mapping;
+		for (const auto& node : source.m_Nodes) {
+			PersistentEntityId fresh;
+			if (!GeneratePersistentEntityId(fresh, error))
+				return {WorldError::CommandFailed, "Cannot generate clipboard entity identity"};
+			mapping.emplace(node.identity.persistent, fresh);
+		}
+		/* 为新相机分配场景内唯一视图身份，避免复制后共享渲染历史。 */
+		uint64_t view = 0;
+		if (auto status = m_World.ForEach([&](EntityId id) {
+			    if (!m_World.Has<CameraComponent>(id))
+				    return WorldStatus{};
+			    CameraComponent camera;
+			    const auto result = m_World.Get(id, camera);
+			    view = std::max(view, camera.viewId);
+			    return result;
+		    });
+		    !status.IsSuccess())
+			return status;
+		auto copy = source;
+		const auto remap = [&](PersistentEntityId& id) {
+			if (!id.HasValue())
+				return true;
+			if (const auto found = mapping.find(id); found != mapping.end()) {
+				id = found->second;
+				return true;
+			}
+			return Resolve(id).HasValue();
+		};
+		const auto values = [&](ScriptValues& fields) {
+			for (auto& [key, value] : fields)
+				if (auto* id = std::get_if<PersistentEntityId>(&value); id && !remap(*id))
+					return false;
+			return true;
+		};
+		for (auto& node : copy.m_Nodes) {
+			node.identity.persistent = mapping.at(node.identity.persistent);
+			if (!remap(node.parent) || (node.script && !values(node.script->properties)) ||
+			    (node.behavior && !values(node.behavior->variables)))
+				return {WorldError::InvalidEntity, "Clipboard has an unresolved external entity reference"};
+			if (node.camera) {
+				if (view == UINT64_MAX)
+					return {WorldError::CapacityExceeded, "Camera view identity exhausted"};
+				node.camera->viewId = ++view;
+				node.camera->historyRevision = 1;
+			}
+			/* 动态领域组件仅按声明的实体字段转换；资产和用户字符串保持原值。 */
+			if (const auto skin = node.dynamicComponents.find("catalpa.skinned_mesh");
+			    skin != node.dynamicComponents.end()) {
+				if (const auto* field = skin->second.Find("animator")) {
+					if (const auto* text = std::get_if<std::string>(&field->data)) {
+						PersistentEntityId animator;
+						if (!PersistentEntityId::TryParse(*text, animator) ||
+						    (animator.HasValue() && !mapping.contains(animator) && !Resolve(animator).HasValue()))
+							return {WorldError::InvalidEntity, "Clipboard animator reference is unavailable"};
+					}
+				}
+			}
+			if (!RemapDomainEntityReferences(node.dynamicComponents, mapping, error))
+				return {WorldError::InvalidArgument, "Invalid clipboard domain entity reference"};
+			if (node.prefab) {
+				for (auto& [local, instance] : node.prefab->entities) {
+					if (!mapping.contains(instance))
+						return {WorldError::InvalidArgument, "Copy the complete prefab instance before pasting"};
+					instance = mapping.at(instance);
+				}
+				auto metadata = AuthorJson::Json::parse(node.prefab->overrides);
+				if (metadata.contains("attachment") && !metadata["attachment"].is_null()) {
+					PersistentEntityId attachment;
+					if (!PersistentEntityId::TryParse(metadata["attachment"].get<std::string>(), attachment) ||
+					    !remap(attachment))
+						return {WorldError::InvalidEntity, "Prefab attachment is unavailable"};
+					metadata["attachment"] = attachment.ToString();
+				}
+				node.prefab->overrides = metadata.dump();
+			}
+		}
+		copy.m_Nodes.front().identity.name += " (Copy)";
+		output = std::move(copy);
+		return {};
+	} catch (const std::exception& exception) {
+		return {WorldError::CommandFailed, "Cannot prepare clipboard subtree"};
+	}
+
 	WorldStatus Scene::RemoveForUndo(
 	    EntityId root, SceneSubtreeSnapshot& output, const SceneSubtreeSnapshot* expected) try {
 		SceneSubtreeSnapshot snapshot;
@@ -255,6 +399,7 @@ namespace Catalpa {
 			if (Resolve(node.identity.persistent).HasValue())
 				return {WorldError::AlreadyExists, "Subtree identity was reused"};
 		}
+
 		std::vector<EntityId> created;
 		created.reserve(snapshot.m_Nodes.size());
 		const bool dirty = m_Dirty;

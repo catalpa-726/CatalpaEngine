@@ -22,7 +22,8 @@ namespace Catalpa {
 		MouseMoved,
 		MouseScrolled,
 		WindowFramebufferResize,
-		WindowMinimize
+		WindowMinimize,
+		FileDrop
 	};
 
 	enum EventCategory {

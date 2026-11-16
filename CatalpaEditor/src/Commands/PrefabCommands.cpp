@@ -21,9 +21,13 @@ namespace Catalpa::Editor {
 		}
 		class PrefabEdit final : public EditorCommand {
 		public:
-			PrefabEdit(StableId owner, PersistentEntityId root, SceneSubtreeSnapshot candidate, bool replacing)
-			    : EditorCommand(owner, replacing ? "history.prefab_update" : "history.prefab_add"), m_Root(root),
-			      m_After(std::move(candidate)), m_Replacing(replacing) {}
+			PrefabEdit(StableId owner, PersistentEntityId root, SceneSubtreeSnapshot candidate, bool replacing,
+			    const char* label = nullptr)
+			    : EditorCommand(owner,
+			          label           ? label
+			              : replacing ? "history.prefab_update"
+			                          : "history.prefab_add"),
+			      m_Root(root), m_After(std::move(candidate)), m_Replacing(replacing) {}
 
 			bool Apply(Document& document, std::string& error) override {
 				auto* doc = dynamic_cast<SceneDocument*>(&document);
@@ -87,8 +91,15 @@ namespace Catalpa::Editor {
 		};
 	}
 
+	bool PlaceAuthorModel(
+	    SceneDocument& doc, PersistentEntityId root, SceneSubtreeSnapshot candidate, std::string& error) {
+		candidate.ForEachIdentity([&](PersistentEntityId id) { doc.ReserveIdentity(id); });
+		return doc.History().Execute(doc,
+		    std::make_unique<PrefabEdit>(doc.Id(), root, std::move(candidate), false, "assetwork.place_model"), error);
+	}
+
 	bool InstantiateAuthorPrefab(SceneDocument& doc, AssetManager& assets, AssetId id, PersistentEntityId parent,
-	    PersistentEntityId& created, std::string& error) {
+	    PersistentEntityId& created, std::string& error, Math::Vec3 offset) {
 		if (!doc.Resolve() || doc.Playing()) {
 			error = "Stop Play before instantiating a prefab";
 			return false;
@@ -101,7 +112,8 @@ namespace Catalpa::Editor {
 		SceneSubtreeSnapshot candidate;
 		PersistentEntityId root;
 		if (!PrefabInstantiation::Prepare(
-		        *doc.Resolve(), id, version, *source, &assets, resolver, parent, {}, candidate, root, error))
+		        *doc.Resolve(), id, version, *source, &assets, resolver, parent, {}, candidate, root, error) ||
+		    !candidate.OffsetRoot(offset, error))
 			return false;
 		candidate.ForEachIdentity([&](PersistentEntityId value) { doc.ReserveIdentity(value); });
 		if (!doc.History().Execute(

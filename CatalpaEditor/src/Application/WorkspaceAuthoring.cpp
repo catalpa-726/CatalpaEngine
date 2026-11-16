@@ -94,7 +94,6 @@ namespace Catalpa::Editor {
 		const bool scripted =
 		    scene->GetWorld().Has<ScriptComponent>(entity) && scene->GetWorld().Get(entity, script).IsSuccess();
 		if (scripted) {
-			ImGui::TextWrapped(UiFormat("ui.script", "Script: %s"), script.script.ToString().c_str());
 			bool changed = ImGui::Checkbox(UiLabel("ui.script_enabled", "Script enabled").c_str(), &script.enabled);
 			changed |= Properties(script.properties, m_Error);
 			ImGui::InputText(UiLabel("ui.new_script_property", "New script property").c_str(), m_PropertyName.data(),
@@ -136,25 +135,13 @@ namespace Catalpa::Editor {
 			if (ImGui::Button(UiLabel("ui.remove_script", "Remove script").c_str()))
 				EditScript(doc, id, std::nullopt, m_Error);
 		}
-		ImGui::InputText(
-		    UiLabel("ui.script_asset_id", "Script asset ID").c_str(), m_ScriptAsset.data(), m_ScriptAsset.size());
-		if (ImGui::Button(scripted ? UiText("ui.assign_different_script", "Assign different script")
-		                           : UiText("ui.add_script", "Add script"))) {
-			AssetId asset;
-			if (!AssetId::TryParse(m_ScriptAsset.data(), asset))
-				m_Error = "Enter a cooked script asset ID";
-			else {
-				script.script = asset;
-				EditScript(doc, id, script, m_Error);
-			}
-		}
+		DrawBehaviorPicker(doc, id, true, scripted ? script.script : AssetId{});
 		ImGui::PopID();
 		ImGui::PushID("BehaviorGraphComponent");
 		BehaviorGraphComponent behavior;
 		const bool graphed = scene->GetWorld().Has<BehaviorGraphComponent>(entity) &&
 		    scene->GetWorld().Get(entity, behavior).IsSuccess();
 		if (graphed) {
-			ImGui::TextWrapped(UiFormat("ui.behavior", "Behavior: %s"), behavior.graph.ToString().c_str());
 			bool changed =
 			    ImGui::Checkbox(UiLabel("ui.behavior_enabled", "Behavior enabled").c_str(), &behavior.enabled);
 			changed |= Properties(behavior.variables, m_Error);
@@ -176,18 +163,7 @@ namespace Catalpa::Editor {
 			if (ImGui::Button(UiLabel("ui.remove_behavior", "Remove behavior").c_str()))
 				EditBehaviorGraph(doc, id, std::nullopt, m_Error);
 		}
-		ImGui::InputText(UiLabel("ui.behavior_asset_id", "Behavior asset ID").c_str(), m_BehaviorAsset.data(),
-		    m_BehaviorAsset.size());
-		if (ImGui::Button(graphed ? UiText("ui.assign_different_behavior", "Assign different behavior")
-		                          : UiText("ui.add_behavior", "Add behavior"))) {
-			AssetId asset;
-			if (!AssetId::TryParse(m_BehaviorAsset.data(), asset))
-				m_Error = "Enter a cooked behavior graph asset ID";
-			else {
-				behavior.graph = asset;
-				EditBehaviorGraph(doc, id, behavior, m_Error);
-			}
-		}
+		DrawBehaviorPicker(doc, id, false, graphed ? behavior.graph : AssetId{});
 		ImGui::PopID();
 		PrefabInstanceComponent prefab;
 		if (scene->GetWorld().Has<PrefabInstanceComponent>(entity) &&

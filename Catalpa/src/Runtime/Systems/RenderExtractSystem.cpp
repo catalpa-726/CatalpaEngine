@@ -3,6 +3,7 @@
 #include "Runtime/Systems/RenderExtractSystem.h"
 
 #include "Runtime/Systems/CameraSystem.h"
+#include "Assets/BuiltinAssetIds.h"
 #include "Scene/Scene.h"
 #include "Scene/Components/CameraComponent.h"
 #include "Scene/Components/MeshRendererComponent.h"
@@ -40,6 +41,7 @@ namespace Catalpa {
 				RenderFramePacket candidate;
 				candidate.sequence = sequence;
 				candidate.sceneIdentity = scene.GetWorld().GetIdentity();
+				bool hasAuthoredEnvironment = false;
 				candidate.transforms.reserve(scene.GetWorld().GetEntityCount());
 				candidate.instances.reserve(scene.GetWorld().GetEntityCount());
 				/* 先校验请求的视图标识和像素范围，再从同一场景快照选择相机。 */
@@ -77,6 +79,7 @@ namespace Catalpa {
 						}
 					}
 					if (scene.GetWorld().Has<EnvironmentComponent>(entity)) {
+						hasAuthoredEnvironment = true;
 						EnvironmentComponent environment;
 						if (const auto result = scene.GetWorld().Get(entity, environment); !result.IsSuccess())
 							return result;
@@ -131,6 +134,10 @@ namespace Catalpa {
 				});
 				if (!status.IsSuccess())
 					return status;
+				/* 无环境组件的旧场景与新项目共享默认天空；作者禁用的环境保持关闭。 */
+				if (!hasAuthoredEnvironment)
+					candidate.environment =
+					    RenderEnvironment{AssetHandle<EnvironmentAsset>{BuiltinAssetIds::DefaultEnvironment}, {}};
 
 				/* 零像素目标不构建投影；仍发布独立变换快照以正确收束最小化窗口状态。 */
 				for (size_t index = 0; index < requests.size(); ++index) {

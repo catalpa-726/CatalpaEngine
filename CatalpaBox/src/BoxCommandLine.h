@@ -10,6 +10,9 @@ namespace Catalpa {
 		bool testEditorGrove = false;
 		std::filesystem::path testLanguageDirectory;
 		bool testEditorDocking = false;
+		bool testEditorModals = false;
+		bool testEditorGraphs = false;
+		bool testEditorObjDrop = false;
 		bool testEditorPlatformWindows = false;
 		std::filesystem::path project, package;
 	};

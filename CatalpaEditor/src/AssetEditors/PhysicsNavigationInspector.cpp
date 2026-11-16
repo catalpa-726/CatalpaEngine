@@ -234,7 +234,7 @@ namespace Catalpa::Editor {
 		}
 	} /* 命名空间 */
 	void DrawPhysicsNavigationInspector(
-	    SceneDocument& doc, EntityId entity, std::string& error, const PanelText& text) try {
+	    SceneDocument& doc, EntityId entity, std::string& error, const PanelText& text, std::string_view addType) try {
 		const auto T = [&](const char* key, const char* fallback) {
 			return text ? text(key, fallback, key) : std::string(fallback);
 		};
@@ -278,7 +278,7 @@ namespace Catalpa::Editor {
 				if (ImGui::Button(T("physics.remove_body", "Remove rigid body").c_str()))
 					Edit(doc, entity, "rigid_body", {}, error);
 			}
-		} else if (!w.Has<CharacterControllerComponent>(entity) &&
+		} else if (addType == "RigidBodyComponent" && !w.Has<CharacterControllerComponent>(entity) &&
 		    ImGui::Button(T("physics.add_body", "Add rigid body").c_str()))
 			Edit(doc, entity, "rigid_body",
 			    Archive(AuthorJson::Json{{"motion", 0}, {"massKg", 1}, {"gravityFactor", 1},
@@ -302,7 +302,7 @@ namespace Catalpa::Editor {
 				if (ImGui::Button(T("physics.remove_collider", "Remove collider").c_str()))
 					Edit(doc, entity, "collider", {}, error);
 			}
-		} else {
+		} else if (addType == "ColliderComponent") {
 			static AssetId shape;
 			AssetInput(T("physics.new_shape", "Shape UUID for new collider").c_str(), shape, error);
 			if (shape.HasValue() && ImGui::Button(T("physics.add_collider", "Add collider").c_str()))
@@ -345,7 +345,7 @@ namespace Catalpa::Editor {
 				if (ImGui::Button(T("physics.remove_character", "Remove character controller").c_str()))
 					Edit(doc, entity, "character_controller", {}, error);
 			}
-		} else if (!w.Has<RigidBodyComponent>(entity) &&
+		} else if (addType == "CharacterControllerComponent" && !w.Has<RigidBodyComponent>(entity) &&
 		    ImGui::Button(T("physics.add_character", "Add character controller").c_str()))
 			Edit(doc, entity, "character_controller",
 			    Archive(AuthorJson::Json{{"radius", 0.3}, {"halfHeight", 0.6}, {"slopeRadians", 0.78539816},
@@ -376,7 +376,7 @@ namespace Catalpa::Editor {
 				if (ImGui::Button(T("navigation.remove_agent", "Remove navigation agent").c_str()))
 					Edit(doc, entity, "navigation_agent", {}, error);
 			}
-		} else {
+		} else if (addType == "NavigationAgentComponent") {
 			static AssetId mesh;
 			AssetInput(T("navigation.new_mesh", "Mesh UUID for new navigation agent").c_str(), mesh, error);
 			if (mesh.HasValue() && ImGui::Button(T("navigation.add_agent", "Add navigation agent").c_str()))
@@ -407,7 +407,7 @@ namespace Catalpa::Editor {
 				if (ImGui::Button(T("terrain.remove", "Remove terrain").c_str()))
 					Edit(doc, entity, "terrain", {}, error);
 			}
-		} else {
+		} else if (addType == "TerrainComponent") {
 			static AssetId terrain;
 			AssetInput(T("terrain.new_asset", "UUID for new terrain").c_str(), terrain, error);
 			if (terrain.HasValue() && ImGui::Button(T("terrain.add", "Add terrain").c_str()))

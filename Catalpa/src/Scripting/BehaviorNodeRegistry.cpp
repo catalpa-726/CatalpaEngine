@@ -96,12 +96,16 @@ namespace Catalpa {
 	bool ReadBehaviorGraph(std::string_view text, BehaviorGraphAsset& output, std::string& error) try {
 		using namespace AuthorJson;
 		const auto doc = Parse(text, 4 * 1024 * 1024);
-		Fields(doc, {"schemaVersion", "nodes", "variables"});
+		Fields(doc, {"schemaVersion", "nodes", "variables", "sourceLabel"});
 		if (Unsigned(doc.at("schemaVersion")) != 1 || !doc.at("nodes").is_array() || !doc.at("variables").is_object())
 			throw std::invalid_argument("Invalid behavior graph schema");
 		if (doc.at("nodes").size() > 1024 || doc.at("variables").size() > 256)
 			throw std::invalid_argument("Behavior graph author budget exceeded");
 		BehaviorGraphAsset graph;
+		graph.sourceLabel = doc.value("sourceLabel", std::string{});
+		if (graph.sourceLabel.size() > 4096 || graph.sourceLabel.find_first_of("\r\n") != std::string::npos ||
+		    graph.sourceLabel.find('\0') != std::string::npos)
+			throw std::invalid_argument("Invalid behavior source label");
 		for (auto it = doc.at("variables").begin(); it != doc.at("variables").end(); ++it)
 			graph.variables.emplace(it.key(), Number(it.value()));
 		for (const auto& v : doc.at("nodes")) {
@@ -135,6 +139,8 @@ namespace Catalpa {
 			return false;
 		using AuthorJson::Json;
 		Json doc{{"schemaVersion", 1}, {"variables", graph.variables}, {"nodes", Json::array()}};
+		if (!graph.sourceLabel.empty())
+			doc["sourceLabel"] = graph.sourceLabel;
 		for (const auto& n : graph.nodes) {
 			Json links = Json::object();
 			for (const auto& [key, target] : n.flow)

@@ -6,6 +6,16 @@ namespace Catalpa::Tools {
 	class AssetBuildCache final {
 	public:
 		/**
+		 * @brief 从最近一次成功构建的索引和报告恢复来源配方。
+		 * @param[in] project 提供该项目的索引和不可变构建版本所在目录。
+		 * @param[in] owner 由项目身份和逻辑源路径计算的请求标识。
+		 * @param[out] output 成功时得到已保存选项，首次导入得到默认值。
+		 * @param[out] error 读取、结构或摘要验证失败时给出原因。
+		 * @return 配方已恢复或尚无索引时返回 true；失败时保留原输出。
+		 */
+		static bool ReadSettings(
+		    const ProjectConfig& project, AssetId owner, AssetImportSettings& output, std::string& error);
+		/**
 		 * @brief 按输入依赖、签名和内容哈希验证派生数据缓存。
 		 * 验证失败视为未命中，保留调用者的上下文和原结果。
 		 *

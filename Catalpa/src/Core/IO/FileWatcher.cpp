@@ -8,8 +8,13 @@ namespace Catalpa {
 	}
 
 	bool FileWatcher::SetPaths(std::span<const std::filesystem::path> paths, std::string& error) {
+		return SetPaths(paths, {}, error);
+	}
+
+	bool FileWatcher::SetPaths(std::span<const std::filesystem::path> paths,
+	    std::span<const std::filesystem::path> missing, std::string& error) {
 		try {
-			if (paths.size() > 4096) {
+			if (paths.size() > 4096 || missing.size() > 4096 - paths.size()) {
 				error = "Watch input count exceeds 4096";
 				return false;
 			}
@@ -23,6 +28,13 @@ namespace Catalpa {
 				if (!FileWatcherDetail::Query(path, stamp, error))
 					return false;
 				candidate.emplace(path.lexically_normal(), Watched{stamp, {}, false});
+			}
+			for (const auto& path : missing) {
+				if (!path.is_absolute()) {
+					error = "Watch paths must be absolute";
+					return false;
+				}
+				candidate.try_emplace(path.lexically_normal(), Watched{});
 			}
 			m_Files.swap(candidate);
 			m_NextPoll = {};

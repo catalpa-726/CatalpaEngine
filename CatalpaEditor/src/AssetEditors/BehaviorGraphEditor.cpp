@@ -1,9 +1,11 @@
 #include "AssetEditors/BehaviorGraphEditor.h"
+#include "AssetPipeline/AssetBuildTypes.h"
 
 #include "Commands/GraphCommands.h"
 #include "BehaviorGraph/BehaviorGraphCompiler.h"
 #include "Core/Application.h"
 #include "Scripting/BehaviorGraphRuntime.h"
+#include "Scene/SceneManager.h"
 #include "Panels/EditorText.h"
 #include "imgui.h"
 
@@ -189,8 +191,29 @@ namespace Catalpa::Editor {
 	void BehaviorGraphEditor::DrawDebug(Application& app, const AssetDocument& doc, std::string& error) {
 		if (ImGui::CollapsingHeader(UiLabel("ui.play_execution_snapshots", "Play execution snapshots").c_str())) {
 			ImGui::InputText(UiLabel("ui.emit_event", "Emit event").c_str(), m_Event.data(), m_Event.size());
-			for (const auto& snapshot : app.GetBehaviorDebug()) {
-				if (snapshot.graph != doc.Asset())
+			auto snapshots = app.GetBehaviorDebug();
+			std::erase_if(snapshots, [&](const auto& entry) { return entry.graph != doc.Asset(); });
+			const auto label = [&](const auto& entry) {
+				IdentityComponent identity;
+				const auto* scene = app.GetScenes().GetActive();
+				if (scene && scene->GetIdentity(scene->Resolve(entry.entity), identity).IsSuccess())
+					return identity.name + "  [" + entry.entity.ToString() + "]";
+				return entry.entity.ToString();
+			};
+			const auto selected = std::find_if(
+			    snapshots.begin(), snapshots.end(), [&](const auto& entry) { return entry.entity == m_DebugEntity; });
+			if (!snapshots.empty() && selected == snapshots.end())
+				m_DebugEntity = snapshots.front().entity;
+			if (!snapshots.empty() &&
+			    ImGui::BeginCombo(UiText("assetwork.debug_entity", "Running entity"),
+			        label(selected == snapshots.end() ? snapshots.front() : *selected).c_str())) {
+				for (const auto& entry : snapshots)
+					if (ImGui::Selectable(label(entry).c_str(), entry.entity == m_DebugEntity))
+						m_DebugEntity = entry.entity;
+				ImGui::EndCombo();
+			}
+			for (const auto& snapshot : snapshots) {
+				if (snapshot.entity != m_DebugEntity)
 					continue;
 				ImGui::PushID(snapshot.entity.ToString().c_str());
 				ImGui::Text(UiFormat("ui.entity_node", "Entity: %s / node: %s"), snapshot.entity.ToString().c_str(),
@@ -198,7 +221,9 @@ namespace Catalpa::Editor {
 				ImGui::Text(UiFormat("ui.running_program_version_author_draft_is_separate",
 				                "Running program version: %llu (author draft is separate)"),
 				    static_cast<unsigned long long>(snapshot.version));
-				ImGui::TextWrapped("%s", snapshot.error.c_str());
+				if (!snapshot.error.empty())
+					ImGui::TextWrapped("%s [%s]: %s", Tools::AssetPathText(doc.AuthorPath()).c_str(),
+					    snapshot.node.ToString().c_str(), snapshot.error.c_str());
 				if (snapshot.node.HasValue() &&
 				    ImGui::Button(UiLabel("ui.locate_running_node", "Locate running node").c_str())) {
 					m_Selected = snapshot.node;

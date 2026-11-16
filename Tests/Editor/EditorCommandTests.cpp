@@ -16,7 +16,9 @@
 #include "ECS/ComponentRegistry.h"
 #include "Camera/CameraProjection.h"
 #include "AssetEditors/AssetEditorRegistry.h"
+#include "AssetEditors/MaterialColorPicker.h"
 #include "Viewport/EditorCameraController.h"
+#include "Viewport/TransformGizmo.h"
 #include "Properties/RotationEditorState.h"
 
 #include <nlohmann/json.hpp>
@@ -45,11 +47,15 @@ namespace Catalpa::Tests {
 			    {"panels", {{"scene", true}, {"assets", false}, {"inspector", true}, {"settings", false}}},
 			    {"layout", ""}, {"layout_checksum", "cbf29ce484222325"}};
 			WorkspaceSettings loaded;
+			t.Check(loaded.showScene && loaded.showInspector && loaded.showContent && loaded.showConsole &&
+			        !loaded.showAssets && !loaded.showHistory && !loaded.showBuild && !loaded.showNetwork,
+			    "New workspace opens hierarchy, inspector, project content and console");
 			loaded.editorFontSize = 18;
 			const bool migrated = AtomicFileWriter::Write(path, legacy.dump(), error) &&
 			    LoadWorkspaceSettings(path, loaded, error) == WorkspaceLoadResult::Loaded;
-			t.Check(migrated && loaded.editorFontSize == 24 && loaded.language == "zh-CN" && !loaded.vsync &&
-			        !loaded.showAssets,
+			t.Check(migrated && loaded.viewport == ViewportSettings{} && loaded.editorFontSize == 24 &&
+			        loaded.language == "zh-CN" && !loaded.vsync && !loaded.showAssets &&
+			        loaded.recentProjects.empty() && loaded.showHistory && loaded.showBuild && !loaded.showConsole,
 			    "Old workspaces acquire 24 px and retain panel preferences");
 			if (!migrated)
 				return;
@@ -57,12 +63,23 @@ namespace Catalpa::Tests {
 			t.Check(!loaded.showAudioMixer && !loaded.showNetwork, "Legacy workspaces keep diagnostics panels closed");
 			for (int size : {12, 36}) {
 				auto edited = loaded;
+				const auto utf8 = (fixture.root / "示例 project.catalpaproj").generic_u8string();
+				edited.recentProjects = {std::string(utf8.begin(), utf8.end())};
 				edited.editorFontSize = size;
 				edited.showAudioMixer = size == 12;
 				edited.showNetwork = size == 36;
+				edited.viewport = size == 12
+				    ? ViewportSettings{ViewportSettings::MinCameraSpeed, true, ViewportSettings::MinTranslationStep,
+				          ViewportSettings::MinRotationStep, ViewportSettings::MinScaleStepPercent}
+				    : ViewportSettings{ViewportSettings::MaxCameraSpeed, false, ViewportSettings::MaxTranslationStep,
+				          ViewportSettings::MaxRotationStep, ViewportSettings::MaxScaleStepPercent};
 				const bool roundtrip = SaveWorkspaceSettings(path, edited, error) &&
 				    LoadWorkspaceSettings(path, loaded, error) == WorkspaceLoadResult::Loaded;
 				t.Check(roundtrip && loaded.editorFontSize == size, "Workspace font size endpoints persist");
+				t.Check(roundtrip && loaded.viewport == edited.viewport,
+				    "Camera speed, independent transform snap endpoints and snap state persist");
+				t.Check(roundtrip && loaded.recentProjects == edited.recentProjects,
+				    "Recent Unicode project path persists across reload");
 				t.Check(roundtrip && loaded.showAudioMixer == edited.showAudioMixer &&
 				        loaded.showNetwork == edited.showNetwork,
 				    "Audio mixer and network panel visibility persist independently");
@@ -77,11 +94,13 @@ namespace Catalpa::Tests {
 			}
 			auto saved = nlohmann::json::parse(text, nullptr, false);
 			const bool currentSchema = saved.is_object() && saved.contains("schema_version") &&
-			    saved["schema_version"] == 2 && saved.contains("editor_font_size") && saved["editor_font_size"] == 36;
+			    saved["schema_version"] == 3 && saved.contains("editor_font_size") && saved["editor_font_size"] == 36;
 			t.Check(currentSchema, "Saved workspaces write a versioned font size");
 			if (!currentSchema)
 				return;
 			auto previous = saved;
+			previous["schema_version"] = 2;
+			previous.erase("viewport");
 			previous["panels"].erase("audio_mixer");
 			previous["panels"].erase("network");
 			previous["panels"]["history"] = false;
@@ -89,6 +108,34 @@ namespace Catalpa::Tests {
 			    LoadWorkspaceSettings(path, loaded, error) == WorkspaceLoadResult::Loaded;
 			t.Check(legacyPanels && !loaded.showHistory && !loaded.showNetwork && !loaded.showAudioMixer,
 			    "Existing nine-panel workspaces retain history visibility and default diagnostics");
+			t.Check(legacyPanels && loaded.viewport == ViewportSettings{},
+			    "Version 2 workspace acquires default camera speed and transform snap settings");
+			/* 保存校验失败时原文件保持可读，调用方仍可恢复原有工作区。 */
+			auto invalidSpeed = loaded;
+			invalidSpeed.viewport.cameraSpeed = std::numeric_limits<float>::infinity();
+			std::string unchanged;
+			t.Check(!SaveWorkspaceSettings(path, invalidSpeed, error) && !error.empty() &&
+			        ReadWorkspaceText(path, unchanged, 1024 * 1024, error) && unchanged == previous.dump(),
+			    "Invalid camera speed does not replace existing workspace preferences");
+			/* 分别覆盖常见的损坏配置：单位值越界、错误类型以及缺字段。 */
+			auto assertBadViewport = [&](nlohmann::json viewport) {
+				auto bad = saved;
+				bad["viewport"] = std::move(viewport);
+				t.Check(AtomicFileWriter::Write(path, bad.dump(), error) &&
+				        LoadWorkspaceSettings(path, loaded, error) == WorkspaceLoadResult::Failed && !error.empty() &&
+				        loaded.viewport == ViewportSettings{} && !loaded.showHistory,
+				    "Invalid viewport settings preserve the entire previous workspace");
+			};
+			const nlohmann::json invalidFields{{"camera_speed", 0}, {"translation_step", 1e100}, {"rotation_step", 181},
+			    {"scale_step_percent", -1}, {"snap_enabled", 1}};
+			for (const auto& [name, value] : invalidFields.items()) {
+				auto viewport = saved["viewport"];
+				viewport[name] = value;
+				assertBadViewport(std::move(viewport));
+			}
+			auto incomplete = saved["viewport"];
+			incomplete.erase("rotation_step");
+			assertBadViewport(std::move(incomplete));
 			auto malformed = saved;
 			malformed["panels"]["network"] = 1;
 			const bool invalidPanel = AtomicFileWriter::Write(path, malformed.dump(), error) &&
@@ -437,6 +484,14 @@ namespace Catalpa::Tests {
 			if (!made)
 				return;
 			const auto history = editor.HistoryRevision();
+			auto moving = editor;
+			t.Check(moving.Navigate({.forward = 1, .seconds = .125f, .speedMetresPerSecond = 24.f}, error) &&
+			        std::abs(glm::length(moving.Pose().translation - authored.translation) - 3.f) < 1.e-4f,
+			    "Keyboard navigation integrates the configured speed in metres per second");
+			const auto afterMove = moving.Pose();
+			t.Check(!moving.Navigate({.right = 1, .seconds = .1f, .speedMetresPerSecond = -1.f}, error) &&
+			        moving.Pose().translation == afterMove.translation,
+			    "An invalid movement speed cannot modify the editor camera");
 			t.Check(editor.Navigate({.right = 1, .forward = 1, .seconds = .2f}, error) &&
 			        std::abs(glm::length(editor.Pose().translation - authored.translation) - .6f) < 1.e-4f,
 			    "Diagonal navigation has the same speed as a single axis");
@@ -514,6 +569,32 @@ namespace Catalpa::Tests {
 			t.Check(editor.Navigate({.wheel = -.5f}, error) &&
 			        std::abs(editor.Lens().orthographicHeight - source.lens.orthographicHeight) < 1.e-4f,
 			    "The opposite wheel step restores orthographic framing");
+		}
+
+		/** @brief 核对非等比、带符号局部尺度的百分比步长以及无效输入的原子失败。 */
+		void CheckScaleIncrements(TestContext& t) {
+			const Math::Vec3 local{-2, 3, 4};
+			Math::Mat4 start{1};
+			start[0] = {0, -6, 0, 0};
+			start[1] = {4.5f, 2, 0, 0};
+			start[2] = {0, 0, 8, 0};
+			Math::Vec3 result{};
+			t.Check(SnapGizmoScale(local, start, start, 30, result).IsSuccess() && result == local,
+			    "A stationary 30% scale snap preserves all starting axes");
+			auto dragged = start;
+			dragged[0] *= 1.18f;
+			t.Check(SnapGizmoScale(local, start, dragged, 30, result).IsSuccess() &&
+			        std::abs(result.x + 2.6f) < 1e-5f && result.y == local.y && result.z == local.z,
+			    "Scale snap retains the sign and untouched axes under a non-uniform parent");
+			dragged[0] = start[0] * .001f;
+			t.Check(SnapGizmoScale(local, start, dragged, 30, result).IsSuccess() && std::abs(result.x + .2f) < 1e-5f,
+			    "Shrinking stops at the last positive increment");
+			const auto last = result;
+			auto singular = start;
+			singular[1] = Math::Vec4{0.f};
+			t.Check(!SnapGizmoScale(local, singular, dragged, 30, result).IsSuccess() && result == last &&
+			        !SnapGizmoScale(local, start, dragged, NAN, result).IsSuccess() && result == last,
+			    "Invalid starting scales and increments leave the previous result untouched");
 		}
 
 		/**
@@ -665,6 +746,24 @@ namespace Catalpa::Tests {
 			        documents.Active() == doc,
 			    "Unknown editor type preserves the active document");
 			const auto before = doc->Material();
+			std::array<float, 4> color{2.f, .5f, .25f, .34567f};
+			t.Check(FormatMaterialHex(color) == "#FFBC8958" && color[0] == 2.f,
+			    "Showing an HDR color keeps the authored value and formats its display swatch in sRGB");
+			t.Check(ParseMaterialHex("#808080", color) && std::abs(color[0] - .2158605f) < 1e-6f && color[3] == .34567f,
+			    "Six hex digits decode sRGB and preserve exact author alpha");
+			const auto last = color;
+			t.Check(!ParseMaterialHex("#f00", color) && !ParseMaterialHex("#11223x", color) &&
+			        !ParseMaterialHex("#112233445", color) && color == last,
+			    "Partial, malformed and oversized hex edits cannot overwrite a draft");
+			t.Check(ParseMaterialHex("01AaFF80", color) && FormatMaterialHex(color) == "#01AAFF80" &&
+			        std::abs(color[0] - 1.f / 255.f / 12.92f) < 1e-8f && color[3] == 128.f / 255.f,
+			    "Eight hex digits round-trip all channels, with linear alpha and the sRGB low-range transfer");
+			const MaterialParameterOverride edit{"base_color", color};
+			t.Check(ChangeMaterial(*doc, std::span{&edit, 1}, {}, e) && doc->History().Undo(*doc, e) &&
+			        doc->Material() == before && doc->History().Redo(*doc, e) &&
+			        *FindMaterialParameter(*doc->Material(), "base_color") == MaterialValue{color} &&
+			        doc->History().Undo(*doc, e),
+			    "Applying a chosen color produces one reversible material change");
 			MaterialStateOverrides unchanged;
 			t.Check(ChangeMaterial(*doc, {}, unchanged, e) && doc->Material() != before &&
 			        fixed.GetShared() == before && doc->History().Undo(*doc, e) && doc->Material() == before,
@@ -689,6 +788,7 @@ namespace Catalpa::Tests {
 		CheckEditorCamera(t);
 		CheckOrthographicWheel(t);
 		CheckContinuousDrag(t);
+		CheckScaleIncrements(t);
 		CheckAssetDraft(t);
 	}
 }

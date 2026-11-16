@@ -1,4 +1,5 @@
 #include "AssetEditors/MaterialGraphEditor.h"
+#include "Panels/FormLayout.h"
 
 #include "Core/Application.h"
 #include "Core/PlatformServices.h"
@@ -206,6 +207,18 @@ namespace Catalpa::Editor {
 			        nullptr)
 			        .c_str());
 			for (auto& [name, value] : graph.parameters) {
+				if (name == "base_color" && value.size() == 4) {
+					PlaceFormLabel(text("graph.parameter.base_color", "Base color", nullptr));
+					std::array<float, 4> color;
+					std::copy(value.begin(), value.end(), color.begin());
+					ImGui::PushID(doc.Id().ToString().c_str());
+					if (m_ColorPicker.Draw(color)) {
+						std::copy(color.begin(), color.end(), value.begin());
+						Commit(doc, graph, error);
+					}
+					ImGui::PopID();
+					continue;
+				}
 				const auto label = text(("graph.parameter." + name).c_str(), name.c_str(), name.c_str());
 				if (FloatFields(label.c_str(), value))
 					Commit(doc, graph, error);

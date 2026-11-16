@@ -1,10 +1,9 @@
-#include "Panels/NetworkDiagnosticsPanel.h"
-#include "Panels/AudioMixerPanel.h"
 #include "catpch.h"
 
 #include "EditorWorkspace.h"
 
 #include "Panels/EditorText.h"
+#include "Panels/FormLayout.h"
 #include "EditorProject.h"
 #include "Application/WorkspaceEditing.h"
 #include "Panels/BuildPanel.h"
@@ -12,6 +11,10 @@
 #include "Panels/FileBrowserView.h"
 #include "Panels/ConsolePanel.h"
 #include "Panels/DependencyPanel.h"
+#include "Panels/ExportPanel.h"
+#include "Events/ApplicationEvent.h"
+#include "Panels/NetworkDiagnosticsPanel.h"
+#include "Panels/AudioMixerPanel.h"
 #include "Platform/WorkspaceFiles.h"
 #include "Core/Application.h"
 #include "Log/Log.h"
@@ -238,6 +241,7 @@ namespace Catalpa::Editor {
 		m_Content = std::make_unique<ContentBrowserPanel>();
 		m_Console = std::make_unique<ConsolePanel>();
 		m_Dependencies = std::make_unique<DependencyPanel>();
+		m_Export = std::make_unique<ExportPanel>();
 		if (!m_ProjectFile.empty()) {
 			auto project = std::make_unique<EditorProject>();
 			if (!project->Load(m_ProjectFile, error)) {
@@ -247,7 +251,7 @@ namespace Catalpa::Editor {
 				return;
 			}
 			const auto& session = *project->GetSession();
-			m_BrowseDirectory = session.config.contentRoot;
+			m_BrowseDirectory = m_ExecutableDirectory / "Resources";
 			CAT_INFO("Project opened: {0} ({1}), {2} registered assets.", session.config.name,
 			    session.config.id.ToString(), session.assets.GetRecords().size());
 			for (const auto& diagnostic : session.diagnostics)
@@ -255,6 +259,8 @@ namespace Catalpa::Editor {
 			m_Project = std::move(project);
 		}
 		const auto result = LoadWorkspaceSettings(m_SettingsPath, m_Settings, error);
+		m_Editing->ViewportPreferences() = m_Settings.viewport;
+		RememberProject();
 		LoadLanguage();
 		ApplyWorkspaceFontSize(m_Settings.editorFontSize);
 		if (result == WorkspaceLoadResult::Failed) {
@@ -267,6 +273,15 @@ namespace Catalpa::Editor {
 		}
 		Application::Get().GetWindow().SetVSync(m_Settings.vsync);
 		m_AssetBrowser->Reset();
+		if (m_Project && m_Editing) {
+			m_Editing->SetProject(&m_Project->GetSession()->config);
+			const auto& session = *m_Project->GetSession();
+			if (session.config.startupScene)
+				if (const auto* source = session.assets.Find(*session.config.startupScene);
+				    source && source->locator.path.MountName() == "content")
+					m_Editing->OpenSourceAsset(
+					    session.config.contentRoot / std::filesystem::u8path(source->locator.path.RelativePath()));
+		}
 	}
 
 	bool EditorWorkspace::SaveWorkspace() {
@@ -275,6 +290,7 @@ namespace Catalpa::Editor {
 		size_t size = 0;
 		const char* ini = ImGui::SaveIniSettingsToMemory(&size);
 		m_Settings.layout.assign(ini, size);
+		m_Settings.viewport = m_Editing->ViewportPreferences();
 		m_Settings.vsync = Application::Get().GetWindow().IsVSync();
 		std::string error;
 		if (!SaveWorkspaceSettings(m_SettingsPath, m_Settings, error)) {
@@ -303,6 +319,7 @@ namespace Catalpa::Editor {
 			return;
 		}
 		m_Settings = std::move(loaded);
+		m_Editing->ViewportPreferences() = m_Settings.viewport;
 		ImGui::ClearIniSettings();
 		if (!m_Settings.layout.empty())
 			ImGui::LoadIniSettingsFromMemory(m_Settings.layout.data(), m_Settings.layout.size());
@@ -315,6 +332,13 @@ namespace Catalpa::Editor {
 	}
 
 	void EditorWorkspace::OnEvent(Event& event) {
+		if (event.GetEventType() == EventType::FileDrop && m_Content) {
+			const auto& drop = static_cast<FileDropEvent&>(event);
+			m_Content->QueueImport(
+			    drop.GetPaths(), m_Editing ? m_Editing->MakeImportPlacement(drop.X(), drop.Y()) : ImportPlacement{});
+			m_Settings.showContent = true;
+			event.Handled = true;
+		}
 		if (event.GetEventType() == EventType::WindowClose && m_Attached && !m_SavedForExit) {
 			event.Handled = true;
 			m_CloseRequested = true;
@@ -336,9 +360,10 @@ namespace Catalpa::Editor {
 		if (action == Action::OpenProject) {
 			std::string error;
 			auto candidate = std::make_unique<EditorProject>();
-			if (!candidate->Load(std::filesystem::u8path(m_ProjectPathInput.data()), error))
+			if (!candidate->Load(std::filesystem::u8path(m_ProjectPathInput.data()), error)) {
+				m_ProjectDialogError = error;
 				Report("status.project_failed", "Project open failed", error);
-			else if (m_Editing && !m_Editing->Reset(error))
+			} else if (m_Editing && !m_Editing->Reset(error))
 				Report("status.project_failed", "Project open failed", error);
 			else {
 				if (m_Build)
@@ -346,12 +371,20 @@ namespace Catalpa::Editor {
 				m_Project = std::move(candidate);
 				m_ProjectSettings.Reset();
 				m_ProjectFile = m_Project->GetSession()->config.projectFile;
-				m_BrowseDirectory = m_Project->GetSession()->config.contentRoot;
+				RememberProject();
+				m_BrowseDirectory = m_ExecutableDirectory / "Resources";
 				m_SelectedFile.clear();
 				if (m_Content)
 					m_Content->Reset();
 				m_AssetBrowser->Reset();
-				m_Settings.showContent = m_Settings.showBuild = true;
+				m_Editing->SetProject(&m_Project->GetSession()->config);
+				const auto& session = *m_Project->GetSession();
+				if (session.config.startupScene) {
+					if (const auto* source = session.assets.Find(*session.config.startupScene);
+					    source && source->locator.path.MountName() == "content")
+						m_Editing->OpenSourceAsset(
+						    session.config.contentRoot / std::filesystem::u8path(source->locator.path.RelativePath()));
+				}
 				m_Dirty = true;
 				Report("status.project_opened", "Project opened");
 			}
@@ -375,11 +408,11 @@ namespace Catalpa::Editor {
 		} else if (action == Action::Reload)
 			ReloadWorkspace();
 		else if (action == Action::ResetLayout) {
-			m_Settings.showScene = m_Settings.showAssets = m_Settings.showInspector = true;
+			m_Settings.showScene = m_Settings.showInspector = true;
 			m_Settings.showSettings = false;
-			m_Settings.showHistory = true;
-			m_Settings.showContent = m_Settings.showBuild = true;
-			m_Settings.showConsole = m_Settings.showDependencies = false;
+			m_Settings.showAssets = m_Settings.showHistory = m_Settings.showBuild = false;
+			m_Settings.showContent = m_Settings.showConsole = true;
+			m_Settings.showDependencies = false;
 			m_Settings.showAudioMixer = m_Settings.showNetwork = false;
 			m_ResetLayout = true;
 			m_Dirty = true;
@@ -399,6 +432,8 @@ namespace Catalpa::Editor {
 			const auto [width, height] = Application::Get().GetWindow().GetFramebufferSize();
 			m_Build->Update({width, height});
 		}
+		if (m_Editing && m_Build)
+			m_Editing->UpdateAssetActions(m_Build.get(), m_ExecutableDirectory / "Resources" / "Shaders");
 		if (m_Console)
 			m_Console->Update();
 		/* 切换标签后仍收尾已启动的缩略图任务，使已提交的材质图集及时停止渲染。 */
@@ -426,6 +461,7 @@ namespace Catalpa::Editor {
 		m_Content.reset();
 		m_Console.reset();
 		m_Dependencies.reset();
+		m_Export.reset();
 		m_Project.reset(); /* 本工作区任务先取消并等待，再释放作者会话；Runtime调度器仍由Runtime收束。 */
 		if (ImGui::GetCurrentContext()) {
 			auto& io = ImGui::GetIO();
@@ -444,18 +480,6 @@ namespace Catalpa::Editor {
 		if (viewport->WorkSize.x <= 0 || viewport->WorkSize.y <= 0)
 			return;
 		if (!m_ResetLayout && ImGui::DockBuilderGetNode(dockId)) {
-			/* 为旧版工作区补上历史面板，保留用户已保存的其他分区。 */
-			const auto sceneId = ImHashStr("###Catalpa.Scene");
-			const auto historyId = ImHashStr("###Catalpa.History");
-			if (!ImGui::FindWindowSettingsByID(historyId) && !ImGui::FindWindowByID(historyId)) {
-				const auto* previous = ImGui::FindWindowSettingsByID(sceneId);
-				auto* node = previous ? ImGui::DockBuilderGetNode(previous->DockId) : nullptr;
-				if (node && node->IsLeafNode() && node->ID != dockId) {
-					const auto history = ImGui::DockBuilderSplitNode(node->ID, ImGuiDir_Down, .29f, nullptr, nullptr);
-					ImGui::DockBuilderDockWindow("###Catalpa.History", history);
-					ImGui::DockBuilderFinish(dockId);
-				}
-			}
 			return;
 		}
 		ImGui::DockBuilderRemoveNode(dockId);
@@ -467,9 +491,9 @@ namespace Catalpa::Editor {
 		const ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.27f, nullptr, &center);
 		const ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.26f, nullptr, &center);
 		ImGui::DockBuilderDockWindow("###Catalpa.Viewport", center);
-		const ImGuiID history = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.29f, nullptr, &left);
+		ImGui::DockBuilderDockWindow("###Catalpa.Welcome", center);
 		ImGui::DockBuilderDockWindow("###Catalpa.Scene", left);
-		ImGui::DockBuilderDockWindow("###Catalpa.History", history);
+		ImGui::DockBuilderDockWindow("###Catalpa.History", left);
 		ImGui::DockBuilderDockWindow("###Catalpa.Inspector", right);
 		ImGui::DockBuilderDockWindow("###Catalpa.Settings", right);
 		ImGui::DockBuilderDockWindow("###Catalpa.Assets", bottom);
@@ -499,15 +523,31 @@ namespace Catalpa::Editor {
 			        false, m_Editing->CanReturnFromGrove()))
 				m_Editing->ReturnFromGrove();
 			ImGui::Separator();
+			if (ImGui::MenuItem(Label("project.new", "New project...", "NewProject").c_str()))
+				m_NewProjectPopup = true;
 			if (ImGui::MenuItem(Label("action.open_project", "Open Project...", "OpenProject").c_str()))
-				m_OpenProjectPopup = true;
+				ChooseProject(false);
+			if (ImGui::MenuItem(Label("project.import", "Import project directory...", "ImportProject").c_str()))
+				ChooseProject(true);
+			if (ImGui::BeginMenu(Label("project.recent", "Recent projects", "RecentProjects").c_str())) {
+				for (const auto& path : m_Settings.recentProjects)
+					if (ImGui::MenuItem(path.c_str()))
+						QueueProject(std::filesystem::u8path(path));
+				ImGui::EndMenu();
+			}
 			if (ImGui::MenuItem(Label("action.close_project", "Close Project", "CloseProject").c_str(), nullptr, false,
 			        bool(m_Project)))
 				m_Action = Action::CloseProject;
-			if (ImGui::MenuItem(Label("action.import", "Import / Build Source", "ImportSource").c_str())) {
-				m_Settings.showContent = m_Settings.showBuild = true;
+			if (ImGui::MenuItem(Label("assetwork.import", "Import asset...", "ImportSource").c_str(), nullptr, false,
+			        bool(m_Project))) {
+				m_Settings.showContent = true;
+				m_Content->RequestImport();
 				m_Dirty = true;
 			}
+			ImGui::Separator();
+			if (ImGui::MenuItem(Label("export.open", "Export Windows game...", "ExportGame").c_str(), nullptr, false,
+			        bool(m_Project)))
+				m_Export->Open();
 			ImGui::Separator();
 			if (ImGui::MenuItem(Label("action.save", "Save Workspace", "Save").c_str()))
 				m_Action = Action::Save;
@@ -571,32 +611,20 @@ namespace Catalpa::Editor {
 		if (m_Editing) {
 			/* 宽窗口居中，窄窗口接在菜单后，避免遮挡已有菜单项。 */
 			const float strip = 4.f * ImGui::GetFrameHeight() + 3.f * ImGui::GetStyle().ItemSpacing.x;
-			ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), (ImGui::GetWindowWidth() - strip) * .5f));
-			m_Editing->PlayToolbar([this](const char* key, const char* fallback, const char* id) {
-				return id ? Label(key, fallback, id) : std::string(Text(key, fallback));
-			});
+			const auto controls = [this] {
+				m_Editing->PlayToolbar([this](const char* key, const char* fallback, const char* id) {
+					return id ? Label(key, fallback, id) : std::string(Text(key, fallback));
+				});
+			};
+			if (ImGui::GetCursorPosX() + strip + ImGui::GetStyle().WindowPadding.x < ImGui::GetWindowWidth()) {
+				ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), (ImGui::GetWindowWidth() - strip) * .5f));
+				controls();
+			} else if (ImGui::BeginMenu(Label("project.run", "Run", "PlayOverflow").c_str())) {
+				controls();
+				ImGui::EndMenu();
+			}
 		}
 		ImGui::EndMainMenuBar();
-		if (m_OpenProjectPopup) {
-			ImGui::OpenPopup(Label("panel.open_project", "Open Project", "Catalpa.OpenProject").c_str());
-			m_OpenProjectPopup = false;
-		}
-		if (ImGui::BeginPopupModal(Label("panel.open_project", "Open Project", "Catalpa.OpenProject").c_str(), nullptr,
-		        ImGuiWindowFlags_AlwaysAutoResize)) {
-			ImGui::TextWrapped(
-			    "%s", Text("project.path_hint", "Enter the absolute path of a .catalpaproj author project."));
-			ImGui::SetNextItemWidth(650);
-			ImGui::InputText(Label("project.path", "Project file", "ProjectPath").c_str(), m_ProjectPathInput.data(),
-			    m_ProjectPathInput.size());
-			if (ImGui::Button(Label("project.open", "Open", "ConfirmOpenProject").c_str())) {
-				m_Action = Action::OpenProject;
-				ImGui::CloseCurrentPopup();
-			}
-			ImGui::SameLine();
-			if (ImGui::Button(Label("project.cancel", "Cancel", "CancelOpenProject").c_str()))
-				ImGui::CloseCurrentPopup();
-			ImGui::EndPopup();
-		}
 	}
 
 	void EditorWorkspace::DrawHistory() {
@@ -685,12 +713,11 @@ namespace Catalpa::Editor {
 		if (!m_Settings.showAssets)
 			return;
 		if (ImGui::Begin(Label("panel.assets", "Assets", "Catalpa.Assets").c_str(), &m_Settings.showAssets)) {
-			const auto root =
-			    m_Project ? m_Project->GetSession()->config.contentRoot : m_ExecutableDirectory / "Resources";
+			const auto root = m_ExecutableDirectory / "Resources";
 			const PanelText text = [this](const char* key, const char* fallback, const char* id) {
 				return id ? Label(key, fallback, id) : std::string(Text(key, fallback));
 			};
-			const auto rootName = m_Project ? Text("browser.content", "Content") : Text("panel.assets", "Assets");
+			const auto rootName = Text("panel.assets", "Assets");
 			if (m_AssetBrowser->Draw(root, rootName, m_BrowseDirectory, m_SelectedFile, 0, text) &&
 			    !m_SelectedFile.empty()) {
 				if (m_Editing)
@@ -715,6 +742,10 @@ namespace Catalpa::Editor {
 			};
 			if (m_Editing && m_Editing->Inspect(label)) {
 				/* 活动选择已由 Inspector 的类型适配器绘制。 */
+			} else if (m_Content && m_Build && !m_SelectedFile.empty() && m_SelectedFile == m_Content->SelectedPath() &&
+			    m_Content->DrawSourceInspector(m_Project ? m_Project->GetSession() : nullptr,
+			        m_ExecutableDirectory / "Resources" / "Shaders", *m_Build, label)) {
+				/* 项目资源导入设置由同一内容浏览器会话持有。 */
 			} else if (m_SelectedFile.empty()) {
 				const auto& window = Application::Get().GetWindow();
 				ImGui::TextUnformatted(Text("scene.window", "Main Window"));
@@ -819,7 +850,8 @@ namespace Catalpa::Editor {
 		DrawMenu();
 		const auto discardPopup = Label("document.unsaved", "Discard unsaved edits?", "Catalpa.DiscardEdits");
 		if (m_DiscardAction != Action::None || m_DiscardExit)
-			ImGui::OpenPopup(discardPopup.c_str());
+			ImGui::OpenPopup(discardPopup.c_str(), ImGuiPopupFlags_NoOpenOverExistingPopup);
+		PrepareEditorModal();
 		if (ImGui::BeginPopupModal(discardPopup.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
 			ImGui::TextUnformatted(Text("document.unsaved_message", "This workspace contains unsaved edits."));
 			if (ImGui::Button(UiLabel("ui.save_all_and_continue", "Save all and continue").c_str()) && m_Editing &&
@@ -854,6 +886,10 @@ namespace Catalpa::Editor {
 			    m_Settings.showDependencies, m_Settings.showHistory, m_Settings.showAudioMixer, m_Settings.showNetwork};
 		};
 		const auto before = visiblePanels();
+		if (m_Editing && m_Editing->TakeHierarchyRequest()) {
+			m_Settings.showScene = true;
+			ImGui::SetWindowFocus(Label("panel.scene", "Scene", "Catalpa.Scene").c_str());
+		}
 		DrawScene();
 		/* 切换回实体时解除旧文件选择，下次点击同一文件也会更新属性面板。 */
 		if (!m_SelectedFile.empty() && m_Editing && m_Editing->HasSceneSelection())
@@ -886,6 +922,17 @@ namespace Catalpa::Editor {
 		if (m_Content && m_Build)
 			m_Content->Draw(m_Settings.showContent, m_Project ? m_Project->GetSession() : nullptr,
 			    m_ExecutableDirectory / "Resources" / "Shaders", *m_Build, text);
+		if (m_Content && m_Editing) {
+			if (auto path = m_Content->TakeSelected(); !path.empty()) {
+				m_SelectedFile = std::move(path);
+				m_Editing->ClearSceneSelection();
+				m_Settings.showInspector = true;
+			}
+			if (auto path = m_Content->TakeOpened(); !path.empty())
+				m_Editing->OpenSourceAsset(path);
+			if (auto type = m_Content->TakeCreate(); !type.empty())
+				m_Editing->CreateAssetDraft(type);
+		}
 		if (m_Build)
 			m_Build->Draw(m_Settings.showBuild, text);
 		if (m_Console)
@@ -899,7 +946,18 @@ namespace Catalpa::Editor {
 			const auto dockId = ImHashStr(DockspaceName);
 			const auto* center = ImGui::DockBuilderGetCentralNode(dockId);
 			m_Editing->Draw(text, m_Build.get(), center ? center->ID : dockId);
+			/* 拖动时实时预览；松手或结束数值输入后再写工作区，避免逐帧写磁盘。 */
+			if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle) && !ImGui::IsAnyItemActive())
+				m_Dirty |= m_Editing->ViewportPreferences() != m_Settings.viewport;
 		}
+		if (m_Editing) {
+			m_Editing->HandleShortcuts();
+			auto* scene = m_Editing->CurrentScene();
+			m_Export->Draw(m_Project ? m_Project->GetSession() : nullptr, m_ExecutableDirectory,
+			    scene ? scene->AuthorPath() : std::filesystem::path{}, scene && scene->History().Dirty(),
+			    [this] { return m_Editing->SaveCurrentScene(); });
+		}
+		DrawProjectLauncher();
 		if (m_Dependencies && m_Build)
 			m_Dependencies->Draw(m_Settings.showDependencies, m_Build->Result(), text);
 		m_Dirty |= before != visiblePanels();

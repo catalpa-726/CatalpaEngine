@@ -129,8 +129,9 @@ namespace Catalpa::Editor {
 					}
 				}
 			}
-			ed::EndCreate();
 		}
+		/* 空闲帧的 BeginCreate 也已进入创建作用域，必须在下一帧前结束。 */
+		ed::EndCreate();
 		if (ed::BeginDelete()) {
 			ed::LinkId link;
 			while (ed::QueryDeletedLink(&link))
@@ -140,8 +141,8 @@ namespace Catalpa::Editor {
 			while (ed::QueryDeletedNode(&node))
 				if (ed::AcceptDeletedItem())
 					changes.removeNodes.push_back(Stable(node.Get()));
-			ed::EndDelete();
 		}
+		ed::EndDelete();
 		ed::NodeId selected;
 		if (ed::GetSelectedNodes(&selected, 1) > 0)
 			changes.selected = Stable(selected.Get());

@@ -13,6 +13,7 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
 #include <imm.h>
+#include <objbase.h>
 
 /* #include <glad/glad.h> */
 
@@ -29,11 +30,22 @@ namespace Catalpa {
 	}
 
 	WindowsWindow::WindowsWindow(const WindowProps& props) {
-		Init(props);
+		// 主窗口先持有 STA，再初始化音频等服务，避免 Shell 对话框跨 apartment 操作主 HWND。
+		const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+		if (FAILED(initialized))
+			throw std::runtime_error("Cannot initialize Windows UI COM apartment; HRESULT=" +
+			    std::to_string(static_cast<int32_t>(initialized)));
+		try {
+			Init(props);
+		} catch (...) {
+			CoUninitialize();
+			throw;
+		}
 	}
 
 	WindowsWindow::~WindowsWindow() {
 		Shutdown();
+		CoUninitialize();
 	}
 
 	/**
@@ -205,6 +217,22 @@ namespace Catalpa {
 			data.EventCallback(event);
 		});
 
+		glfwSetDropCallback(m_Window, [](GLFWwindow* window, int count, const char** paths) {
+			auto& data = *static_cast<WindowData*>(glfwGetWindowUserPointer(window));
+			if (!data.EventCallback || count < 1)
+				return;
+			try {
+				std::vector<std::filesystem::path> files;
+				for (int i = 0; i < count; ++i)
+					files.push_back(std::filesystem::u8path(paths[i]));
+				double x = 0, y = 0;
+				glfwGetCursorPos(window, &x, &y);
+				FileDropEvent event(std::move(files), float(x), float(y));
+				data.EventCallback(event);
+			} catch (const std::exception& failure) {
+				CAT_CORE_ERROR("File drop: {}", failure.what());
+			}
+		});
 		glfwSetWindowCloseCallback(m_Window, [](GLFWwindow* window) {
 			WindowData& data = *(WindowData*)glfwGetWindowUserPointer(window);
 			WindowCloseEvent event;

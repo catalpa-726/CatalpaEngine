@@ -40,5 +40,16 @@ namespace Catalpa {
 		    std::vector<AssetVersionRef<MeshAsset>> meshes, std::vector<AssetVersionRef<MaterialInstance>> materials,
 		    std::shared_ptr<ModelInstantiationResult>& output, std::string& error, EntityId parent = {},
 		    std::span<const ModelMaterialOverride> overrides = {});
+		/**
+		 * @brief 将独立候选场景中的完整模型根准备为目标作者场景的一次原子恢复操作。
+		 * @param[in] staged 已完成实例化的临时场景。
+		 * @param[in] root 同时容纳多个模型根的放置实体。
+		 * @param[in] destination 最终接收该子树的场景。
+		 * @param[out] output 成功后用于文档撤销和重做的快照。
+		 * @param[out] error 数据不完整或目标身份冲突的原因。
+		 * @return 成功时得到新根快照，两个场景均不改变。
+		 */
+		static bool PreparePlacement(const Scene& staged, EntityId root, const Scene& destination,
+		    SceneSubtreeSnapshot& output, std::string& error);
 	};
 }

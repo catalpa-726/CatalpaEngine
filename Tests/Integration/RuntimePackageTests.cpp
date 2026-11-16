@@ -5,6 +5,7 @@
 #include "Assets/PackageReader.h"
 #include "Assets/AssetCompression.h"
 #include "Packager/PackageBuilder.h"
+#include "Delivery/GameExport.h"
 #include "Commands/ToolCommandRunner.h"
 #include "Runtime/PackageSession.h"
 #include "Scene/SceneSerializer.h"
@@ -20,6 +21,70 @@
 #include "Scene/Scene.h"
 
 namespace Catalpa::Tests {
+	namespace {
+		/** @brief 用只能同时容纳一个请求的管理器装载宽依赖包，防止把在途临时预算误判为内容太大。 */
+		void CheckWidePackage(TestContext& test, AssetTest::Fixture& fixture, JobSystem& jobs, AssetContainer scene) {
+			std::string error;
+			std::vector<AssetRecord> records;
+			for (uint64_t i = 0; i < 4; ++i) {
+				AssetRecord record;
+				if (!fixture.Save(AssetTest::Container(AssetTest::Id(950 + i), 7), record, error)) {
+					test.Check(false, error);
+					return;
+				}
+				scene.dependencies.push_back({record.id, record.version, record.contentHash});
+				records.push_back(std::move(record));
+			}
+			scene.id = AssetTest::Id(970);
+			AssetRecord parent;
+			if (!fixture.Save(scene, parent, error)) {
+				test.Check(false, error);
+				return;
+			}
+			records.push_back(parent);
+			const auto file = fixture.root / "wide.catpkg";
+			fixture.files.push_back(file);
+			AssetRegistry registry;
+			VirtualFileSystem files;
+			std::shared_ptr<const PackageReader> package;
+			if (!fixture.Mount(files, error) || !registry.Replace(records, error) ||
+			    !Tools::PackageBuilder::Build(registry, files, parent.id, file, {}, error) ||
+			    !PackageReader::Open(file, package, error)) {
+				test.Check(false, error);
+				return;
+			}
+			auto config = AssetTest::Config();
+			config.maxPending = 1;
+			config.memoryBudgetBytes = 24 * 1024;
+			AssetManager assets(jobs, {}, {}, config);
+			struct EntryProbe {};
+			AssetLoader loader;
+			loader.type = parent.type;
+			loader.cppType = typeid(EntryProbe);
+			loader.decode = [](const AssetContainer&, const AssetDecodeContext& context, AssetLoadResult& out,
+			                    std::string& e) {
+				if (context.dependencies.size() != 4) {
+					e = "Missing fixed children";
+					return false;
+				}
+				out = MakeAssetLoadResult<EntryProbe>(std::make_shared<EntryProbe>(), sizeof(EntryProbe));
+				return true;
+			};
+			bool ok = assets.RegisterLoader(AssetTest::Loader(), error) &&
+			    assets.RegisterLoader(std::move(loader), error) && assets.InstallPackage(package, error);
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (ok && assets.GetStatus(parent.id) != AssetStatus::Ready &&
+			    std::chrono::steady_clock::now() < deadline) {
+				ok = assets.AdvancePackageLoad(error);
+				assets.Pump();
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+			test.Check(ok && assets.GetStatus(parent.id) == AssetStatus::Ready,
+			    "Wide package reaches entry with one pending slot");
+			test.Check(assets.UninstallPackage(error), "Wide package releases its mount");
+			assets.Shutdown();
+		}
+	}
 	void RunDeliveryContractsTests(TestContext& test) {
 		std::string error;
 		AssetContainer raw = AssetTest::Container(AssetTest::Id(900), 7);
@@ -63,6 +128,19 @@ namespace Catalpa::Tests {
 			test.Check(false, error);
 			return;
 		}
+		Tools::GameExportRequest exportRequest;
+		exportRequest.output = fixture.root / "NotPublished";
+		exportRequest.runtimeTemplate = fixture.root / "MissingRuntimeTemplate";
+		test.Check(!Tools::ExportWindowsGame(exportRequest, error) &&
+		        error.find("runtime-template.json") != std::string::npos &&
+		        !std::filesystem::exists(exportRequest.output),
+		    "Export identifies a missing template without creating a launchable output");
+		CancellationSource cancelled;
+		cancelled.Cancel();
+		exportRequest.cancellation = cancelled.Token();
+		test.Check(!Tools::ExportWindowsGame(exportRequest, error) && error.find("cancelled") != std::string::npos &&
+		        !std::filesystem::exists(exportRequest.output),
+		    "Cancelled export preserves the selected directory");
 		SceneAsset scene;
 		scene.name = "Package scene";
 		SceneEntityAsset root;
@@ -171,6 +249,7 @@ namespace Catalpa::Tests {
 			    "Stopping releases only the session scene and restores mounts");
 			assets.Shutdown();
 		}
+		CheckWidePackage(test, fixture, jobs, source);
 		jobs.Shutdown();
 
 		FileWatcher watcher;

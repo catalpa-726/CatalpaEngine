@@ -5,7 +5,6 @@
 
 namespace Catalpa::Editor {
 	namespace {
-		constexpr float SpeedMetresPerSecond = 3.0f;
 		constexpr float MouseRadiansPerPixel = 0.0025f;
 		constexpr float WheelMetresPerStep = 0.5f;
 		constexpr float WheelStepsPerOrthoDoubling = 4.0f;
@@ -142,11 +141,61 @@ namespace Catalpa::Editor {
 		return true;
 	}
 
+	bool EditorCameraController::Frame(Math::Vec3 center, float radius, std::string& error, CameraViewport viewport) {
+		if (!std::isfinite(center.x) || !std::isfinite(center.y) || !std::isfinite(center.z) ||
+		    !std::isfinite(radius) || radius <= 0 || !viewport.width || !viewport.height ||
+		    m_HistoryRevision == UINT64_MAX) {
+			error = "Invalid selection bounds, viewport dimensions or editor camera history";
+			return false;
+		}
+		auto pose = m_Pose;
+		auto lens = m_Lens;
+		const double aspectLimit = std::min(1.0, double(viewport.width) / viewport.height);
+		const double paddedRadius = 1.25 * radius;
+		double distance = lens.nearPlane + paddedRadius;
+		constexpr double maxFloat = std::numeric_limits<float>::max();
+		if (lens.projection == ProjectionType::Perspective) {
+			const double halfAngle = std::atan(std::tan(lens.verticalFovRadians * .5) * aspectLimit);
+			distance = std::max(distance, paddedRadius / std::sin(halfAngle));
+		} else {
+			const double height = 2 * paddedRadius / aspectLimit;
+			if (height > maxFloat) {
+				error = "Selection requires an orthographic extent outside the supported range";
+				return false;
+			}
+			lens.orthographicHeight = static_cast<float>(height);
+		}
+		if (distance > maxFloat || (!lens.infiniteFar && distance + paddedRadius > maxFloat)) {
+			error = "Selection requires an editor camera distance outside the supported range";
+			return false;
+		}
+		if (!lens.infiniteFar && distance + paddedRadius > lens.farPlane)
+			lens.farPlane = static_cast<float>(distance + paddedRadius);
+		pose.translation = center + pose.rotation * Math::Vec3{0, 0, static_cast<float>(distance)};
+		Math::Mat4 rigidWorld;
+		CameraMatrices matrices;
+		if (auto status = Math::ComposeTRS(pose, rigidWorld); !status.IsSuccess()) {
+			error = status.message;
+			return false;
+		}
+		if (auto status = BuildCameraMatrices(rigidWorld, lens, viewport, matrices); !status.IsSuccess()) {
+			error = status.message;
+			return false;
+		}
+		m_Pose = pose;
+		m_Lens = lens;
+		++m_HistoryRevision;
+		error.clear();
+		return true;
+	}
+
 	bool EditorCameraController::Navigate(const EditorCameraInput& input, std::string& error) {
 		if (!std::isfinite(input.seconds) || input.seconds < 0 || !std::isfinite(input.right) ||
 		    !std::isfinite(input.up) || !std::isfinite(input.forward) || !std::isfinite(input.lookX) ||
-		    !std::isfinite(input.lookY) || !std::isfinite(input.wheel)) {
-			error = "Editor camera input contains an invalid time or axis";
+		    !std::isfinite(input.lookY) || !std::isfinite(input.wheel) || !std::isfinite(input.speedMetresPerSecond) ||
+		    input.speedMetresPerSecond < ViewportSettings::MinCameraSpeed ||
+		    input.speedMetresPerSecond > ViewportSettings::MaxCameraSpeed) {
+			error = "Editor camera input contains an invalid time, axis or movement speed";
 			return false;
 		}
 		auto pose = m_Pose;
@@ -164,7 +213,7 @@ namespace Catalpa::Editor {
 		if (length > 1.f)
 			direction /= length;
 		/* 避免窗口失焦、拖动或调试暂停之后的巨步长，不改变模拟时钟。 */
-		pose.translation += direction * (std::min(input.seconds, 0.25f) * SpeedMetresPerSecond);
+		pose.translation += direction * (std::min(input.seconds, 0.25f) * input.speedMetresPerSecond);
 		auto lens = m_Lens;
 		if (input.wheel != 0) {
 			if (lens.projection == ProjectionType::Perspective) {

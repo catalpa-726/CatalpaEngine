@@ -21,6 +21,7 @@ namespace Catalpa::Editor {
 		void Close(Application&) override {
 			m_Canvas.Reset();
 			m_Selected = {};
+			m_DebugEntity = {};
 		}
 
 	private:
@@ -30,6 +31,7 @@ namespace Catalpa::Editor {
 		void DrawDebug(Application&, const AssetDocument&, std::string& error);
 		GraphCanvas m_Canvas;
 		StableId m_Selected;
+		PersistentEntityId m_DebugEntity;
 		std::array<char, 129> m_Variable{}, m_Event{};
 	};
 }

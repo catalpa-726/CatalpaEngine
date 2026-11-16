@@ -13,10 +13,13 @@ namespace Catalpa::Editor {
 		bool BeginProperties(const PanelText& text, const char* key, const char* title, const char* id) {
 			if (!ImGui::CollapsingHeader(text(key, title, id).c_str(), ImGuiTreeNodeFlags_DefaultOpen))
 				return false;
-			if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingStretchProp))
+			const bool twoColumns = ImGui::GetContentRegionAvail().x >= ImGui::GetFontSize() * 19.f;
+			if (!ImGui::BeginTable(id, twoColumns ? 2 : 1, ImGuiTableFlags_SizingStretchProp))
 				return false;
-			ImGui::TableSetupColumn("##Name", ImGuiTableColumnFlags_WidthStretch, .32f);
-			ImGui::TableSetupColumn("##Value", ImGuiTableColumnFlags_WidthStretch, .68f);
+			if (twoColumns) {
+				ImGui::TableSetupColumn("##Name", ImGuiTableColumnFlags_WidthStretch, .38f);
+				ImGui::TableSetupColumn("##Value", ImGuiTableColumnFlags_WidthStretch, .62f);
+			}
 			return true;
 		}
 
@@ -24,7 +27,9 @@ namespace Catalpa::Editor {
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn();
 			ImGui::AlignTextToFramePadding();
+			ImGui::PushTextWrapPos(0.f);
 			ImGui::TextUnformatted(label.data(), label.data() + label.size());
+			ImGui::PopTextWrapPos();
 			ImGui::TableNextColumn();
 			ImGui::SetNextItemWidth(-FLT_MIN);
 		}
@@ -72,8 +77,9 @@ namespace Catalpa::Editor {
 				return;
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn();
-			ImGui::TableNextColumn();
-			ImGui::TextDisabled("%s: %llu / %s: %llu", text("edit.view_id", "View ID", nullptr).c_str(),
+			if (ImGui::TableGetColumnCount() > 1)
+				ImGui::TableNextColumn();
+			ImGui::TextWrapped("%s: %llu / %s: %llu", text("edit.view_id", "View ID", nullptr).c_str(),
 			    static_cast<unsigned long long>(camera.viewId),
 			    text("edit.history_revision", "History revision", nullptr).c_str(),
 			    static_cast<unsigned long long>(camera.historyRevision));
@@ -123,11 +129,8 @@ namespace Catalpa::Editor {
 		 */
 		void DrawLight(SceneDocument& doc, EntityReference ref, const PanelText& text, std::string& error) {
 			LightComponent light;
-			if (!doc.Resolve()->GetWorld().Has<LightComponent>(ref.resolved)) {
-				if (ImGui::Button(text("edit.add_light", "Add light", "AddLight").c_str()))
-					EditLight(doc, ref.persistent, light, error);
+			if (!doc.Resolve()->GetWorld().Has<LightComponent>(ref.resolved))
 				return;
-			}
 			if (!doc.Resolve()->GetWorld().Get(ref.resolved, light).IsSuccess())
 				return;
 			auto& p = light.parameters;
@@ -180,7 +183,7 @@ namespace Catalpa::Editor {
 			if (!BeginProperties(text, "edit.environment", "Environment", "EnvironmentSection"))
 				return;
 			Field(text("edit.environment_asset", "Environment asset", nullptr));
-			ImGui::TextUnformatted(env.environment.id.ToString().c_str());
+			ImGui::TextWrapped("%s", env.environment.id.ToString().c_str());
 			auto& p = env.settings;
 			bool changed = ImGui::Checkbox(Field(text, "edit.enabled", "Enabled", "EnvEnabled").c_str(), &env.enabled);
 			changed |= ImGui::InputFloat(Field(text, "edit.strength", "Intensity", "EnvIntensity").c_str(),
@@ -266,7 +269,7 @@ namespace Catalpa::Editor {
 	}
 
 	void PropertyEditorRegistry::Draw(SceneDocument& doc, EntityReference ref, const PanelText& text,
-	    AssetVersionRef<MaterialInstance>& openMaterial, std::string& error) const {
+	    AssetVersionRef<MaterialInstance>& openMaterial, std::string& error, const MaterialSlotPicker& picker) const {
 		auto* scene = doc.Resolve();
 		const auto* schemas = scene ? scene->GetComponentSchemas() : nullptr;
 		if (!schemas)
@@ -285,13 +288,17 @@ namespace Catalpa::Editor {
 				for (size_t i = 0; i < mesh.materials.size(); ++i) {
 					const auto& material = mesh.materials[i];
 					const auto* layout = mesh.meshVersion.HasValue() ? mesh.meshVersion.Get() : nullptr;
-					Field(layout && i < layout->materialSlots.size()
-					        ? layout->materialSlots[i]
-					        : text("edit.material_slot", "Material slot", nullptr));
+					std::string label =
+					    text("edit.material_slot", "Material slot", nullptr) + " " + std::to_string(i + 1);
+					if (layout && i < layout->materialSlots.size() && !layout->materialSlots[i].empty())
+						label += " · " + layout->materialSlots[i];
+					Field(label);
 					ImGui::PushID(int(i));
+					if (picker)
+						picker(i, mesh);
 					if (material.HasValue()) {
 						const auto* definition = material.Get()->definition.Get();
-						if (definition)
+						if (!picker && definition)
 							ImGui::TextUnformatted(definition->family.c_str());
 						if (ImGui::Button(text("edit.open_material", "Edit material", "EditMaterial").c_str()))
 							openMaterial = material;

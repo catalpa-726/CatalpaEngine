@@ -719,6 +719,8 @@ namespace Catalpa {
 		lua_pushcfunction(state.vm, State::SetSelf);
 		if (!state.Protected(0, 0, nullptr, error))
 			return false;
+		if (!asset.sourceLabel.empty())
+			state.scratch = "@" + asset.sourceLabel;
 		if (luaL_loadbufferx(state.vm, asset.source.data(), asset.source.size(), state.scratch.c_str(), "t") !=
 		    LUA_OK) {
 			const char* message = lua_type(state.vm, -1) == LUA_TSTRING ? lua_tostring(state.vm, -1) : nullptr;

@@ -34,6 +34,42 @@ namespace Catalpa::Editor {
 	 */
 	bool DeleteAuthorEntity(SceneDocument&, PersistentEntityId, std::string& error);
 	/**
+	 * @brief 将剪贴板完整子树作为单次可撤销操作粘贴到原父节点下。
+	 * @param[in,out] doc 目标作者场景文档。
+	 * @param[in] snapshot 复制时的完整作者快照，必须属于目标场景。
+	 * @param[out] created 成功时接收新子树根身份。
+	 * @param[out] error 失败时接收原因，场景和历史均保持原样。
+	 * @return 完整子树提交成功时为 true。
+	 */
+	bool PasteAuthorSubtree(
+	    SceneDocument&, const SceneSubtreeSnapshot&, PersistentEntityId& created, std::string& error);
+	/**
+	 * @brief 为实体添加具有独立视图身份的相机，并记录可撤销操作。
+	 * @param[in,out] doc 持有作者场景与命令历史的文档。
+	 * @param[in] id 目标实体的持久标识。
+	 * @param[out] error 已有相机、视图身份耗尽或命令失败时接收原因。
+	 * @return 相机和历史同时提交成功时为 true。
+	 */
+	bool AddAuthorCamera(SceneDocument&, PersistentEntityId, std::string& error);
+	/**
+	 * @brief 设置完整网格和材质插槽，保留所引用的固定资产版本。
+	 * @param[in,out] doc 持有作者场景与命令历史的文档。
+	 * @param[in] id 目标实体的持久标识。
+	 * @param[in] mesh 经过场景校验的候选网格和材质组件。
+	 * @param[out] error 失败时接收原因，保留原组件和历史。
+	 * @return 完整组件提交成功时为 true。
+	 */
+	bool SetAuthorMesh(SceneDocument&, PersistentEntityId, const MeshRendererComponent&, std::string& error);
+	/**
+	 * @brief 移除指定的可选渲染组件，撤销时恢复完整作者值和资产引用。
+	 * @param[in,out] doc 持有作者场景与命令历史的文档。
+	 * @param[in] id 目标实体的持久标识。
+	 * @param[in] type 支持的相机、光源、环境或网格组件的 C++ 短名称。
+	 * @param[out] error 不支持该类型或提交失败时接收原因。
+	 * @return 可撤销的移除操作提交成功时为 true。
+	 */
+	bool RemoveAuthorComponent(SceneDocument&, PersistentEntityId, std::string_view type, std::string& error);
+	/**
 	 * @brief 修改局部。
 	 *
 	 * @param[in,out] doc 当前编辑的场景文档。

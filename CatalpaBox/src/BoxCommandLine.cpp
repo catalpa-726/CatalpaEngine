@@ -1,4 +1,5 @@
 #include "BoxCommandLine.h"
+#include "Core/PlatformServices.h"
 #if !defined(CATALPA_RUNTIME_ONLY)
 #include "Commands/ToolCommandRunner.h"
 #endif
@@ -11,7 +12,16 @@ namespace Catalpa {
 		options = {};
 		if (args.empty()) {
 #if defined(CATALPA_RUNTIME_ONLY)
-			CAT_ERROR("Runtime host requires --run-package <absolute-file>");
+			// 正式交付的程序可双击启动，只选择自身目录中的约定入口包。
+			std::filesystem::path directory;
+			std::string error;
+			std::error_code ec;
+			if (GetExecutableDirectory(directory, error) &&
+			    std::filesystem::is_regular_file(directory / "Game.catpkg", ec)) {
+				options.package = directory / "Game.catpkg";
+				return {};
+			}
+			CAT_ERROR("Runtime host requires adjacent Game.catpkg or --run-package <absolute-file>");
 			return {true, 2};
 #else
 			return {};
@@ -19,7 +29,7 @@ namespace Catalpa {
 		}
 #if !defined(CATALPA_RUNTIME_ONLY)
 		if (args[0] == "--cook-shaders" || args[0] == "--build-assets" || args[0] == "--cook-assets" ||
-		    args[0] == "--inspect" || args[0] == "--package") {
+		    args[0] == "--inspect" || args[0] == "--package" || args[0] == "--export-game") {
 			const auto result = Tools::ToolCommandRunner::Run(args);
 			for (const auto& diagnostic : result.diagnostics) {
 				if (result.exitCode == 0)
@@ -83,6 +93,18 @@ namespace Catalpa {
 				options.testEditorDocking = true;
 				return {};
 			}
+			if (args[0] == "--test-editor-modals") {
+				options.testEditorModals = true;
+				return {};
+			}
+			if (args[0] == "--test-editor-graphs") {
+				options.testEditorGraphs = true;
+				return {};
+			}
+			if (args[0] == "--test-editor-obj-drop") {
+				options.testEditorObjDrop = true;
+				return {};
+			}
 			if (args[0] == "--test-editor-platform-windows") {
 				options.testEditorPlatformWindows = true;
 				return {};
@@ -127,8 +149,8 @@ namespace Catalpa {
 #else
 		CAT_INFO(
 		    "Usage: CatalpaBox [--project <absolute-file> | --run-package <absolute-file> | "
-		    "--inspect <absolute-file> | --package <tool arguments> | --test-s14-s17 | --test-s14-foundation "
-		    "| --test-editor-docking | --test-editor-platform-windows | --test-editor-thumbnails | --test-editor-grove | --test-s10-s13 | --test-s07-s09 | --test-s05-s06 | --test-s04 | --sample-reversed-z | "
+		    "--inspect <absolute-file> | --export-game <tool arguments> | --package <tool arguments> | --test-s14-s17 | --test-s14-foundation "
+		    "| --test-editor-docking | --test-editor-modals | --test-editor-graphs | --test-editor-obj-drop | --test-editor-platform-windows | --test-editor-thumbnails | --test-editor-grove | --test-s10-s13 | --test-s07-s09 | --test-s05-s06 | --test-s04 | --sample-reversed-z | "
 		    "--test-editor-language <absolute-directory> | --sample-error-material | --cook-shaders <tool arguments> | --build-assets <tool arguments> | "
 		    "--cook-assets <tool arguments> | --help]. No arguments opens the workspace.");
 #endif

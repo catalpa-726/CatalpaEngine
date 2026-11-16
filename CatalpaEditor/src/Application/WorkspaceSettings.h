@@ -2,8 +2,25 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 namespace Catalpa::Editor {
+
+	/** @brief 场景编辑视口的导航速度（米/秒）和物体吸附步长（米、度、百分比）。 */
+	struct ViewportSettings {
+		static constexpr float MinCameraSpeed = 0.05f, MaxCameraSpeed = 4096.f;
+		static constexpr float MinTranslationStep = 0.0001f, MaxTranslationStep = 1000000.f;
+		static constexpr float MinRotationStep = 0.01f, MaxRotationStep = 180.f;
+		static constexpr float MinScaleStepPercent = 0.1f, MaxScaleStepPercent = 100.f;
+
+		float cameraSpeed = 3.f;
+		bool snapEnabled = false;
+		float translationStep = 0.25f;
+		float rotationStep = 15.f;
+		float scaleStepPercent = 10.f;
+
+		bool operator==(const ViewportSettings&) const = default;
+	};
 
 	/* 编辑器工作区配置；布局文本与场景/资产数据分开保存，内部面板 ID 保持稳定。 */
 	struct WorkspaceSettings {
@@ -12,19 +29,22 @@ namespace Catalpa::Editor {
 		static constexpr int MaxFontSize = 36;
 
 		int editorFontSize = DefaultFontSize;
+		ViewportSettings viewport;
 		bool vsync = true;
 		bool showScene = true;
-		bool showHistory = true;
-		bool showAssets = true;
+		bool showHistory = false;
+		bool showAssets = false;
 		bool showInspector = true;
 		bool showSettings = false;
 		bool showContent = true;
-		bool showBuild = true;
-		bool showConsole = false;
+		bool showBuild = false;
+		bool showConsole = true;
 		bool showDependencies = false;
 		bool showAudioMixer = false;
 		bool showNetwork = false;
 		std::string language = "en-US";
+		static constexpr size_t MaxRecentProjects = 12;
+		std::vector<std::string> recentProjects;
 		/*
 		 * 仅保存应用生成的 opaque ImGui 布局；人工编辑 JSON 时不要改 layout 或 layout_checksum。
 		 * 校验值用于检测意外变化，不是安全签名，也不验证 ImGui ini 的语义。

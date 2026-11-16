@@ -29,6 +29,7 @@ namespace Catalpa::Tests {
 					return;
 				}
 				if (result == Editor::WorkspaceLoadResult::Missing) {
+					settings.showAssets = true;
 					settings.showSettings = true;
 					settings.editorFontSize = 18;
 					if (!Editor::SaveWorkspaceSettings(m_Path, settings, error)) {
@@ -184,8 +185,12 @@ namespace Catalpa::Tests {
 					++m_Step;
 				} else if (m_Step == 1 && entity && !file && !window) {
 					auto* assets = ImGui::FindWindowByName("###Catalpa.Assets");
-					if (!assets || assets->SkipItems)
+					if (!assets)
 						return false;
+					if (assets->SkipItems) {
+						ImGui::FocusWindow(assets);
+						return false;
+					}
 					std::filesystem::path executable;
 					std::string error;
 					if (!GetExecutableDirectory(executable, error)) {
@@ -237,9 +242,19 @@ namespace Catalpa::Tests {
 				}
 				const auto& app = Application::Get();
 				const auto* scene = Application::Get().GetScenes().GetActive();
+				if (!scene || scene->GetName() != "Grove")
+					return false;
+				/* 无项目时欢迎页与场景视口同处中央节点；先切到视口，再等待该视口的渲染帧。 */
+				auto* viewport = ImGui::FindWindowByName("###Catalpa.Viewport");
+				if (!viewport)
+					return false;
+				if (viewport->SkipItems) {
+					ImGui::FocusWindow(viewport);
+					return false;
+				}
 				RenderSurfaceSnapshot frame;
-				return scene && scene->GetName() == "Grove" && app.GetEditorPreview(0x43415453434e4501ULL, frame) &&
-				    frame.textureToken && frame.sceneIdentity == scene->GetWorld().GetIdentity();
+				return app.GetEditorPreview(0x43415453434e4501ULL, frame) && frame.textureToken &&
+				    frame.sceneIdentity == scene->GetWorld().GetIdentity();
 			}
 
 			void DriveSettings(ImGuiWindow& settings, bool chinese) {

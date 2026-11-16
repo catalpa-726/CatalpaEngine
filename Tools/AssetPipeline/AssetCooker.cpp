@@ -14,6 +14,7 @@
 #include "AssetPipeline/Cookers/MaterialCooker.h"
 #include "AssetPipeline/Importers/MaterialImporter.h"
 #include "Assets/AssetDependencyGraph.h"
+#include "Assets/BuiltinAssetIds.h"
 #include "Assets/AssetManifest.h"
 #include "Assets/AssetContainerReader.h"
 #include "Core/IO/AtomicFileWriter.h"
@@ -92,7 +93,8 @@ namespace Catalpa::Tools {
 		 * @return 所需资产完成编码并生成对应构建产物时为 true；编码或依赖解析失败时为 false。
 		 */
 		bool CookDomainProducts(AssetBuildContext& context, AssetImportResult& imported, const AssetRecord& shader,
-		    std::vector<AssetBuildProduct>& products, std::vector<AssetSourceMapping>& mappings, std::string& error) {
+		    std::vector<AssetBuildProduct>& products, std::vector<AssetSourceMapping>& mappings,
+		    AssetId& missingDependency, std::string& error) {
 			/*
 			 * Assimp可给独立metallic/roughness图；只复制原8位R通道到新派生的B/G，绝不覆盖原图。
 			 * 尺寸不一致显式拒绝，避免重采样策略悄悄改变原数据。
@@ -300,6 +302,7 @@ namespace Catalpa::Tools {
 				}
 				const auto* record = existing.Find(id);
 				if (!record) {
+					missingDependency = id;
 					error = "Cook the referenced asset first: " + id.ToString();
 					return false;
 				}
@@ -542,6 +545,12 @@ namespace Catalpa::Tools {
 			if (!graph.Build(records, error) || !registry.Replace(records, error) ||
 			    !AssetManifest::Write(registry, bytes, error) || !context.CheckCancelled(error))
 				return false;
+			std::set<std::filesystem::path> watched{
+			    context.request.source, context.request.project.projectFile, context.request.project.buildProfilesFile};
+			for (const auto& input : context.Dependencies())
+				watched.insert(input.path);
+			result.watchInputs.assign(watched.begin(), watched.end());
+			result.missingTextureInputs.assign(context.MissingTextures().begin(), context.MissingTextures().end());
 			/* 完全相同的目录保持原时间戳，已持有项目发布锁，因此可以复用当前文件。 */
 			if (bytes != previousManifest && !WriteDerived(root, "Assets.manifest", bytes, false, error))
 				return false;
@@ -708,7 +717,8 @@ namespace Catalpa::Tools {
 			products.push_back(std::move(shaderProduct));
 			products.push_back(std::move(pbrProduct));
 			progress("Cooking geometry, images, materials and models", 0, imported.assets.size());
-			if (!CookDomainProducts(context, imported, *shader, products, result.mappings, error))
+			if (!CookDomainProducts(
+			        context, imported, *shader, products, result.mappings, result.missingDependency, error))
 				return fail(error);
 			if (importer->Name().starts_with("author-")) {
 				Json versions = Json::array({result.key});
@@ -730,8 +740,10 @@ namespace Catalpa::Tools {
 					continue;
 				}
 				/* 容器哈希已包含资产身份。相同对象复用已有字节；源目录标明重导入时应替换的记录。 */
-				const auto relative = std::filesystem::path("objects") /
-				    (product.record.id == unlit || product.record.id == pbr ? "shared" : sourceOwner) /
+				const auto id = product.record.id;
+				const bool shared = id == unlit || id == pbr || id == BuiltinAssetIds::CookedUnlitDefinition ||
+				    id == BuiltinAssetIds::CookedPbrDefinition;
+				const auto relative = std::filesystem::path("objects") / (shared ? "shared" : sourceOwner) /
 				    (product.record.contentHash + ".catasset");
 				if (!VirtualPath::Parse(mount + ":/" + AssetPathText(relative), product.record.locator.path, error))
 					return fail(error);

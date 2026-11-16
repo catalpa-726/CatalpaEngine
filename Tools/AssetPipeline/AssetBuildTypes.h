@@ -10,6 +10,7 @@
 namespace Catalpa::Tools {
 	/* unitScale 是转换到米后的附加倍率，仅影响派生模型。 */
 	struct AssetImportSettings {
+		bool operator==(const AssetImportSettings&) const = default;
 		double unitScale = 1.0;
 		std::string sourceUp = "auto"; /* auto: glTF规范/FBX元数据；OBJ按Y-up/米并诊断。 */
 		bool generateNormals = true, generateTangents = true;
@@ -91,10 +92,14 @@ namespace Catalpa::Tools {
 		bool success = false, cacheHit = false;
 		AssetId primary;
 		std::string key, error;
+		/* 缺少已引用的作者产物时，发布器按身份构建对应源并重试。 */
+		AssetId missingDependency;
 		std::filesystem::path cookedRoot, manifest, report;
 		std::vector<AssetRecord> records; /* 本次源文件及其 Cook 依赖。 */
 		/* 主清单原子替换成功后交付，包含同一挂载内其他来源的有效记录。 */
 		std::vector<AssetRecord> publishedCatalog;
+		/* 仅传递本次构建（含缓存命中）验证过的输入，缺图用构建时的缺失状态初始化观察。 */
+		std::vector<std::filesystem::path> watchInputs, missingTextureInputs;
 		std::vector<AssetSourceMapping> mappings;
 		std::vector<AssetBuildDiagnostic> diagnostics;
 	};

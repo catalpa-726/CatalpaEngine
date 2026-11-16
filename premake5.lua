@@ -205,8 +205,8 @@ project "Catalpa"
     include "Script/Build/Slang.lua"
 
     filter "system:windows"
-        -- 系统随机源与Unicode命令行；系统库，不引入第三方源码。
-        links { "bcrypt", "shell32", "imm32" }
+        -- 系统随机源、Unicode 命令行、输入法与 UI COM apartment；均为系统库。
+        links { "bcrypt", "shell32", "imm32", "ole32" }
         defines {
             "CATALPA_BUILD_DLL",
             "CATALPA_PLATFORM_WINDOW",
@@ -250,7 +250,7 @@ if buildBox then
         if runtimeOnly then
             links { "Catalpa" }
             defines { "CATALPA_RUNTIME_ONLY" }
-            removefiles { "CatalpaBox/src/BoxDefaultEnvironment.cpp", "CatalpaBox/src/BoxGameplay.cpp" }
+            removefiles { "CatalpaBox/src/BoxGameplay.cpp" }
         else
             links {
                 "Catalpa",
@@ -495,12 +495,23 @@ filter {}
 if buildBox then
     project "CatalpaBox"
         files {
+            "Catalpa/Resources/Environment/Overcast.catasset",
             "Catalpa/Resources/Fonts/Inter/extras/ttf/Inter-Regular.ttf",
             "Catalpa/Resources/Fonts/Inter/InterVariable.ttf",
             "Catalpa/Resources/Fonts/Inter/LICENSE.txt",
             "Catalpa/Resources/Fonts/NotoSansSC/NotoSansSC-Regular.otf",
             "Catalpa/Resources/Fonts/NotoSansSC/LICENSE.txt"
         }
+        filter { "system:windows", "files:**/Environment/Overcast.catasset" }
+            buildmessage "Deploying the default HDR environment"
+            buildcommands {
+                '{MKDIR} "%{cfg.targetdir}/Resources/Environment"',
+                'if errorlevel 1 exit /b 1',
+                '{COPYFILE} "%{file.abspath}" "%{cfg.targetdir}/Resources/Environment/%{file.name}"',
+                'if errorlevel 1 exit /b 1'
+            }
+            buildoutputs { "%{cfg.targetdir}/Resources/Environment/%{file.name}" }
+        filter {}
         -- 每个字体和许可文件有独立输出；两个字族可分别更新且不会覆盖同名许可证。
         for _, family in ipairs { "Inter", "NotoSansSC" } do
             local destination = "%{cfg.targetdir}/Resources/Fonts/" .. family

@@ -1,5 +1,6 @@
 #pragma once
 #include "Core/Serialization/Archive.h"
+#include "Core/Math/TransformMath.h"
 #include "Assets/AssetLoadResult.h"
 #include "Scene/Components/IdentityComponent.h"
 #include "Scene/Components/TransformComponent.h"
@@ -15,6 +16,7 @@ namespace Catalpa {
 	/* 撤销只保存作者局部值及固定资产引用。父关系按持久身份恢复，不复用旧 World 槽位。 */
 	class SceneSubtreeSnapshot {
 		friend class Scene;
+		friend class ModelInstantiation;
 		friend class PrefabInstantiation;
 		friend class PrefabReconciler;
 
@@ -47,8 +49,27 @@ namespace Catalpa {
 		std::vector<Node> m_Nodes;
 
 	public:
+		PersistentEntityId Root() const noexcept {
+			return m_Nodes.empty() ? PersistentEntityId{} : m_Nodes.front().identity.persistent;
+		}
 		PersistentEntityId Parent() const noexcept {
 			return m_Nodes.empty() ? PersistentEntityId{} : m_Nodes.front().parent;
+		}
+		/** @brief 为待放置的快照根施加局部平移，保留子节点相对变换。 */
+		bool OffsetRoot(Math::Vec3 offset, std::string& error) {
+			if (m_Nodes.empty()) {
+				error = "Cannot position an empty scene subtree";
+				return false;
+			}
+			auto local = m_Nodes.front().local;
+			local.translation += offset;
+			const auto status = Math::ValidateTRS(local);
+			if (!status.IsSuccess()) {
+				error = status.message;
+				return false;
+			}
+			m_Nodes.front().local = local;
+			return true;
 		}
 		template <class F> void ForEachIdentity(F&& f) const {
 			for (const auto& node : m_Nodes)

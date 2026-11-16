@@ -185,6 +185,20 @@ namespace Catalpa {
 		 */
 		[[nodiscard]] WorldStatus CaptureForUndo(EntityId root, SceneSubtreeSnapshot& output) const;
 		/**
+		 * @brief 为同一作者场景中的粘贴生成重新编号的完整子树候选。
+		 * @param[in] source 复制时捕获的子树快照，必须来自本场景。
+		 * @param[out] output 成功时接收独立身份、内部引用已重映射的候选。
+		 * @return 外部实体引用和父节点仍有效时成功；本操作不改变场景。
+		 */
+		[[nodiscard]] WorldStatus PrepareSubtreeCopy(
+		    const SceneSubtreeSnapshot& source, SceneSubtreeSnapshot& output) const;
+		/**
+		 * @brief 在每次粘贴与重做前重新检查快照外部引用和相机视图身份。
+		 * @param[in] snapshot 已分配独立身份、尚未恢复到场景的剪贴板快照。
+		 * @return 引用仍有效且相机身份未被占用时成功，不修改场景或快照。
+		 */
+		[[nodiscard]] WorldStatus ValidateSubtreeCopy(const SceneSubtreeSnapshot& snapshot) const;
+		/**
 		 * @brief 移除用于撤销。
 		 *
 		 * @param[in] root 遍历起点的实体标识。

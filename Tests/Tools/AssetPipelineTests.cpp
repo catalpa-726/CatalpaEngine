@@ -11,6 +11,9 @@
 #include "AssetPipeline/Importers/AssimpImporter.h"
 #include "AssetPipeline/Importers/TextureImporter.h"
 #include "Assets/AssetDependencyGraph.h"
+#include "Assets/BuiltinAssetIds.h"
+#include "Documents/AssetDocument.h"
+#include "Core/Serialization/AuthorJson.h"
 #include "Assets/AssetManifest.h"
 #include "Assets/AssetContainerReader.h"
 #include "Images/ImageAssetLoader.h"
@@ -23,6 +26,10 @@
 #include "Scene/Components/MeshRendererComponent.h"
 #include "Scripting/ScriptAsset.h"
 #include "Panels/BuildPanel.h"
+#include "Documents/SceneDocument.h"
+#include "Commands/SceneCommands.h"
+#include "Scene/SceneSerializer.h"
+#include "AssetPipeline/ProjectSourceImport.h"
 #include "Log/LogSubscription.h"
 #include "Log/Log.h"
 
@@ -789,6 +796,323 @@ Connections: {
 			    "Load unchanged content from the moved cook root: ", error);
 		}
 
+		/** @brief 验证 OBJ 的缺失凹凸贴图可补回，现有颜色贴图、几何及材质仍参与真实导入和构建。 */
+		void OptionalObjTextureContract(const std::filesystem::path& shaders, TestContext& test) {
+			Fixture fixture;
+			std::string error;
+			if (!CheckOperation(test, fixture.Create(error), error))
+				return;
+			const auto content = fixture.root / "Content";
+			const auto external = fixture.root / "Other";
+			const std::string bump = "Map__9_Normal_Bump.tga";
+			const auto obj = Replace(std::string(Obj), "triangle.mtl", "stocks.mtl");
+			const std::string mtl = "newmtl Red\nKd 1 0 0\nmap_Kd albedo.png\nmap_Bump " + bump + "\n";
+			if (!CheckOperation(test,
+			        fixture.Store("Other/stocks.obj", obj, error) && fixture.Store("Other/stocks.mtl", mtl, error) &&
+			            fixture.StoreBytes("Other/albedo.png", Png(), error),
+			        error))
+				return;
+			auto request = fixture.Request("stocks.obj", shaders);
+			request.source = external / "stocks.obj";
+			ProjectImportReview review;
+			if (!CheckOperation(test, ReviewProjectSource(request, content, review, error), error))
+				return;
+			test.Check(review.inputs.size() == 3 && review.inputs.contains(request.source) &&
+			        review.inputs.contains(external / "stocks.mtl") &&
+			        review.inputs.contains(external / "albedo.png") &&
+			        std::any_of(review.warnings.begin(), review.warnings.end(),
+			            [&](const auto& warning) { return warning.find(bump) != warning.npos; }),
+			    "Review identifies the absent OBJ texture by name and includes all three genuine input files");
+
+			auto remapped = request;
+			remapped.settings.dependencyRemaps.emplace(bump, "bad-remap.tga");
+			ProjectImportReview rejected;
+			test.Check(!ReviewProjectSource(remapped, content, rejected, error) && !error.empty(),
+			    "An explicitly mapped OBJ texture must resolve");
+			if (!CheckOperation(
+			        test, fixture.Store("Other/nomtl.obj", Replace(obj, "stocks.mtl", "absent.mtl"), error), error))
+				return;
+			auto invalid = request;
+			invalid.source = external / "nomtl.obj";
+			test.Check(!ImportProjectSource(invalid, content, error) && !error.empty() &&
+			        !std::filesystem::exists(content / "nomtl"),
+			    "An OBJ declaring an absent MTL cannot be imported");
+			if (!CheckOperation(test,
+			        fixture.Store("Other/escape.obj", Replace(obj, "stocks.mtl", "escape.mtl"), error) &&
+			            fixture.Store("Other/escape.mtl", Replace(mtl, bump, "../outside.tga"), error),
+			        error))
+				return;
+			invalid.source = external / "escape.obj";
+			test.Check(!ImportProjectSource(invalid, content, error) && !error.empty() &&
+			        !std::filesystem::exists(content / "escape"),
+			    "A missing texture outside the allowed OBJ source root is rejected");
+
+			if (!CheckOperation(test, ImportProjectSource(request, content, error, &review), error))
+				return;
+			const auto copiedImage = request.source.parent_path() / bump;
+			test.Check(request.source == content / "stocks/stocks.obj" && !std::filesystem::exists(copiedImage),
+			    "Import copies real sources into Content and creates no placeholder texture");
+			const auto fallback = AssetCooker::Build(request);
+			if (!CheckOperation(test, fallback.success, fallback.error))
+				return;
+			const auto hasMissingWarning = [&](const AssetBuildResult& build) {
+				return std::any_of(build.diagnostics.begin(), build.diagnostics.end(), [&](const auto& d) {
+					return d.level == AssetDiagnosticLevel::Warning &&
+					    (d.message.find(bump) != d.message.npos || d.element.find(bump) != d.element.npos);
+				});
+			};
+			const auto countType = [](const AssetBuildResult& build, std::string_view type) {
+				return std::count_if(build.records.begin(), build.records.end(),
+				    [&](const auto& record) { return record.type.ToString() == type; });
+			};
+			test.Check(hasMissingWarning(fallback) && countType(fallback, "model") == 1 &&
+			        countType(fallback, "mesh") > 0 && countType(fallback, "material_instance") > 0 &&
+			        countType(fallback, "image") == 1,
+			    "OBJ cooks a model, mesh, material and existing albedo with a warning for the missing bump");
+			const auto warm = AssetCooker::Build(request);
+			if (!CheckOperation(test, warm.success && warm.cacheHit, warm.error))
+				return;
+			test.Check(warm.watchInputs == fallback.watchInputs &&
+			        warm.missingTextureInputs == fallback.missingTextureInputs &&
+			        std::find(warm.missingTextureInputs.begin(), warm.missingTextureInputs.end(), copiedImage) !=
+			            warm.missingTextureInputs.end(),
+			    "Cold and cached OBJ cooks deliver the same verified missing-file watch candidates");
+			FileWatcher watcher, lateWatcher;
+			if (!CheckOperation(test, watcher.SetPaths(warm.watchInputs, warm.missingTextureInputs, error), error))
+				return;
+			const std::vector<std::filesystem::path> tooMany(4096, request.source);
+			test.Check(!watcher.SetPaths(tooMany, warm.missingTextureInputs, error) && !error.empty(),
+			    "The 4096 watch budget includes missing textures and preserves the previous watch set on failure");
+			/* 补回真实的 1×1 24 位 TGA，其他源文件和导入配方保持相同。 */
+			constexpr uint8_t tga[]{0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 24, 0, 128, 128, 128};
+			if (!CheckOperation(
+			        test, AtomicFileWriter::Write(copiedImage, std::as_bytes(std::span(tga)), error), error))
+				return;
+			if (!CheckOperation(test, lateWatcher.SetPaths(warm.watchInputs, warm.missingTextureInputs, error), error))
+				return;
+			std::vector<std::filesystem::path> changes;
+			const auto observed = [&](FileWatcher& active) {
+				return active.Poll(changes, error) &&
+				    std::find(changes.begin(), changes.end(), copiedImage) != changes.end();
+			};
+			bool beforeRegistration = false, afterRegistration = false;
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			while ((!beforeRegistration || !afterRegistration) && std::chrono::steady_clock::now() < deadline) {
+				beforeRegistration |= observed(lateWatcher);
+				afterRegistration |= observed(watcher);
+				if (!beforeRegistration || !afterRegistration)
+					std::this_thread::sleep_for(std::chrono::milliseconds(50));
+			}
+			test.Check(beforeRegistration && afterRegistration,
+			    "Completing the missing texture before or after registering the cached build triggers the watcher");
+			const auto restored = AssetCooker::Build(request);
+			test.Check(restored.success && !restored.cacheHit && restored.key != fallback.key &&
+			        restored.primary == fallback.primary && countType(restored, "image") == 2 &&
+			        !hasMissingWarning(restored),
+			    "Restoring the missing texture invalidates the prior cook and publishes both images: " +
+			        restored.error);
+			if (!CheckOperation(test, AtomicFileWriter::Write(copiedImage, "Not a TGA image", error), error))
+				return;
+			const auto corrupt = AssetCooker::Build(request);
+			test.Check(!corrupt.success && !corrupt.error.empty(), "An existing corrupt texture must fail to decode");
+
+			/* 同名来源、未提交的选择和重开项目后的持久配方使用相同的实际文件键。 */
+			if (!CheckOperation(test, fixture.Store("Raw/stocks.obj", obj, error), error))
+				return;
+			auto other = fixture.Request("stocks.obj", shaders);
+			JobSystem jobs;
+			AssetManager assets(jobs);
+			SceneManager scenes;
+			Editor::BuildPanel panel(jobs, assets, scenes);
+			auto* selected = panel.ImportSettings(request, error);
+			if (!CheckOperation(test, selected != nullptr, error))
+				return;
+			selected->unitScale = 0.01;
+			selected->sourceUp = "z";
+			selected->dependencyRemaps[bump] = "albedo.png";
+			const auto expected = *selected;
+			auto* unrelated = panel.ImportSettings(other, error);
+			auto* again = panel.ImportSettings(request, error);
+			if (!CheckOperation(test, unrelated && again, error))
+				return;
+			test.Check(*unrelated == AssetImportSettings{} && *again == expected,
+			    "Selecting another same-named model keeps each source's unit, axis and remaps separate");
+			request.settings = *again;
+			const auto explicitBuild = AssetCooker::Build(request);
+			if (!CheckOperation(test, explicitBuild.success, explicitBuild.error))
+				return;
+			panel.CloseProject();
+			selected = panel.ImportSettings(request, error);
+			unrelated = panel.ImportSettings(other, error);
+			test.Check(selected && unrelated && *selected == expected && *unrelated == AssetImportSettings{},
+			    "A new session recovers only the selected model's verified successful recipe");
+		}
+
+		/** @brief 验证外部素材导入的文件闭包、同名冲突、缺依赖与取消。 */
+		void ProjectImportContract(Fixture& fixture, const std::filesystem::path& shaders, TestContext& test) {
+			std::string error;
+			const auto content = fixture.root / "Content";
+			const auto external = fixture.root / "Other";
+			for (const auto& name :
+			    {"model.gltf", "buffer.bin", "pixels.png", "triangle.obj", "triangle.mtl", "triangle.fbx"})
+				std::filesystem::copy_file(fixture.root / "Raw" / name, external / name);
+			std::filesystem::copy_file(fixture.root / "Raw/model.glb", external / "single.glb");
+			std::filesystem::rename(external / "triangle.fbx", external / "standalone.fbx");
+			auto request = fixture.Request("model.gltf", shaders);
+			for (const auto& file : {"model.gltf", "single.glb", "triangle.obj", "standalone.fbx"}) {
+				request.source = external / file;
+				std::vector<std::byte> original, copied;
+				ProjectImportReview review;
+				const auto success = Read(request.source, original, error) &&
+				    ReviewProjectSource(request, content, review, error) && review.inputs.contains(request.source) &&
+				    ImportProjectSource(request, content, error, &review) &&
+				    IsPathWithinRoot(request.source, content) && Read(request.source, copied, error) &&
+				    original == copied;
+				test.Check(success, std::string("Import intact external ") + file + ": " + error);
+				if (!success)
+					return;
+			}
+			test.Check(std::filesystem::is_regular_file(content / "model/buffer.bin") &&
+			        std::filesystem::is_regular_file(content / "model/pixels.png") &&
+			        std::filesystem::is_regular_file(content / "triangle/triangle.mtl") &&
+			        std::filesystem::is_regular_file(content / "triangle/pixels.png"),
+			    "External glTF and OBJ keep all referenced relative files");
+			request.source = external / "model.gltf";
+			test.Check(
+			    !ImportProjectSource(request, content, error) && error.find("already exists") != std::string::npos,
+			    "Repeated external imports identify the conflict and preserve existing project sources");
+			if (!fixture.Store("Other/missing.gltf", Replace(Gltf, "buffer.bin", "absent.bin"), error)) {
+				test.Check(false, error);
+				return;
+			}
+			request.source = external / "missing.gltf";
+			test.Check(!ImportProjectSource(request, content, error) && !std::filesystem::exists(content / "missing"),
+			    "Missing external geometry prevents an incomplete source directory from being published");
+			ProjectImportReview review;
+			std::filesystem::copy_file(external / "triangle.obj", external / "changed.obj");
+			request.source = external / "changed.obj";
+			const bool reviewed = ReviewProjectSource(request, content, review, error);
+			if (!fixture.Store("Other/triangle.mtl", "newmtl Red\nKd 0 1 0\n", error)) {
+				test.Check(false, error);
+				return;
+			}
+			test.Check(reviewed && !ImportProjectSource(request, content, error, &review) &&
+			        !std::filesystem::exists(content / "changed"),
+			    "Changed MTL invalidates the approved dependency list");
+			CancellationSource cancelled;
+			cancelled.Cancel();
+			request.cancellation = cancelled.Token();
+			request.source = external / "single.glb";
+			test.Check(!ImportProjectSource(request, content, error) && error.find("cancel") != std::string::npos,
+			    "Cancellation stops source import before any directory is committed");
+		}
+
+		/** @brief 两次放置同一模型，检查文档历史与每份实例的独立材质绑定。 */
+		void AuthorPlacementContract(Editor::BuildPanel& panel, AssetManager& manager, SceneManager& scenes,
+		    const AssetBuildRequest& request, TestContext& test) {
+			std::string error;
+			SceneHandle handle;
+			if (!scenes.CreateScene("Placement", handle).IsSuccess() || !scenes.SetActive(handle).IsSuccess() ||
+			    !panel.Start(request, error)) {
+				test.Check(false, "Start author model placement: " + error);
+				return;
+			}
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(25);
+			while (panel.Busy() && std::chrono::steady_clock::now() < deadline) {
+				manager.Pump();
+				panel.Update({800, 600});
+				std::this_thread::yield();
+			}
+			Editor::SceneDocument doc(StableId::FromWords(0x504c414345ULL, 1), scenes, handle);
+			PersistentEntityId first, second;
+			if (!panel.Ready() || !panel.PlaceModel(doc, {1, 2, 3}, first, error)) {
+				test.Check(false, "Place loaded model: " + panel.Diagnostic() + " / " + error);
+				return;
+			}
+			auto& scene = *doc.Resolve();
+			const auto count = scene.GetWorld().GetEntityCount();
+			test.Check(count > 1 && doc.History().Dirty() && doc.History().Undo(doc, error) &&
+			        scene.GetWorld().GetEntityCount() == 0 && doc.History().Redo(doc, error) &&
+			        scene.GetWorld().GetEntityCount() == count && scene.Resolve(first).HasValue(),
+			    "Multi-node model placement is one reversible document command");
+			if (!panel.PlaceModel(doc, {4, 5, 6}, second, error, panel.Result().primary)) {
+				test.Check(false, error);
+				return;
+			}
+			test.Check(first != second && scene.GetWorld().GetEntityCount() == 2 * count,
+			    "Two placements have independent entity identities");
+			SceneAsset captured;
+			if (!SceneSerializer::Capture(scene, captured, error)) {
+				test.Check(false, error);
+				return;
+			}
+			std::map<PersistentEntityId, PersistentEntityId> parents;
+			for (const auto& node : captured.entities)
+				parents[node.id] = node.parent;
+			PersistentEntityId firstMesh, secondMesh;
+			MeshRendererComponent original, replacement;
+			const auto placementRoot = [&](PersistentEntityId id) {
+				while (parents.at(id).HasValue())
+					id = parents.at(id);
+				return id;
+			};
+			for (const auto& node : captured.entities)
+				if (node.mesh && !node.mesh->materials.empty() && placementRoot(node.id) == first &&
+				    scene.GetWorld().Get(scene.Resolve(node.id), original).IsSuccess() && !original.materials.empty()) {
+					firstMesh = node.id;
+					break;
+				}
+			for (const auto& node : captured.entities)
+				if (node.mesh && !node.mesh->materials.empty() && firstMesh.HasValue() &&
+				    placementRoot(node.id) == second && node.mesh->mesh == original.meshVersion.GetId() &&
+				    node.mesh->materials.front() == original.materials.front().GetId()) {
+					secondMesh = node.id;
+					break;
+				}
+			for (const auto& node : captured.entities)
+				if (node.mesh && !node.mesh->materials.empty() && !original.materials.empty() &&
+				    node.mesh->materials.front() != original.materials.front().GetId()) {
+					(void)scene.GetWorld().Get(scene.Resolve(node.id), replacement);
+					break;
+				}
+			if (!firstMesh.HasValue() || !secondMesh.HasValue() || replacement.materials.empty()) {
+				test.Check(false, "Expected independent copies of a multi-material model");
+				return;
+			}
+			const auto originalId = original.materials.front().GetId();
+			original.materials.front() = replacement.materials.front();
+			std::string text;
+			SceneAsset saved;
+			SceneHandle reopened;
+			const auto success = Editor::SetAuthorMesh(doc, firstMesh, original, error) && doc.Serialize(text, error) &&
+			    SceneSerializer::Read(text, saved, error) &&
+			    SceneSerializer::Instantiate(saved, scenes, &manager, reopened, error);
+			if (!success) {
+				test.Check(false, "Restore authored material slots and transform: " + error);
+				return;
+			}
+			auto& again = *scenes.GetScene(reopened);
+			MeshRendererComponent a, b;
+			TransformComponent ta, tb;
+			test.Check(again.GetWorld().Get(again.Resolve(firstMesh), a).IsSuccess() &&
+			        again.GetWorld().Get(again.Resolve(secondMesh), b).IsSuccess() &&
+			        a.materials.front().GetId() == replacement.materials.front().GetId() &&
+			        b.materials.front().GetId() == originalId &&
+			        again.GetTransform(again.Resolve(first), ta).IsSuccess() &&
+			        ta.local.translation == Math::Vec3(1, 2, 3) &&
+			        again.GetTransform(again.Resolve(second), tb).IsSuccess() &&
+			        tb.local.translation == Math::Vec3(4, 5, 6),
+			    "Scene save/reopen retains both placement roots and only the edited instance's material binding");
+			/* 面板仍选中模型；传入错误的放置身份必须失败，不能退回并实例化面板中的对象。 */
+			const auto before = scene.GetWorld().GetEntityCount();
+			PersistentEntityId rejected;
+			test.Check(panel.SelectedAsset() == panel.Result().primary && panel.Ready() &&
+			        scenes.GetActiveHandle() == doc.Handle() &&
+			        !panel.PlaceModel(doc, {}, rejected, error, originalId) && !error.empty() && !rejected.HasValue() &&
+			        scene.GetWorld().GetEntityCount() == before,
+			    "An explicitly requested material cannot place the panel's selected model");
+		}
+
 		/**
 		 * @brief 撤掉贴图并保留原文件，验证旧文件既不再参与缓存键，也不再占用活动目录中的记录。
 		 *
@@ -919,6 +1243,64 @@ Connections: {
 		jobs.Shutdown();
 	}
 
+	/** @brief 从无缓存项目烘焙普通材质，核对独立加载、共享定义和再次保存的作者引用。 */
+	static void CheckStandardAuthorMaterials(const std::filesystem::path& shaders, TestContext& context) {
+		Fixture fixture;
+		std::string error;
+		if (!CheckOperation(context, fixture.Create(error), error))
+			return;
+		AuthorJson::Json source{{"schemaVersion", 1}, {"kind", "instance"}, {"definitionVersion", 1},
+		    {"definitionId", BuiltinAssetIds::DefaultPbrDefinition.ToString()}, {"revision", 2},
+		    {"parameters", {{"base_color", {0.125, 0.25, 0.5, 1}}}}};
+		const auto cook = [&](const char* name) {
+			if (!fixture.Store(std::filesystem::path("Raw") / name, source.dump(), error)) {
+				AssetBuildResult failed;
+				failed.error = error;
+				return failed;
+			}
+			return AssetCooker::Build(fixture.Request(name, shaders));
+		};
+		const auto first = cook("First.material");
+		if (!CheckOperation(context, first.success, first.error))
+			return;
+		const auto second = cook("Second.material");
+		if (!CheckOperation(context, second.success, second.error))
+			return;
+		source["definitionId"] = BuiltinAssetIds::DefaultUnlitDefinition.ToString();
+		const auto changed = cook("First.material");
+		AssetRegistry registry;
+		if (!CheckOperation(context, changed.success, changed.error) ||
+		    !CheckOperation(context, registry.Replace(changed.publishedCatalog, error), error))
+			return;
+		context.Check(registry.Find(second.primary) && registry.Find(BuiltinAssetIds::CookedPbrDefinition) &&
+		        registry.Find(BuiltinAssetIds::CookedUnlitDefinition) && first.primary == changed.primary,
+		    "Recooking a material keeps the standard definitions used by other materials");
+		JobSystem jobs;
+		if (!CheckOperation(context, jobs.Start({2, 64}, error), error))
+			return;
+		AssetManager manager(jobs);
+		if (!CheckOperation(context,
+		        RegisterRuntimeAssetLoaders(manager, error) &&
+		            manager.InstallCookedCatalog(changed.cookedRoot, registry, error, true) &&
+		            LoadAll(manager, changed.publishedCatalog, error),
+		        error))
+			return;
+		AssetVersionRef<MaterialInstance> loaded;
+		bool fallback = false;
+		if (!CheckOperation(context, manager.Acquire(second.primary, loaded, fallback, error) && !fallback, error))
+			return;
+		Editor::AssetDocument draft{StableId::FromWords(4, 8), loaded};
+		std::string text;
+		if (!CheckOperation(context, draft.Serialize(text, error), error))
+			return;
+		const auto saved = AuthorJson::Parse(text);
+		context.Check(saved.at("definitionId") == BuiltinAssetIds::DefaultPbrDefinition.ToString() &&
+		        saved.at("definitionVersion") == 1 && saved.at("parameters") == source.at("parameters"),
+		    "A packaged PBR material saves as an editable standard material with unchanged linear RGBA");
+		source["definitionVersion"] = 9;
+		context.Check(!cook("First.material").success, "An unsupported fixed builtin version fails the build");
+	}
+
 	void RunAssetPipelineTests(TestContext& context) {
 		std::string error;
 		std::filesystem::path executable;
@@ -927,6 +1309,7 @@ Connections: {
 			return;
 		}
 		const auto shaders = executable / "Resources" / "Shaders";
+		CheckStandardAuthorMaterials(shaders, context);
 		Fixture fixture;
 		if (!fixture.Create(error)) {
 			CheckOperation(context, false, error);
@@ -942,6 +1325,8 @@ Connections: {
 			CheckOperation(context, false, error);
 			return;
 		}
+		ProjectImportContract(fixture, shaders, context);
+		OptionalObjTextureContract(shaders, context);
 		/* 从原始 glTF 导入场景，核对网格复用、图像和材质之间的关系。 */
 		AssetBuildRequest request = fixture.Request("model.gltf", shaders);
 		AssetBuildContext gltfContext(request);
@@ -1172,6 +1557,7 @@ Connections: {
 		{
 			SceneManager scenes;
 			Editor::BuildPanel panel(jobs, manager, scenes);
+			AuthorPlacementContract(panel, manager, scenes, request, context);
 			CheckOperation(context, panel.Start(request, error), error);
 			panel.CloseProject();
 			jobs.CollectCompleted();

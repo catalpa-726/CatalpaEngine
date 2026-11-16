@@ -7,7 +7,7 @@ import subprocess
 REQUIRED = (
     'Config/InputProfiles.json', 'Config/RendererProfiles.json', 'Config/AudioDefaults.json',
     'Config/PhysicsDefaults.json', 'Config/UIRuntimeDefaults.json',
-    'Shaders/BuiltinShaders.manifest',
+    'Shaders/BuiltinShaders.manifest', 'Environment/Overcast.catasset',
     'Fonts/Inter/InterVariable.ttf', 'Fonts/Inter/Inter-Regular.ttf', 'Fonts/Inter/LICENSE.txt',
     'Fonts/NotoSansSC/NotoSansSC-Regular.otf', 'Fonts/NotoSansSC/LICENSE.txt',
     'Localization/en-US.json', 'Localization/zh-CN.json',

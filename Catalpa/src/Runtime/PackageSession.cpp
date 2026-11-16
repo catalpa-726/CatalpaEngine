@@ -4,6 +4,7 @@
 
 #include "Assets/AssetManager.h"
 #include "Scene/SceneSerializer.h"
+#include "Log/Log.h"
 
 namespace Catalpa {
 	bool PackageSession::Start(
@@ -17,7 +18,7 @@ namespace Catalpa {
 		m_Package = std::move(package);
 		m_Previous = scenes.GetActiveHandle();
 		m_State = PackageSessionState::Loading;
-		if (!assets.Request(m_Package->EntryScene(), error)) {
+		if (!assets.AdvancePackageLoad(error)) {
 			m_State = PackageSessionState::Stopping;
 			std::string ignored;
 			Stop(assets, scenes, ignored);
@@ -49,6 +50,8 @@ namespace Catalpa {
 				error += "; retirement pending: " + retirement;
 			return false;
 		};
+		if (!assets.AdvancePackageLoad(error))
+			return failAndRetire();
 		const auto status = assets.GetStatus(m_Package->EntryScene());
 		if (status == AssetStatus::Failed || status == AssetStatus::Cancelled) {
 			error = assets.GetDiagnostic(m_Package->EntryScene());
@@ -72,6 +75,7 @@ namespace Catalpa {
 			return failAndRetire();
 		}
 		m_State = PackageSessionState::Running;
+		CAT_CORE_INFO("Package entry scene active: {0} ({1})", asset.Get()->name, m_Package->EntryScene().ToString());
 		error.clear();
 		return true;
 	}

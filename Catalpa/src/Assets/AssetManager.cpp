@@ -86,6 +86,9 @@ namespace Catalpa {
 			VirtualFileSystem files;
 			AssetRegistry registry;
 			MemoryReservation bytes;
+			AssetId entry;
+			std::vector<AssetId> loadOrder;
+			size_t next = 0;
 		};
 		struct RetainedPackage {
 			std::shared_ptr<const PackageReader> package;
@@ -682,6 +685,7 @@ namespace Catalpa {
 				return false;
 			}
 			auto backup = std::make_unique<Impl::PackageBackup>(Impl::PackageBackup{m_Impl->files, m_Impl->registry});
+			backup->entry = package->EntryScene();
 			if (!m_Impl->budget.TryReserve(package->StorageBytes(), backup->bytes)) {
 				error = "Package snapshot exceeds remaining CPU asset budget";
 				return false;
@@ -700,7 +704,11 @@ namespace Catalpa {
 				if (found != records.end()) {
 					if (found->type != record.type || found->version != record.version ||
 					    found->contentHash != record.contentHash) {
-						error = "Package collides with a different existing asset version";
+						error = "Package collides with a different existing asset version: " + record.id.ToString() +
+						    "; packaged " + record.type.ToString() + " v" + std::to_string(record.version) + " " +
+						    record.contentHash + " at " + record.locator.path.ToString() + "; host " +
+						    found->type.ToString() + " v" + std::to_string(found->version) + " " + found->contentHash +
+						    " at " + found->locator.path.ToString();
 						return false;
 					}
 					*found = record; /* 同版本仍切到包内locator，不能继续依赖开发目录。 */
@@ -719,6 +727,64 @@ namespace Catalpa {
 			error = e.what();
 			return false;
 		}
+	}
+
+	bool AssetManager::AdvancePackageLoad(std::string& error) try {
+		if (!m_Impl->Owner(error))
+			return false;
+		auto* plan = m_Impl->packageBackup.get();
+		if (!plan) {
+			error = "No installed package";
+			return false;
+		}
+		if (plan->loadOrder.empty()) {
+			// 只遍历运行所需的立即解码闭包。流送资源自己的延迟校验仍由加载器执行。
+			std::vector<AssetId> ordered;
+			std::set<AssetId> visited, visiting;
+			std::function<bool(AssetId)> visit = [&](AssetId id) {
+				if (visited.contains(id))
+					return true;
+				const auto* record = m_Impl->registry.Find(id);
+				if (!record || !m_Impl->loaders.contains(record->type.ToString()) || visiting.size() >= 128 ||
+				    !visiting.insert(id).second) {
+					error = "Invalid package load dependency or missing loader: " + id.ToString();
+					return false;
+				}
+				if (!m_Impl->loaders.at(record->type.ToString()).deferredDependencies)
+					for (auto child : record->dependencies)
+						if (!visit(child))
+							return false;
+				visiting.erase(id);
+				visited.insert(id);
+				ordered.push_back(id);
+				return true;
+			};
+			if (!visit(plan->entry))
+				return false;
+			plan->loadOrder.swap(ordered);
+		}
+		while (plan->next < plan->loadOrder.size()) {
+			const auto id = plan->loadOrder[plan->next];
+			switch (GetStatus(id)) {
+			case AssetStatus::Ready:
+				++plan->next;
+				continue;
+			case AssetStatus::Unloaded:
+				return Request(id, error);
+			case AssetStatus::Failed:
+			case AssetStatus::Cancelled:
+				error = id.ToString() + ": " + GetDiagnostic(id);
+				return false;
+			default:
+				error.clear();
+				return true;
+			}
+		}
+		error.clear();
+		return true;
+	} catch (const std::exception& ex) {
+		error = ex.what();
+		return false;
 	}
 
 	bool AssetManager::UninstallPackage(std::string& error) {

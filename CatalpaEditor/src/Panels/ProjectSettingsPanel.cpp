@@ -2,6 +2,7 @@
 
 #include "Application/EditorProject.h"
 #include "AssetPipeline/AssetBuildTypes.h"
+#include "Panels/FormLayout.h"
 #include "imgui.h"
 
 namespace Catalpa::Editor {
@@ -42,8 +43,18 @@ namespace Catalpa::Editor {
 		    "Project name", "Content root", "Derived data root", "Cooked root", "Build profiles", "Build profile"};
 		constexpr const char* keys[]{"project.name", "project.content_root", "project.derived_root",
 		    "project.cooked_root", "project.build_profiles", "project.build_profile"};
-		for (size_t i = 0; i < m_Fields.size(); ++i)
-			ImGui::InputText(text(keys[i], labels[i], keys[i]).c_str(), m_Fields[i].data(), m_Fields[i].size());
+		for (size_t i = 0; i < m_Fields.size(); ++i) {
+			PlaceFormLabel(text(keys[i], labels[i], nullptr), 10.f);
+			const std::string id = std::string("###") + keys[i];
+			ImGui::InputText(id.c_str(), m_Fields[i].data(), m_Fields[i].size());
+			if (ImGui::IsItemHovered() && m_Fields[i][0]) {
+				ImGui::BeginTooltip();
+				ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.f);
+				ImGui::TextUnformatted(m_Fields[i].data());
+				ImGui::PopTextWrapPos();
+				ImGui::EndTooltip();
+			}
+		}
 		if (ImGui::Button(text("project.save", "Validate and save project", "SaveProjectSettings").c_str())) {
 			auto candidate = *m_Draft;
 			candidate.name = m_Fields[0].data();
@@ -56,7 +67,7 @@ namespace Catalpa::Editor {
 				Reset();
 		}
 		ImGui::EndDisabled();
-		ImGui::TextDisabled("%s",
+		ImGui::TextWrapped("%s",
 		    text("project.external_roots", "External source roots remain explicitly declared in the project file.",
 		        nullptr)
 		        .c_str());

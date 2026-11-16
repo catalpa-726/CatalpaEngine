@@ -60,8 +60,17 @@ namespace Catalpa::Editor {
 
 		void SetCookReport(const Tools::AssetBuildResult& result) {
 			m_Report = result.report;
+			m_ProductName.clear();
+			for (const auto& mapping : result.mappings)
+				if (mapping.asset == m_Asset && !mapping.name.empty()) {
+					m_ProductName = mapping.name;
+					break;
+				}
 			m_Diagnostics = result.diagnostics;
 		}
+
+		/** @brief 返回导入器记录的原始产品名，没有对应关系时返回空字符串。 */
+		const std::string& ProductName() const noexcept { return m_ProductName; }
 
 		const auto& Report() const noexcept { return m_Report; }
 
@@ -97,6 +106,7 @@ namespace Catalpa::Editor {
 		AssetVersionRef<ImageAsset> m_Image;
 		std::shared_ptr<const Tools::AssetBuildRequest> m_Recipe;
 		std::filesystem::path m_Report;
+		std::string m_ProductName;
 		std::vector<Tools::AssetBuildDiagnostic> m_Diagnostics;
 		std::string m_Type;
 		std::shared_ptr<const std::string> m_Source;

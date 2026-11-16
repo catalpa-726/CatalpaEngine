@@ -5,7 +5,7 @@ namespace Catalpa::Tools {
 	/* 从 FBX 或 OBJ 读取模型，保留材质和外部文件引用，在模型根节点应用坐标转换。 */
 	class AssimpImporter final : public IAssetImporter {
 	public:
-		std::string_view Name() const noexcept override { return "assimp/fbx-obj-v5-cani1-cskn2-lod-mips-bc1"; }
+		std::string_view Name() const noexcept override { return "assimp/fbx-obj-v6-cani1-cskn2-lod-mips-bc1"; }
 
 		/**
 		 * @brief 读取经 Assimp 解析的模型并生成后续资产烘焙所需的导入内容。

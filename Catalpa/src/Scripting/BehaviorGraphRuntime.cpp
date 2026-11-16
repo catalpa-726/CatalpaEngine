@@ -53,6 +53,7 @@ namespace Catalpa {
 		candidate.asset = std::move(asset);
 		candidate.debug.entity = entity.persistent;
 		candidate.debug.graph = candidate.asset.GetId();
+		candidate.debug.sourceLabel = candidate.asset.Get()->sourceLabel;
 		candidate.debug.version = candidate.asset.GetVersion();
 		candidate.debug.variables = candidate.asset.Get()->variables;
 		for (const auto& [name, value] : author.variables) {
@@ -210,6 +211,7 @@ namespace Catalpa {
 						instance.entity = author.first;
 						instance.debug.entity = id;
 						instance.debug.graph = author.second.graph;
+						instance.debug.sourceLabel = asset.Get()->sourceLabel;
 					}
 				}
 			}
@@ -251,6 +253,8 @@ namespace Catalpa {
 			const auto& value = instance.debug;
 			BehaviorDebugSnapshot snapshot{
 			    value.entity, value.node, value.event, value.error, {}, value.graph, value.version};
+			if (includeVariables || !value.error.empty() || !instance.rejectionError.empty())
+				snapshot.sourceLabel = value.sourceLabel;
 			if (snapshot.error.empty())
 				snapshot.error = instance.rejectionError;
 			if (includeVariables)

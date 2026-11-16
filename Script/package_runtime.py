@@ -3,6 +3,7 @@ import argparse
 import json
 import re
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import shutil
 import subprocess
 import hashlib
@@ -63,27 +64,31 @@ def main():
     if any(name in ("run.cmd", "deployment.json", "runtime-manifest.json") for name in names) or len(set(names)) != len(names):
         parser.error("Deployment paths collide")
     # 写入前检查全部路径，再核验已复制的依赖文件，最后发布启动文件和清单。
-    output.mkdir(parents=True, exist_ok=False)
-    for source, relative in planned:
-        target = output / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-    # 发布证据对应实际副本；构建进程可能在首次检查之后替换源包。
-    checked = subprocess.run([str(tool_host), '--inspect', str(output / package.name)], check=False)
-    if checked.returncode:
-        return checked.returncode
-    validate_resources(output / 'Resources', tool_host)
-    (output / "run.cmd").write_text(f'@"%~dp0{host.name}" --run-package "%~dp0{package.name}"\n', encoding="utf-8")
-    shutil.copy2(manifest, output / "deployment.json")
-    hashes = {}
-    for _, name in planned:
-        with (output / name).open('rb') as deployed:
-            digest = hashlib.sha256()
-            while block := deployed.read(1024 * 1024):
-                digest.update(block)
-            hashes[name] = digest.hexdigest()
-    (output / 'runtime-manifest.json').write_text(json.dumps({'schemaVersion': 1, 'files': hashes,
-                                                              'validation': 'package inspected; runtime execution not performed by deployment'}, indent=2) + '\n', encoding='utf-8')
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix=".catalpa-package-", dir=output.parent) as temporary:
+        destination = Path(temporary) / "Game"
+        destination.mkdir()
+        for source, relative in planned:
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+        # 发布证据对应实际副本；构建进程可能在首次检查之后替换源包。
+        checked = subprocess.run([str(tool_host), '--inspect', str(destination / package.name)], check=False)
+        if checked.returncode:
+            return checked.returncode
+        validate_resources(destination / 'Resources', tool_host)
+        (destination / "run.cmd").write_text(f'@"%~dp0{host.name}" --run-package "%~dp0{package.name}"\n', encoding="utf-8")
+        shutil.copy2(manifest, destination / "deployment.json")
+        hashes = {}
+        for _, name in planned:
+            with (destination / name).open('rb') as deployed:
+                digest = hashlib.sha256()
+                while block := deployed.read(1024 * 1024):
+                    digest.update(block)
+                hashes[name] = digest.hexdigest()
+        (destination / 'runtime-manifest.json').write_text(json.dumps({'schemaVersion': 1, 'files': hashes,
+                                                                  'validation': 'package inspected; runtime execution not performed by deployment'}, indent=2) + '\n', encoding='utf-8')
+        destination.rename(output)
     print(f"Runtime package: {output}")
     return 0
 

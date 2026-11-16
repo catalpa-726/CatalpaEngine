@@ -9,6 +9,8 @@ namespace Catalpa {
 		std::map<std::string, AssetId, std::less<>> modules;
 		/* 运行产物绑定容器中已核实的模块版本；作者 JSON 只保存上面的逻辑身份。 */
 		std::map<std::string, AssetVersionRef<ScriptAsset>, std::less<>> moduleVersions;
+		/* 烹饪时记录相对项目源根的路径，用于运行时错误定位。 */
+		std::string sourceLabel;
 	};
 	/**
 	 * @brief 读取脚本资产。

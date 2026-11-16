@@ -122,6 +122,24 @@ namespace Catalpa {
 		return {};
 	}
 
+	WorldStatus World::ListComponentTypes(EntityId entity, std::vector<std::string>& names) const {
+		if (const auto status = Validate(entity); !status.IsSuccess())
+			return status;
+		const auto native = m_Impl->slots[entity.index].native;
+		return InvokeChecked([&]() -> WorldStatus {
+			std::vector<std::string> found;
+			for (const auto& [id, storage] : m_Impl->registry.storage()) {
+				if (storage.contains(native)) {
+					const auto type = storage.info().name();
+					found.emplace_back(type.empty() ? std::to_string(id) : std::string(type));
+				}
+			}
+			std::sort(found.begin(), found.end());
+			names.swap(found);
+			return {};
+		});
+	}
+
 	WorldStatus World::Validate(EntityId entity) const noexcept {
 		if (m_Impl->ownerThread != std::this_thread::get_id())
 			return {WorldError::Busy, "World belongs to another thread"};

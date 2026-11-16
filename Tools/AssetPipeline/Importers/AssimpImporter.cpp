@@ -300,39 +300,18 @@ namespace Catalpa::Tools {
 				}
 			} else {
 				std::filesystem::path file;
-				/*
-				 * Assimp 只返回贴图字符串，未记录所属 MTL。先按已读取的材质库定位，
-				 * 多个材质库给出不同实体时要求显式重映射，避免误选 OBJ 旁的同名贴图。
-				 */
-				std::set<std::filesystem::path> candidates;
-				if (extension == ".obj" && !ctx.request.settings.dependencyRemaps.contains(uri)) {
-					for (const auto& dependency : ctx.Dependencies()) {
-						auto ext = dependency.path.extension().wstring();
-						std::transform(ext.begin(), ext.end(), ext.begin(),
-						    [](wchar_t ch) { return ch >= L'A' && ch <= L'Z' ? wchar_t(ch - L'A' + L'a') : ch; });
-						if (ext != L".mtl")
-							continue;
-						std::filesystem::path candidate;
-						std::string ignored;
-						if (ctx.Resolve(dependency.path, uri, candidate, ignored, SourceReferenceSyntax::FilePath))
-							candidates.insert(candidate);
-					}
-				}
-				if (candidates.size() > 1) {
-					error = "Ambiguous texture dependency across material libraries: " + uri;
-					return false;
-				}
-				if (!candidates.empty()) {
-					file = *candidates.begin();
-				} else {
-					/* FBX 导出目录可能只保留贴图原名。OBJ 相对路径仍严格以 MTL/OBJ 为基准。 */
-					const auto syntax = extension == ".fbx" || std::filesystem::u8path(uri).is_absolute()
-					    ? SourceReferenceSyntax::FbxTexture
-					    : SourceReferenceSyntax::FilePath;
-					if (!ctx.Resolve(ctx.request.source, uri, file, error, syntax)) {
-						error = "Cannot resolve texture dependency " + uri + ": " + error;
+				if (extension == ".obj") {
+					if (!ctx.ResolveObjTexture(uri, file, error))
 						return false;
+					if (file.empty()) {
+						material.samplers.erase(semantic);
+						ctx.Diagnose(AssetDiagnosticLevel::Warning, uri,
+						    "Optional OBJ texture is missing; using the material default for " + semantic);
+						return true;
 					}
+				} else if (!ctx.Resolve(ctx.request.source, uri, file, error, SourceReferenceSyntax::FbxTexture)) {
+					error = "Cannot resolve texture dependency " + uri + ": " + error;
+					return false;
 				}
 				std::vector<std::byte> bytes;
 				if (!ctx.Read(file, bytes, error) ||
@@ -461,7 +440,7 @@ namespace Catalpa::Tools {
 					        " retained as source data; preview does not evaluate that material channel");
 				}
 			}
-			if (in->GetTextureCount(aiTextureType_HEIGHT))
+			if (material.textures.contains("height"))
 				ctx.Diagnose(AssetDiagnosticLevel::Warning, "material/" + std::to_string(i),
 				    "Height/bump retained as data, not silently reinterpreted as a tangent-space normal map");
 			const auto key = "material/" + std::to_string(i);

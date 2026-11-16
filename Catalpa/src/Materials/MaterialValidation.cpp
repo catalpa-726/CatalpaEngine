@@ -3,6 +3,7 @@
 #include "Materials/MaterialValidation.h"
 
 #include "Core/Serialization/JsonArchive.h"
+#include "Core/Serialization/AuthorJson.h"
 #include "Images/ImageValidation.h"
 #include "Shaders/ShaderMetadata.h"
 #include "Shaders/ShaderAsset.h"
@@ -892,62 +893,47 @@ namespace Catalpa {
 		}
 	}
 
+	bool WriteBuiltinMaterialDefinition(
+	    BuiltinMaterialKind kind, AssetId shader, std::string& output, std::string& error) try {
+		if (!shader.HasValue() ||
+		    (kind != BuiltinMaterialKind::Unlit && kind != BuiltinMaterialKind::Pbr &&
+		        kind != BuiltinMaterialKind::Error)) {
+			error = "Invalid builtin material or shader";
+			return false;
+		}
+		using Json = AuthorJson::Json;
+		const bool pbr = kind == BuiltinMaterialKind::Pbr;
+		const bool diagnostic = kind == BuiltinMaterialKind::Error;
+		Json parameters = Json::array({{{"id", "base_color"}, {"displayName", "Base color"}, {"type", "float4"},
+		    {"default", Json::array({1, diagnostic ? 0 : 1, 1, 1})}, {"min", 0}}});
+		if (pbr) {
+			parameters.push_back({{"id", "metallic"}, {"displayName", "Metallic"}, {"type", "float"}, {"default", 0},
+			    {"min", 0}, {"max", 1}});
+			parameters.push_back({{"id", "roughness"}, {"displayName", "Roughness"}, {"type", "float"},
+			    {"default", 0.5}, {"min", 0}, {"max", 1}});
+			parameters.push_back({{"id", "emissive"}, {"displayName", "Emissive"}, {"type", "float3"},
+			    {"default", Json::array({0, 0, 0})}, {"min", 0}});
+		}
+		const Json definition{{"schemaVersion", 1}, {"kind", "definition"},
+		    {"family", pbr ? "catalpa.pbr" : (diagnostic ? "catalpa.error" : "catalpa.unlit")},
+		    {"shadingModel", pbr ? "pbr" : "unlit"}, {"domain", "surface"}, {"alphaMode", "opaque"},
+		    {"shader", shader.ToString()}, {"vertexEntry", "vertexMain"}, {"fragmentEntry", "fragmentMain"},
+		    {"parameterBlock", "Material"}, {"parameters", std::move(parameters)},
+		    {"renderState", {{"cull", "none"}, {"depthTest", true}, {"depthWrite", true}, {"blend", "opaque"}}},
+		    {"allowedStateOverrides", Json::array({"cull"})}};
+		output = definition.dump();
+		error.clear();
+		return true;
+	} catch (const std::exception& exception) {
+		error = exception.what();
+		return false;
+	}
+
 	bool CreateBuiltinMaterialDefinition(BuiltinMaterialKind kind, AssetId shader,
 	    std::shared_ptr<const MaterialDefinition>& output, std::string& error) {
-		if (kind != BuiltinMaterialKind::Unlit && kind != BuiltinMaterialKind::Pbr &&
-		    kind != BuiltinMaterialKind::Error) {
-			error = "Unknown builtin material";
-			return false;
-		}
-		try {
-			MaterialDefinition definition;
-			definition.shader = AssetHandle<ShaderAsset>{shader};
-			definition.family = kind == BuiltinMaterialKind::Pbr ? "catalpa.pbr"
-			    : kind == BuiltinMaterialKind::Error             ? "catalpa.error"
-			                                                     : "catalpa.unlit";
-			definition.shadingModel =
-			    kind == BuiltinMaterialKind::Pbr ? MaterialShadingModel::Pbr : MaterialShadingModel::Unlit;
-			definition.renderState.cull = MaterialCullMode::None;
-			definition.allowedStateOverrides = static_cast<uint32_t>(MaterialStateOverride::Cull);
-			MaterialParameter color;
-			color.id = "base_color";
-			color.displayName = "Base color";
-			color.type = MaterialParameterType::Float4;
-			color.defaultValue = kind == BuiltinMaterialKind::Error ? std::array<float, 4>{1, 0, 1, 1}
-			                                                        : std::array<float, 4>{1, 1, 1, 1};
-			color.minimum = 0;
-			definition.parameters.push_back(std::move(color));
-			if (kind == BuiltinMaterialKind::Pbr) {
-				MaterialParameter metallic;
-				metallic.id = "metallic";
-				metallic.displayName = "Metallic";
-				metallic.defaultValue = 0.0f;
-				metallic.minimum = 0;
-				metallic.maximum = 1;
-				MaterialParameter roughness = metallic;
-				roughness.id = "roughness";
-				roughness.displayName = "Roughness";
-				roughness.defaultValue = 0.5f;
-				MaterialParameter emissive;
-				emissive.id = "emissive";
-				emissive.displayName = "Emissive";
-				emissive.type = MaterialParameterType::Float3;
-				emissive.defaultValue = std::array<float, 3>{0, 0, 0};
-				emissive.minimum = 0;
-				definition.parameters.push_back(std::move(metallic));
-				definition.parameters.push_back(std::move(roughness));
-				definition.parameters.push_back(std::move(emissive));
-			}
-			if (!ValidateMaterialDefinition(definition, error))
-				return false;
-			auto published = std::make_shared<const MaterialDefinition>(std::move(definition));
-			output.swap(published);
-			error.clear();
-			return true;
-		} catch (const std::exception& exception) {
-			error = exception.what();
-			return false;
-		}
+		std::string source;
+		return WriteBuiltinMaterialDefinition(kind, shader, source, error) &&
+		    ParseMaterialDefinition(source, output, error);
 	}
 
 	bool CreateBuiltinMaterialInstance(BuiltinMaterialKind kind, AssetId definitionId, uint64_t definitionVersion,

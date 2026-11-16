@@ -1,6 +1,7 @@
 #include "Documents/AssetDocument.h"
 
 #include "Documents/DocumentRecovery.h"
+#include "Assets/BuiltinAssetIds.h"
 #include "Core/Serialization/AuthorJson.h"
 #include "Materials/MaterialValidation.h"
 
@@ -76,7 +77,19 @@ namespace Catalpa::Editor {
 		const auto text = document.dump(2);
 		if (!ParseMaterialInstance(text, material.definition, checked, error))
 			return false;
-		output = text;
+		/* 从物体检查器打开已烘焙的标准材质时，保存为新项目也能直接打开的作者引用。 */
+		auto definition = material.definition.GetId();
+		if (definition == BuiltinAssetIds::CookedPbrDefinition ||
+		    definition == BuiltinAssetIds::CookedUnlitDefinition) {
+			auto author = document;
+			author["definitionId"] =
+			    (definition == BuiltinAssetIds::CookedPbrDefinition ? BuiltinAssetIds::DefaultPbrDefinition
+			                                                        : BuiltinAssetIds::DefaultUnlitDefinition)
+			        .ToString();
+			author["definitionVersion"] = 1;
+			output = author.dump(2);
+		} else
+			output = text;
 		return true;
 	} catch (const std::exception& exception) {
 		error = exception.what();

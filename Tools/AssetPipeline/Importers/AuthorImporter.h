@@ -5,7 +5,9 @@ namespace Catalpa::Tools {
 	/* 作者领域仍分别解析/验证；这里只统一只读输入、身份与容器输出的工具接线。 */
 	class AuthorImporter final : public IAssetImporter {
 	public:
-		explicit AuthorImporter(std::string type) : m_Type(std::move(type)), m_Name("author-" + m_Type + "-v1") {}
+		explicit AuthorImporter(std::string type)
+		    : m_Type(std::move(type)),
+		      m_Name("author-" + m_Type + ((m_Type == "script" || m_Type == "behavior_graph") ? "-v2" : "-v1")) {}
 		std::string_view Name() const noexcept override { return m_Name; }
 		/**
 		 * @brief 读取作者文档并生成后续资产烘焙所需的导入内容。

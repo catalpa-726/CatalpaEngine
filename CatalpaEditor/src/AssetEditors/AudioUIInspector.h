@@ -15,6 +15,8 @@ namespace Catalpa::Editor {
 	 * @param[in] entity 要显示与编辑音频或 UI 组件的场景实体。
 	 * @param[in] text 根据翻译键生成当前语言的界面文案。
 	 * @param[out] error 失败时接收原因说明。
+	 * @param[in] addType 在添加菜单中选定的组件名称，空串只显示现有组件。
 	 */
-	void DrawAudioUIInspector(Application&, SceneDocument&, EntityId, const PanelText&, std::string& error);
+	void DrawAudioUIInspector(
+	    Application&, SceneDocument&, EntityId, const PanelText&, std::string& error, std::string_view addType = {});
 } /* 命名空间 Catalpa::Editor */

@@ -11,5 +11,6 @@ namespace Catalpa {
 		std::map<std::string, double, std::less<>> variables;
 		AssetId graph;
 		uint64_t version = 0;
+		std::string sourceLabel;
 	};
 }

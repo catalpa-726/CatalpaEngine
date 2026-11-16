@@ -4,11 +4,90 @@
 
 #include "AssetPipeline/AssetImportRegistry.h"
 #include "imgui.h"
+#include "imgui_internal.h"
 
 namespace Catalpa::Editor {
 	namespace fs = std::filesystem;
 
 	namespace {
+		/**
+		 * @brief 在当前目录按名称或规范化源扩展名筛选条目。
+		 * @param[in] entry 候选文件或目录。
+		 * @param[in] filter 输入框保存的 UTF-8 条件，type: 后接受模型、目录或实际扩展名。
+		 * @return 条目应显示时为真。
+		 */
+		bool MatchesFilter(const BrowserEntry& entry, const char* filter) {
+			const std::string_view value(filter);
+			if (!value.starts_with("type:"))
+				return !*filter || ImStristr(entry.name.c_str(), nullptr, filter, nullptr);
+			std::string type(value.substr(5));
+			if (type.empty())
+				return true;
+			for (char& c : type)
+				if (c >= 'A' && c <= 'Z')
+					c = static_cast<char>(c + ('a' - 'A'));
+			if (type == "folder")
+				return entry.folder;
+			if (entry.folder)
+				return false;
+			const auto ext = Tools::AssetSourceExtension(entry.path);
+			if (type == "model")
+				return ext == ".gltf" || ext == ".glb" || ext == ".obj" || ext == ".fbx";
+			return ext == (type.front() == '.' ? type : "." + type);
+		}
+
+		/**
+		 * @brief 在给定绘制宽度内寻找完整 UTF-8 字符的分行边界。
+		 * @param[in] name 待显示的文本，不要求以零结尾。
+		 * @param[in] width 可供文本使用的实际像素宽度。
+		 * @return 首个无法完整显示的字符的位置。
+		 */
+		const char* FitLine(std::string_view name, float width) {
+			const char* end = name.data() + name.size();
+			const char* remaining = end;
+			ImGui::GetFont()->CalcTextSizeA(
+			    ImGui::GetFontSize(), std::max(width, 0.f) + .01f, 0.f, name.data(), end, &remaining);
+			return remaining;
+		}
+
+		/**
+		 * @brief 绘制最多两行的卡片标题，超长时保留文件名末尾的编号及扩展名。
+		 * @param[in] pos 文字区域的左上角屏幕坐标。
+		 * @param[in] width 单行可用的像素宽度。
+		 * @param[in] name 文件系统返回的完整 UTF-8 文件名。
+		 */
+		void DrawTileName(ImVec2 pos, float width, std::string_view name) {
+			const char* end = name.data() + name.size();
+			const char* split = FitLine(name, width);
+			const auto color = ImGui::GetColorU32(ImGuiCol_Text);
+			auto* draw = ImGui::GetWindowDrawList();
+			draw->AddText(pos, color, name.data(), split);
+			if (split == end)
+				return;
+			pos.y += ImGui::GetTextLineHeight();
+			if (FitLine({split, end}, width) == end) {
+				draw->AddText(pos, color, split, end);
+				return;
+			}
+			const float dots = ImGui::CalcTextSize("...").x;
+			if (dots > width)
+				return;
+			/* 从末尾按码点反向量宽；不在多字节字符中间截断，也不丢失区分同名资源的后缀。 */
+			float used = dots;
+			const char* suffix = end;
+			while (suffix > split) {
+				const char* start = suffix - 1;
+				while (start > split && (static_cast<unsigned char>(*start) & 0xc0) == 0x80)
+					--start;
+				used += ImGui::CalcTextSize(start, suffix).x;
+				if (used > width)
+					break;
+				suffix = start;
+			}
+			draw->AddText(pos, color, "...");
+			draw->AddText({pos.x + dots, pos.y}, color, suffix, end);
+		}
+
 		/**
 		 * @brief 按路径分量判断指定规范路径是否位于根目录内。
 		 * 两端均为 canonical 路径。保留组件大小写，避免可区分大小写的同名目录混入作者根。
@@ -29,6 +108,8 @@ namespace Catalpa::Editor {
 		m_Folders.Clear();
 		m_Filter = {};
 		m_Root.clear();
+		m_Opened.clear();
+		m_Clicked.clear();
 	}
 
 	/**
@@ -141,12 +222,23 @@ namespace Catalpa::Editor {
 		if (canonicalRoot != m_Root) {
 			Reset();
 			m_Root = canonicalRoot;
-			directory = m_Root;
-			selected.clear();
+			/* 构建和诊断可要求定位到嵌套源文件。刷新缓存后只保留仍属于新根的有效位置。 */
+			const auto requested = directory.empty() ? m_Root : fs::canonical(directory, ec);
+			directory =
+			    !ec && ContainsDirectory(m_Root, requested) && fs::is_directory(requested, ec) ? requested : m_Root;
+			if (!selected.empty()) {
+				const auto file = fs::canonical(selected, ec);
+				if (ec || file.parent_path() != directory)
+					selected.clear();
+				else
+					selected = file;
+			}
 		}
 		const auto oldSelection = selected;
 		const auto oldDirectory = directory;
 		fs::path navigate;
+		m_Opened.clear();
+		m_Clicked.clear();
 		if (ImGui::SmallButton(std::string(rootLabel).c_str()))
 			navigate = m_Root;
 		auto part = m_Root;
@@ -154,14 +246,26 @@ namespace Catalpa::Editor {
 			if (item == ".")
 				continue;
 			part /= item;
-			ImGui::SameLine();
-			ImGui::TextDisabled("/");
-			ImGui::SameLine();
 			const auto name = Tools::AssetPathText(item);
 			const auto id = Tools::AssetPathText(part);
+			const float space = ImGui::GetStyle().ItemSpacing.x;
+			const float buttonWidth = ImGui::CalcTextSize(name.c_str()).x + 2 * ImGui::GetStyle().FramePadding.x;
+			if (ImGui::GetItemRectMax().x + 2 * space + ImGui::CalcTextSize("/").x + buttonWidth <=
+			    ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x) {
+				ImGui::SameLine();
+				ImGui::TextDisabled("/");
+				ImGui::SameLine();
+			}
 			ImGui::PushID(id.c_str());
-			if (ImGui::SmallButton(name.c_str()))
+			const float room = ImGui::GetContentRegionAvail().x - 2 * ImGui::GetStyle().FramePadding.x;
+			const char* visibleEnd = FitLine(name, room - ImGui::CalcTextSize("...").x);
+			const std::string shown = buttonWidth <= ImGui::GetContentRegionAvail().x
+			    ? name
+			    : std::string(name.data(), static_cast<size_t>(visibleEnd - name.data())) + "...";
+			if (ImGui::SmallButton((shown + "###Breadcrumb").c_str()))
 				navigate = part;
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("%s", id.c_str());
 			ImGui::PopID();
 		}
 		if (ImGui::Button(text("assets.refresh", "Refresh", "Refresh").c_str())) {
@@ -171,10 +275,12 @@ namespace Catalpa::Editor {
 		ImGui::SameLine();
 		if (ImGui::Button(text(m_Grid ? "browser.list" : "browser.grid", m_Grid ? "List" : "Grid", "Display").c_str()))
 			m_Grid = !m_Grid;
-		ImGui::SameLine();
+		if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + ImGui::GetFontSize() * 7.f <=
+		    ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x)
+			ImGui::SameLine();
 		ImGui::SetNextItemWidth(-1.f);
-		ImGui::InputTextWithHint(
-		    "##Filter", text("assets.filter", "Filter", nullptr).c_str(), m_Filter.data(), m_Filter.size());
+		ImGui::InputTextWithHint("##Filter", text("browser.filter_hint", "Name or type:model", nullptr).c_str(),
+		    m_Filter.data(), m_Filter.size());
 
 		const float width = ImGui::GetContentRegionAvail().x;
 		ImGui::BeginChild("Folders", {std::clamp(width * .26f, 65.f, 240.f), height}, ImGuiChildFlags_Borders);
@@ -184,27 +290,41 @@ namespace Catalpa::Editor {
 		ImGui::SameLine();
 		ImGui::BeginChild("Files", {0, height}, ImGuiChildFlags_Borders);
 		const auto listing = m_Folders.List(m_Root, directory);
-		const auto tileWidth = ImGui::GetFontSize() * 5.f;
-		const int cols = m_Grid ? std::max(1, int(ImGui::GetContentRegionAvail().x / tileWidth)) : 1;
+		const auto tileWidth = ImGui::GetFontSize() * 6.f;
+		const float spacing = ImGui::GetStyle().ItemSpacing.x;
+		const int cols =
+		    m_Grid ? std::max(1, int((ImGui::GetContentRegionAvail().x + spacing) / (tileWidth + spacing))) : 1;
 		const float cellWidth =
 		    std::max(1.f, (ImGui::GetContentRegionAvail().x - (cols - 1) * ImGui::GetStyle().ItemSpacing.x) / cols);
 		int index = 0;
 		for (const auto& entry : listing->entries) {
-			if (entry.name.find(m_Filter.data()) == std::string::npos)
+			if (!MatchesFilter(entry, m_Filter.data()))
 				continue;
 			if (index++ % cols)
 				ImGui::SameLine();
 			const auto id = Tools::AssetPathText(entry.path);
 			ImGui::PushID(id.c_str());
 			const auto pos = ImGui::GetCursorScreenPos();
-			const float textHeight = ImGui::GetTextLineHeightWithSpacing();
 			const float thumbSize = std::min(cellWidth, ImGui::GetFontSize() * 3.f);
-			const ImVec2 size{cellWidth, m_Grid ? textHeight + thumbSize + 4 : textHeight};
+			const float labelWidth = std::max(1.f, cellWidth - 4.f);
+			const float textHeight = m_Grid ? ImGui::GetTextLineHeight() * 2.f
+			                                : ImGui::CalcTextSize(entry.name.c_str(), nullptr, false, labelWidth).y;
+			const ImVec2 size{cellWidth, textHeight + (m_Grid ? thumbSize + 5.f : 2.f)};
 			if (ImGui::Selectable("##File", selected == entry.path, ImGuiSelectableFlags_AllowDoubleClick, size)) {
 				selected = entry.path;
-				if (entry.folder &&
-				    (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Enter)))
-					navigate = entry.path;
+				if (!entry.folder)
+					m_Clicked = entry.path;
+				if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) || ImGui::IsKeyPressed(ImGuiKey_Enter)) {
+					if (entry.folder)
+						navigate = entry.path;
+					else
+						m_Opened = entry.path;
+				}
+			}
+			if (!entry.folder && ImGui::BeginDragDropSource()) {
+				ImGui::SetDragDropPayload("CATALPA_SOURCE", id.c_str(), id.size() + 1);
+				ImGui::TextUnformatted(entry.name.c_str());
+				ImGui::EndDragDropSource();
 			}
 			if (ImGui::IsItemVisible()) {
 				auto* draw = ImGui::GetWindowDrawList();
@@ -224,12 +344,17 @@ namespace Catalpa::Editor {
 						    {a.x + 2, a.y + thumbSize * .3f}, ImGui::GetColorU32(ImGuiCol_TextDisabled), ext.c_str());
 					}
 				}
-				draw->AddText({pos.x + 2, pos.y + (m_Grid ? thumbSize + 3 : 0)}, ImGui::GetColorU32(ImGuiCol_Text),
-				    entry.name.c_str());
+				if (m_Grid)
+					DrawTileName({pos.x + 2, pos.y + thumbSize + 3}, labelWidth, entry.name);
+				else
+					draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), {pos.x + 2, pos.y},
+					    ImGui::GetColorU32(ImGuiCol_Text), entry.name.c_str(), nullptr, labelWidth);
 				draw->PopClipRect();
 				if (ImGui::IsItemHovered()) {
 					ImGui::BeginTooltip();
-					ImGui::TextUnformatted(entry.name.c_str());
+					ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.f);
+					ImGui::TextUnformatted(id.c_str());
+					ImGui::PopTextWrapPos();
 					if (!diagnostic.empty())
 						ImGui::TextWrapped("%s", diagnostic.c_str());
 					ImGui::EndTooltip();

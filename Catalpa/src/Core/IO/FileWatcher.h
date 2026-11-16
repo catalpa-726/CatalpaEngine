@@ -25,6 +25,15 @@ namespace Catalpa {
 		 */
 		bool SetPaths(std::span<const std::filesystem::path>, std::string& error);
 		/**
+		 * @brief 同时观察已读取文件和构建时确认缺失的候选文件。
+		 * @param[in] paths 登记时采样的绝对文件路径。
+		 * @param[in] missing 初始状态为缺失的绝对路径；登记前补齐的文件也会触发通知。
+		 * @param[out] error 超出合计 4096 条路径的预算或初始化失败时返回原因。
+		 * @return 成功替换观察集时返回 true；失败时保留原观察集。
+		 */
+		bool SetPaths(std::span<const std::filesystem::path> paths, std::span<const std::filesystem::path> missing,
+		    std::string& error);
+		/**
 		 * @brief 轮询已登记的文件，将本次发生变化的路径收集到输出。
 		 *
 		 * @param[out] changed 接收这一轮变化的路径。

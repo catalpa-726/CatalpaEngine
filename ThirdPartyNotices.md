@@ -87,3 +87,7 @@ Local source/license evidence only; exact upstream commits and complete transiti
 - `miniaudio`: local license files: `Catalpa/third_party/miniaudio/LICENSE`.
 - `RmlUi`: local license files: `Catalpa/third_party/RmlUi/LICENSE.txt`.
 - `recastnavigation`: local license files: `Catalpa/third_party/recastnavigation/License.txt`.
+
+## 默认环境贴图
+
+引擎随附的 `Resources/Environment/Overcast.catasset` 由仓库素材 `overcast_soil_puresky_1k.hdr` 烘焙生成。Sergej Majboroda 拍摄原图，Jarod Guest 制作纯天空版本。原始 HDR 的 SHA-256 为 `2dbbbbb1323a8e8989db2e8306bd13099b215539e5adba41b85738a250a7904e`。[Overcast Soil (Pure Sky)](https://polyhaven.com/a/overcast_soil_puresky) · [Poly Haven CC0 许可](https://polyhaven.com/license)

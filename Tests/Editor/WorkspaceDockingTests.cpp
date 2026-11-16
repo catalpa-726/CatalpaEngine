@@ -25,6 +25,14 @@ namespace Catalpa::Tests {
 				}
 				const auto file = m_Fixture.root / "Workspace.json";
 				m_Fixture.files = {file, m_Fixture.root / "Workspace.json.bak"};
+				Editor::WorkspaceSettings settings;
+				/* 手势用例从多标签的左栏拖出层级，并使用底部内置资源标签。 */
+				settings.showHistory = true;
+				settings.showAssets = true;
+				if (!Editor::SaveWorkspaceSettings(file, settings, error)) {
+					Finish(false, error);
+					return;
+				}
 				m_Editor = std::make_unique<Editor::EditorWorkspace>(std::filesystem::path{}, file);
 				m_Editor->OnAttach();
 				const auto main = static_cast<HWND>(ImGui::GetMainViewport()->PlatformHandleRaw);

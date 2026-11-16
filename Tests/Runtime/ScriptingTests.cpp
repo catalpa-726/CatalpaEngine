@@ -9,6 +9,10 @@
 #include "Documents/SceneDocument.h"
 #include "ECS/SystemContext.h"
 #include "Runtime/RuntimeServices.h"
+#include "Core/PlatformServices.h"
+#include "MaterialGraph/MaterialGraphCompiler.h"
+#include "BehaviorGraph/BehaviorGraphCompiler.h"
+#include <fstream>
 
 namespace Catalpa::Tests {
 	namespace {
@@ -26,6 +30,89 @@ namespace Catalpa::Tests {
 			node.id = StableId::FromWords(0x4245484156494f52ULL, id);
 			node.type = std::move(type);
 			return node;
+		}
+		/** @brief 用仓库中的真实源文件验证两个 Play 实例及材质图生成。 */
+		void CheckAuthoringExamples(TestContext& test, AssetManager& assets) {
+			std::string error;
+			const auto root =
+			    std::filesystem::absolute(std::filesystem::path(__FILE__)).parent_path().parent_path().parent_path();
+			const auto sources = root / "Projects/Sandbox/Content/Authoring";
+			const auto read = [](const std::filesystem::path& file) {
+				std::ifstream input(file, std::ios::binary);
+				return std::string(std::istreambuf_iterator<char>(input), {});
+			};
+			std::filesystem::path executable;
+			std::string slang;
+			std::map<std::string, StableId, std::less<>> nodes;
+			Tools::MaterialGraphSource material;
+			test.Check(Tools::ReadMaterialGraph(read(sources / "Pulse.matgraph.json"), material, error) &&
+			        GetExecutableDirectory(executable, error) &&
+			        Tools::MaterialGraphCompiler::Generate(
+			            material, read(executable / "Resources/ShaderSources/Pbr.slang"), slang, nodes, error) &&
+			        slang.find("sin(") != slang.npos && !nodes.empty(),
+			    "Pulse sample generates a time-dependent color shader and node mappings: " + error);
+			ScriptAsset move;
+			move.source = read(sources / "Move.lua");
+			BehaviorGraphAsset graph;
+			const auto lua = AssetId::FromWords(0x414343455054414eULL, 1);
+			const auto behavior = AssetId::FromWords(0x414343455054414eULL, 2);
+			const auto second = PersistentEntityId::FromWords(0x414343455054414eULL, 3);
+			if (move.source.empty() ||
+			    !Tools::BehaviorGraphCompiler::Compile(read(sources / "WaitMove.behavior.json"), graph, error) ||
+			    !assets.PublishBuiltin<ScriptAsset>(lua, 1, std::make_shared<const ScriptAsset>(move), 8192, error) ||
+			    !assets.PublishBuiltin<BehaviorGraphAsset>(
+			        behavior, 1, std::make_shared<const BehaviorGraphAsset>(graph), 8192, error)) {
+				test.Check(false, "Read, validate and install Move.lua and WaitMove.behavior.json: " + error);
+				return;
+			}
+			SceneManager scenes;
+			SceneHandle handle;
+			if (!scenes.CreateScene("Authoring examples", handle).IsSuccess())
+				throw std::runtime_error("Example scene unavailable");
+			auto& source = *scenes.GetScene(handle);
+			const auto setup = source.QueueCreate(Actor, "Moving actor", {}).IsSuccess() &&
+			    source.QueueCreate(second, "Second behavior instance", {}).IsSuccess() &&
+			    source.CommitPending().IsSuccess() &&
+			    source.QueueSetScript(source.Resolve(Actor), {lua, true, {}}).IsSuccess() &&
+			    source.QueueSetBehaviorGraph(source.Resolve(Actor), {behavior, true, {}}).IsSuccess() &&
+			    source.QueueSetBehaviorGraph(source.Resolve(second), {behavior, true, {}}).IsSuccess() &&
+			    source.CommitPending().IsSuccess() && scenes.SetActive(handle).IsSuccess();
+			test.Check(setup, "Attach both authoring examples to independent scene entities");
+			if (!setup)
+				return;
+			Editor::SceneDocument document(StableId::FromWords(0x414343455054414eULL, 4), scenes, handle);
+			for (int session = 0; session < 2; ++session) {
+				if (!document.StartPlay(assets, error)) {
+					test.Check(false, error);
+					return;
+				}
+				auto& play = *scenes.GetScene(document.PlayHandle());
+				BehaviorGraphRuntime behaviors;
+				ScriptRuntime scripts;
+				for (int tick = 0; tick < 20; ++tick) {
+					scripts.Tick(play, assets, .25);
+					behaviors.Tick(play, assets, .25);
+				}
+				const auto debug = behaviors.Snapshot();
+				test.Check(Position(play) == Math::Vec3(2.5f, .75f, 0) && debug.size() == 2 &&
+				        std::all_of(debug.begin(), debug.end(),
+				            [&](const auto& entry) {
+					            return entry.graph == behavior && entry.node.HasValue() &&
+					                entry.variables.at("moves") == 3;
+				            }),
+				    "Move uses 0.5 m/s; both WaitMove instances move 0.25 m three times");
+				test.Check(behaviors.Emit(Actor, "Nudge", error), "Send Nudge only to the first entity");
+				behaviors.Tick(play, assets, .25);
+				TransformComponent other;
+				test.Check(Position(play) == Math::Vec3(2.75f, .75f, 0) &&
+				        play.GetTransform(play.Resolve(second), other).IsSuccess() &&
+				        other.local.translation == Math::Vec3(0, .75f, 0),
+				    "Nudge affects only the addressed instance");
+				behaviors.Stop();
+				scripts.Stop(&play);
+				test.Check(document.StopPlay(error) && Position(source) == Math::Vec3(0),
+				    "Stop restores the author pose across consecutive Play sessions");
+			}
 		}
 	}
 
@@ -133,6 +220,7 @@ namespace Catalpa::Tests {
 		AssetManager assets(jobs);
 		test.Check(RegisterScriptAssetLoader(assets, error) && RegisterBehaviorGraphAssetLoader(assets, error),
 		    "Register real script and behavior loaders");
+		CheckAuthoringExamples(test, assets);
 		const auto scriptId = AssetId::FromWords(0x5343524950545445ULL, 10);
 		ScriptAsset ticking;
 		ticking.source = "return { update=function(dt) scene.translate(dt,0,0) end }";

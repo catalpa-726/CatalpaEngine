@@ -15,6 +15,14 @@ namespace Catalpa::Tests {
 	std::unique_ptr<Layer> CreateGroveGpuTest();
 	std::unique_ptr<Layer> CreateWorkspaceLanguageTest(const std::filesystem::path& directory);
 	std::unique_ptr<Layer> CreateWorkspaceDockingTest();
+	/**
+	 * @brief 创建通过工作区实际按钮验证项目模态窗口归属与取消后的交互恢复的测试层。
+	 * @return 交由 CatalpaBox 驱动的独立测试层。
+	 */
+	std::unique_ptr<Layer> CreateWorkspaceModalTest();
+	/** @brief 创建通过正式文档菜单和资产编辑器验证图节点与端口绘制的测试层。 */
+	std::unique_ptr<Layer> CreateWorkspaceGraphTest();
+	std::unique_ptr<Layer> CreateWorkspaceModelDropTest();
 	std::unique_ptr<Layer> CreatePlatformWindowGpuTest();
 
 	/* Box 开发模式中的 CPU 契约检查；失败累计并最终返回非零退出码。 */
@@ -293,6 +301,11 @@ namespace Catalpa::Tests {
 	 * @param[in,out] t 用于记录断言、失败原因和检查数量的测试上下文。
 	 */
 	void RunEditorCommandTests(TestContext&);
+	/**
+	 * @brief 验证作者项目创建、子树复制粘贴及组件编辑的公开入口。
+	 * @param[in,out] t 汇总各用例的成功条件和失败位置。
+	 */
+	void RunEditorWorkflowTests(TestContext& t);
 	/**
 	 * @brief 运行模拟生命周期回归检查。
 	 *

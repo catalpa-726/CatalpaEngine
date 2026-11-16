@@ -1,6 +1,7 @@
 #include "AssetPipeline/Importers/AuthorImporter.h"
 
 #include "AssetPipeline/AssetImportRegistry.h"
+#include "Assets/BuiltinAssetIds.h"
 #include "Scene/SceneSerializer.h"
 #include "Scene/PrefabAsset.h"
 #include "Scripting/ScriptAsset.h"
@@ -22,8 +23,8 @@ namespace Catalpa::Tools {
 		std::vector<AssetId> dependencies;
 		AssetImportResult result;
 		const auto append = [&](std::string key, std::string type, std::span<const std::byte> data,
-		                        std::vector<AssetId> refs) {
-			const auto id = context.Identity(key);
+		                        std::vector<AssetId> refs, AssetId sharedId = {}) {
+			const auto id = sharedId.HasValue() ? sharedId : context.Identity(key);
 			std::sort(refs.begin(), refs.end());
 			refs.erase(std::unique(refs.begin(), refs.end()), refs.end());
 			result.assets.push_back(
@@ -49,16 +50,20 @@ namespace Catalpa::Tools {
 				script.source = input;
 			else if (!ReadScriptAsset(input, script, error))
 				return false;
+			script.sourceLabel = context.SourceKey();
 			if (!LuaScriptBackend::CheckSource(script.source, error) || !WriteScriptAsset(script, canonical, error))
 				return false;
 			for (const auto& [name, id] : script.modules)
 				dependencies.push_back(id);
 		} else if (m_Type == "behavior_graph") {
 			BehaviorGraphAsset graph;
-			if (!BehaviorGraphCompiler::Compile(input, graph, error) || !WriteBehaviorGraph(graph, canonical, error))
+			if (!BehaviorGraphCompiler::Compile(input, graph, error))
+				return false;
+			graph.sourceLabel = context.SourceKey();
+			if (!WriteBehaviorGraph(graph, canonical, error))
 				return false;
 		} else if (m_Type == "material") {
-			const auto doc = AuthorJson::Parse(input);
+			auto doc = AuthorJson::Parse(input);
 			const auto kind = doc.at("kind").get<std::string>();
 			if (kind == "definition") {
 				std::shared_ptr<const MaterialDefinition> value;
@@ -71,13 +76,41 @@ namespace Catalpa::Tools {
 						dependencies.push_back(image->id);
 				result.primary = append("material_definition", "material_definition", bytes, std::move(dependencies));
 			} else if (kind == "instance") {
-				const auto definition = AuthorJson::Identity<AssetId>(doc.at("definitionId"));
-				if (!AuthorJson::Unsigned(doc.at("definitionVersion"))) {
+				auto definition = AuthorJson::Identity<AssetId>(doc.at("definitionId"));
+				const auto version = AuthorJson::Unsigned(doc.at("definitionVersion"));
+				if (!version) {
 					error = "Author material needs a fixed definition version";
 					return false;
 				}
+				/* 打包的标准材质必须自带定义及着色器；内置版本 1 只存在于当前运行时。 */
+				const bool pbr = definition == BuiltinAssetIds::DefaultPbrDefinition ||
+				    definition == BuiltinAssetIds::CookedPbrDefinition;
+				const bool unlit = definition == BuiltinAssetIds::DefaultUnlitDefinition ||
+				    definition == BuiltinAssetIds::CookedUnlitDefinition;
+				if (pbr || unlit) {
+					const auto portable =
+					    pbr ? BuiltinAssetIds::CookedPbrDefinition : BuiltinAssetIds::CookedUnlitDefinition;
+					if (definition != portable && version != 1) {
+						error = "Unsupported builtin material definition version";
+						return false;
+					}
+					AssetId shader;
+					std::string schema;
+					if (!ShaderLibrary::BuiltinId(pbr ? "Pbr.slang" : "Unlit.slang", shader, error) ||
+					    !WriteBuiltinMaterialDefinition(
+					        pbr ? BuiltinMaterialKind::Pbr : BuiltinMaterialKind::Unlit, shader, schema, error))
+						return false;
+					append("standard/definition", "material_definition",
+					    std::as_bytes(std::span(schema.data(), schema.size())), {shader}, portable);
+					if (definition != portable)
+						doc["definitionVersion"] = 0; /* 由 Cook 填入自包含定义的内容版本。 */
+					definition = portable;
+					doc["definitionId"] = definition.ToString();
+				}
+				canonical = doc.dump();
 				dependencies.push_back(definition);
-				result.primary = append("material_instance", "material_instance", bytes, std::move(dependencies));
+				result.primary = append("material_instance", "material_instance",
+				    std::as_bytes(std::span(canonical.data(), canonical.size())), std::move(dependencies));
 			} else {
 				error = "Unknown author material kind";
 				return false;

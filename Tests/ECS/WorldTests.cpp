@@ -50,6 +50,14 @@ namespace Catalpa::Tests {
 		IdentityComponent copied;
 		context.Check(
 		    first.Get(replacement, copied).IsSuccess() && copied.name == "Original", "Read a component by value");
+		std::vector<std::string> names;
+		context.Check(first.ListComponentTypes(replacement, names).IsSuccess() && names.size() == 1 &&
+		        names.front().find("IdentityComponent") != std::string::npos,
+		    "Component inspection reports the actual attached type");
+		const auto originalNames = names;
+		context.Check(
+		    second.ListComponentTypes(replacement, names).code == WorldError::ForeignWorld && names == originalNames,
+		    "Inspecting a foreign entity leaves the previous component list intact");
 		copied.name = "Edited copy";
 		IdentityComponent originalCopy;
 		context.Check(first.Get(replacement, originalCopy).IsSuccess() && originalCopy.name == "Original",
@@ -83,6 +91,8 @@ namespace Catalpa::Tests {
 		        first.Remove<IdentityComponent>(replacement).code == WorldError::MissingComponent,
 		    "Removing a missing component reports failure");
 		copied.name = "Output sentinel";
+		context.Check(first.ListComponentTypes(replacement, names).IsSuccess() && names.empty(),
+		    "Component inspection omits removed types even when their storage still exists");
 		context.Check(
 		    first.Get(replacement, copied).code == WorldError::MissingComponent && copied.name == "Output sentinel",
 		    "Missing component read preserves output");

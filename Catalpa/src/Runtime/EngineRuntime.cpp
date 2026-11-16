@@ -3,6 +3,7 @@
 #include "Runtime/RuntimeRegistration.h"
 #include "Shaders/ShaderLibrary.h"
 #include "Assets/BuiltinAssets.h"
+#include "Assets/BuiltinAssetIds.h"
 #include "EngineRuntime.h"
 
 #include "Log/Log.h"
@@ -317,7 +318,20 @@ namespace Catalpa {
 			VirtualFileSystem files;
 			AssetRegistry registry;
 			if (!ShaderLibrary::ReadBuiltinCatalog(shaders, "shaders", records, error) ||
-			    !registry.Replace(records, error) || !files.MountReadOnly("shaders", shaders, 0, error))
+			    !files.MountReadOnly("shaders", shaders, 0, error) ||
+			    !files.MountReadOnly("environment", m_ResourceRoot / "Environment", 0, error))
+				return false;
+			/* 与随包发布的 Overcast.catasset 的 Cook 记录一致；同一加载器校验容器身份、版本和 SHA-256。 */
+			AssetRecord sky;
+			sky.id = BuiltinAssetIds::DefaultEnvironment;
+			sky.version = 0xe476dfe9b8b11295ULL;
+			sky.contentHash = "f4ad632b65225ee5d274dd67725bb0b9c093c8add1bc7a20a1940cfc4209300b";
+			sky.locator.kind = AssetLocationKind::Cooked;
+			if (!AssetType::TryParse("environment", sky.type) ||
+			    !VirtualPath::Parse("environment:/Overcast.catasset", sky.locator.path, error))
+				return false;
+			records.push_back(std::move(sky));
+			if (!registry.Replace(records, error))
 				return false;
 			/* 4K RGBA8加布局需超过64MiB；逐资产准入，含解码工作区的同一CPU预算为1GiB。 */
 			AssetManagerConfig assetConfig;
@@ -357,7 +371,7 @@ namespace Catalpa {
 			if (!RegisterRuntimeAssetLoaders(*m_Assets, error))
 				return false;
 			/*
-			 * 启动时只等待必需的内置着色器，实际读取和解码在工作线程进行，结果仍由当前线程发布。
+			 * 启动时等待内置着色器与默认环境，实际读取和解码在工作线程进行，结果仍由当前线程发布。
 			 * 逐项等待以遵守队列预算，避免随文件数增加而无限并行。
 			 */
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
@@ -374,7 +388,7 @@ namespace Catalpa {
 						return false;
 					}
 					if (std::chrono::steady_clock::now() >= deadline) {
-						error = "Builtin shader load timed out";
+						error = "Builtin asset load timed out: " + record.locator.path.ToString();
 						return false;
 					}
 					std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -980,8 +994,8 @@ namespace Catalpa {
 						m_LastScriptDiagnostic = std::move(diagnostics);
 						for (const auto& snapshot : m_Behaviors.Snapshot(false))
 							if (!snapshot.error.empty() && m_BehaviorDiagnostics[snapshot.entity] != snapshot.error) {
-								CAT_CORE_ERROR("Behavior entity {0}, node {1}: {2}", snapshot.entity.ToString(),
-								    snapshot.node.ToString(), snapshot.error);
+								CAT_CORE_ERROR("Behavior {0}, entity {1}, node {2}: {3}", snapshot.sourceLabel,
+								    snapshot.entity.ToString(), snapshot.node.ToString(), snapshot.error);
 								m_BehaviorDiagnostics[snapshot.entity] = snapshot.error;
 							}
 					}

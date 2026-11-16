@@ -16,16 +16,20 @@ namespace Catalpa {
 		size_t ScriptResidentBytes(const ScriptAsset& value) {
 			/* 只计本版本的源码与两张模块表；被固定引用的模块资产由其自己的版本额度保活。 */
 			return sizeof(value) + value.source.capacity() + 1 + ModuleMapHeap(value.modules) +
-			    ModuleMapHeap(value.moduleVersions);
+			    ModuleMapHeap(value.moduleVersions) + value.sourceLabel.capacity() + 1;
 		}
 	} /* 命名空间 */
 	bool ReadScriptAsset(std::string_view text, ScriptAsset& output, std::string& error) try {
 		using namespace AuthorJson;
 		const auto v = Parse(text, 4 * 1024 * 1024);
-		Fields(v, {"schemaVersion", "language", "source", "modules"});
+		Fields(v, {"schemaVersion", "language", "source", "modules", "sourceLabel"});
 		if (Unsigned(v.at("schemaVersion")) != 1 || v.at("language") != "lua")
 			throw std::invalid_argument("Unsupported script language/version");
 		ScriptAsset asset;
+		asset.sourceLabel = v.value("sourceLabel", std::string{});
+		if (asset.sourceLabel.size() > 4096 || asset.sourceLabel.find_first_of("\r\n") != std::string::npos ||
+		    asset.sourceLabel.find('\0') != std::string::npos)
+			throw std::invalid_argument("Invalid script source label");
 		asset.source = v.at("source").get<std::string>();
 		if (asset.source.size() > 1024 * 1024 || asset.source.find('\0') != std::string::npos ||
 		    (!asset.source.empty() && asset.source[0] == '\x1b'))
@@ -48,9 +52,11 @@ namespace Catalpa {
 		AuthorJson::Json modules = AuthorJson::Json::object();
 		for (const auto& [key, id] : asset.modules)
 			modules[key] = id.ToString();
-		const auto text = AuthorJson::Json{{"schemaVersion", 1}, {"language", "lua"}, {"source", asset.source},
-		    {"modules",
-		        modules}}.dump(2);
+		auto data =
+		    AuthorJson::Json{{"schemaVersion", 1}, {"language", "lua"}, {"source", asset.source}, {"modules", modules}};
+		if (!asset.sourceLabel.empty())
+			data["sourceLabel"] = asset.sourceLabel;
+		const auto text = data.dump(2);
 		ScriptAsset checked;
 		if (!ReadScriptAsset(text, checked, error))
 			return false;

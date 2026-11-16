@@ -2,6 +2,7 @@
 
 #include "Commands/PackageCommands.h"
 #include "Commands/ToolCommandRunner.h"
+#include "Delivery/GameExport.h"
 
 #include "AssetPipeline/Importers/ShaderImporter.h"
 #include "AssetPipeline/Cookers/ShaderCooker.h"
@@ -15,6 +16,8 @@
 #include "MaterialGraph/MaterialGraphCompiler.h"
 namespace Catalpa::Tools {
 	ToolCommandResult ToolCommandRunner::Run(std::span<const std::string> args, CancellationToken cancellation) {
+		if (!args.empty() && args[0] == "--export-game")
+			return RunGameExport(args, cancellation);
 		if (!args.empty() && (args[0] == "--inspect" || args[0] == "--package"))
 			return RunPackageCommand(args, cancellation);
 		ToolCommandResult result;

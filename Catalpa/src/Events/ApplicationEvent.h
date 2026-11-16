@@ -31,6 +31,21 @@ namespace Catalpa {
 		unsigned int m_Width, m_Height;
 	};
 
+	/** @brief 用户从系统文件管理器放入窗口的自有路径列表，事件不借用 GLFW 字符串。 */
+	class FileDropEvent final : public Event {
+	public:
+		FileDropEvent(std::vector<std::filesystem::path> paths, float x, float y)
+		    : m_Paths(std::move(paths)), m_X(x), m_Y(y) {}
+		float X() const noexcept { return m_X; }
+		float Y() const noexcept { return m_Y; }
+		const std::vector<std::filesystem::path>& GetPaths() const noexcept { return m_Paths; }
+		EVENT_CLASS_TYPE(FileDrop)
+		EVENT_CLASS_CATEGORY(EventCategoryInput)
+	private:
+		std::vector<std::filesystem::path> m_Paths;
+		float m_X, m_Y;
+	};
+
 	class WindowCloseEvent : public Event {
 	public:
 		WindowCloseEvent() = default;

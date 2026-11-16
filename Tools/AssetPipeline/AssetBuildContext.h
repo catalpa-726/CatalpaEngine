@@ -55,6 +55,12 @@ namespace Catalpa::Tools {
 		 */
 		bool Resolve(const std::filesystem::path& owner, std::string_view reference, std::filesystem::path&,
 		    std::string& error, SourceReferenceSyntax syntax = SourceReferenceSyntax::Uri);
+		/** @brief 以读取到的 MTL 为基准查找 OBJ 可选贴图。成功且输出为空表示文件确实缺失。 */
+		bool ResolveObjTexture(std::string_view reference, std::filesystem::path& selected, std::string& error);
+		/** @brief 查询允许源根内的候选文件，同时记录确实缺失的路径供发布与缓存复核。 */
+		bool ProbeObjTextureCandidate(
+		    const std::filesystem::path& path, std::filesystem::path& selected, std::string& error);
+		const auto& MissingTextures() const noexcept { return m_MissingTextures; }
 		/**
 		 * @brief 在读取和构建期间检查是否收到取消请求。
 		 *
@@ -112,6 +118,8 @@ namespace Catalpa::Tools {
 		std::vector<AssetBuildDiagnostic> diagnostics;
 
 	private:
+		bool ProbeTexture(const std::filesystem::path& path, std::filesystem::path& selected, std::string& error) const;
+		std::set<std::filesystem::path> m_MissingTextures;
 		bool LocateTextureFile(const std::filesystem::path& reference, std::filesystem::path& out, bool& relocated,
 		    std::string& error) const;
 		bool ReadSource(const std::filesystem::path& path, size_t byteLimit, std::vector<std::byte>& bytes,

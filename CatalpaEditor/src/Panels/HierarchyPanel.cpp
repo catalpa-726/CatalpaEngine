@@ -1,6 +1,7 @@
 #include "Panels/HierarchyPanel.h"
 
 #include "Commands/SceneCommands.h"
+#include "Panels/FormLayout.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 
@@ -71,6 +72,7 @@ namespace Catalpa::Editor {
 		const auto chosen = scene->MakeReference(current);
 		bool changed = false;
 		std::optional<std::pair<PersistentEntityId, PersistentEntityId>> reparent;
+		std::optional<PersistentEntityId> createUnder, remove;
 
 		struct Drag {
 			StableId document;
@@ -98,13 +100,14 @@ namespace Catalpa::Editor {
 				changed = true;
 			}
 		}
-		ImGui::SameLine();
+		const auto deleteLabel = text("hierarchy.delete", "Delete subtree", "DeleteEntity");
+		if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x +
+		        ImGui::CalcTextSize(deleteLabel.c_str(), nullptr, true).x + 2 * ImGui::GetStyle().FramePadding.x <=
+		    ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x)
+			ImGui::SameLine();
 		ImGui::BeginDisabled(!chosen.HasValue());
-		if (ImGui::Button(text("hierarchy.delete", "Delete subtree", "DeleteEntity").c_str()) &&
-		    DeleteAuthorEntity(doc, chosen.persistent, error)) {
-			selection.Clear();
-			changed = true;
-		}
+		if (ImGui::Button(deleteLabel.c_str()))
+			remove = chosen.persistent;
 		ImGui::EndDisabled();
 		ImGui::SeparatorText(text("hierarchy.root", "Scene root", nullptr).c_str());
 		acceptParent({});
@@ -112,24 +115,25 @@ namespace Catalpa::Editor {
 		/* 显式遍历栈，深层作者层级不会耗尽 UI 调用栈。 */
 		struct Pending {
 			const Row* row;
-			bool close;
+			bool close, expand;
 		};
 
 		std::vector<Pending> stack;
-		auto push = [&](const std::vector<Row>& rows) {
+		auto push = [&](const std::vector<Row>& rows, bool expand = false) {
 			for (auto i = rows.rbegin(); i != rows.rend(); ++i)
-				stack.push_back({&*i, false});
+				stack.push_back({&*i, false, expand});
 		};
 		const bool searching = m_Search.front() != 0;
 		if (searching) {
 			for (const auto& [parent, rows] : children)
 				for (const auto& row : rows)
 					if (ImStristr(row.name.c_str(), nullptr, m_Search.data(), nullptr))
-						stack.push_back({&row, false});
+						stack.push_back({&row, false, false});
 			std::reverse(stack.begin(), stack.end());
 		} else {
 			push(children[EntityId{}.index]);
 		}
+		const auto expandRoot = std::exchange(m_ExpandRoot, {});
 		while (!stack.empty()) {
 			const auto entry = stack.back();
 			stack.pop_back();
@@ -147,12 +151,18 @@ namespace Catalpa::Editor {
 				flags |= ImGuiTreeNodeFlags_Selected;
 			const float iconSize = ImGui::GetFontSize() * .75f;
 			const ImVec2 cursor = ImGui::GetCursorScreenPos();
+			const bool expand = entry.expand || (m_ExpandDocument == doc.Id() && expandRoot == row.id);
+			if (expand && !leaf)
+				ImGui::SetNextItemOpen(true);
 			const bool open = ImGui::TreeNodeEx(row.id.ToString().c_str(), flags, "     %s", row.name.c_str());
 			DrawIcon(row.icon,
 			    ImVec2(cursor.x + ImGui::GetTreeNodeToLabelSpacing(),
 			        cursor.y + (ImGui::GetTextLineHeight() - iconSize) * .5f),
 			    iconSize);
-			if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+			if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+				ImGui::SetTooltip("%s", row.name.c_str());
+			if ((ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) ||
+			    ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
 				selection.Select(doc, row.entity);
 				changed = true;
 			}
@@ -163,13 +173,79 @@ namespace Catalpa::Editor {
 				ImGui::EndDragDropSource();
 			}
 			acceptParent(row.id);
-			if (open && !leaf) {
-				stack.push_back({nullptr, true});
-				push(child->second);
+			if (ImGui::BeginPopupContextItem()) {
+				if (ImGui::MenuItem(text("hierarchy.child", "Create child", "NewChild").c_str()))
+					createUnder = row.id;
+				if (ImGui::MenuItem(text("history.rename", "Rename entity", "RenameEntity").c_str()))
+					RequestRename();
+				if (ImGui::MenuItem(deleteLabel.c_str()))
+					remove = row.id;
+				if (ImGui::MenuItem(text("hierarchy.frame", "Frame selection", "FrameSelection").c_str()))
+					m_FrameRequested = true;
+				if (!leaf &&
+				    ImGui::MenuItem(text("hierarchy.expand_subtree", "Expand subtree", "ExpandSubtree").c_str())) {
+					m_ExpandDocument = doc.Id();
+					m_ExpandRoot = row.id;
+				}
+				ImGui::EndPopup();
 			}
+			if (open && !leaf) {
+				stack.push_back({nullptr, true, false});
+				push(child->second, expand);
+			}
+		}
+		/* 枚举使用的是只读场景快照；结构命令在遍历后提交，并把选择指向实际提交结果。 */
+		if (createUnder) {
+			PersistentEntityId created;
+			if (CreateAuthorEntity(doc, "Entity", *createUnder, created, error)) {
+				selection.Select(doc, scene->Resolve(created));
+				m_ExpandDocument = doc.Id();
+				m_ExpandRoot = *createUnder;
+				changed = true;
+			}
+		}
+		if (remove && DeleteAuthorEntity(doc, *remove, error)) {
+			selection.Clear();
+			changed = true;
 		}
 		if (reparent && ReparentEntity(doc, reparent->first, reparent->second, error))
 			changed = true;
+		const auto renameLabel = text("history.rename", "Rename entity", "HierarchyRenameModal");
+		if (std::exchange(m_RequestRename, false) && !doc.Playing()) {
+			const auto target = scene->MakeReference(selection.Resolve(doc));
+			IdentityComponent identity;
+			if (target.HasValue() && scene->GetIdentity(target.resolved, identity).IsSuccess() &&
+			    identity.name.size() <= 65536) {
+				m_RenameDocument = doc.Id();
+				m_RenameTarget = target;
+				m_OriginalName = identity.name;
+				m_RenameBuffer.assign(65537, 0);
+				std::copy(m_OriginalName.begin(), m_OriginalName.end(), m_RenameBuffer.begin());
+				ImGui::OpenPopup(renameLabel.c_str());
+			}
+		}
+		PrepareEditorModal();
+		if (ImGui::BeginPopupModal(renameLabel.c_str(), nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+			if (doc.Id() != m_RenameDocument || !scene->Resolve(m_RenameTarget).HasValue() || doc.Playing()) {
+				ImGui::CloseCurrentPopup();
+			} else {
+				if (ImGui::IsWindowAppearing())
+					ImGui::SetKeyboardFocusHere();
+				const bool enter = ImGui::InputText("##EntityRename", m_RenameBuffer.data(), m_RenameBuffer.size(),
+				    ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+				if (ImGui::Button(text("history.rename", "Rename entity", "ConfirmRename").c_str()) || enter) {
+					if (RenameEntity(doc, m_RenameTarget.persistent, m_RenameBuffer.data(), m_OriginalName, error)) {
+						ImGui::CloseCurrentPopup();
+						changed = true;
+					}
+				}
+				ImGui::SameLine();
+				if (ImGui::Button(text("project.cancel", "Cancel", "CancelRename").c_str()) ||
+				    ImGui::IsKeyPressed(ImGuiKey_Escape))
+					ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
 		return changed;
 	}
 }

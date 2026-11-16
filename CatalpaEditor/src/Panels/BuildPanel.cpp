@@ -2,6 +2,9 @@
 #include "catpch.h"
 
 #include "Panels/BuildPanel.h"
+#include "AssetPipeline/ProjectSourceImport.h"
+#include "Commands/PrefabCommands.h"
+#include "Scene/SceneSubtree.h"
 
 #include "AssetPipeline/AssetCooker.h"
 #include "Camera/CameraProjection.h"
@@ -14,8 +17,8 @@
 #include "Log/Log.h"
 #include "imgui.h"
 
-#include <nlohmann/json.hpp>
-#include "Core/Serialization/JsonArchive.h"
+#include "AssetPipeline/AssetBuildCache.h"
+#include "Core/PlatformServices.h"
 
 namespace Catalpa::Editor {
 	namespace {
@@ -56,6 +59,16 @@ namespace Catalpa::Editor {
 		return bool(m_Task) || m_Loading;
 	}
 
+	float BuildPanel::Progress() const {
+		if (m_Task) {
+			std::lock_guard lock(m_Task->mutex);
+			return m_Task->total ? float(m_Task->done) / float(m_Task->total) : -1.f;
+		}
+		if (m_Loading && !m_LoadOrder.empty())
+			return float(m_LoadCursor) / float(m_LoadOrder.size());
+		return Ready() ? 1.f : 0.f;
+	}
+
 	void BuildPanel::Fail(std::string error) {
 		m_Error = std::move(error);
 		m_Phase = "Request failed";
@@ -70,7 +83,51 @@ namespace Catalpa::Editor {
 		m_ProjectAssets.clear();
 	}
 
-	bool BuildPanel::Start(Tools::AssetBuildRequest request, std::string& error) {
+	Tools::AssetImportSettings* BuildPanel::ImportSettings(
+	    const Tools::AssetBuildRequest& request, std::string& error) {
+		auto key = std::pair{request.project.projectFile, request.source.lexically_normal()};
+		if (auto it = m_ImportSettings.find(key); it != m_ImportSettings.end())
+			return &it->second;
+		std::error_code pathError;
+		const auto actual = std::filesystem::canonical(request.source, pathError);
+		if (pathError) {
+			error = "Cannot resolve import source " + Tools::AssetPathText(request.source) + ": " + pathError.message();
+			return nullptr;
+		}
+		if (key.second != actual) {
+			key.second = actual;
+			if (auto it = m_ImportSettings.find(key); it != m_ImportSettings.end())
+				return &it->second;
+		}
+		const auto& project = request.project;
+		const bool mounted = IsPathWithinRoot(key.second, project.contentRoot) ||
+		    std::any_of(project.externalSourceRoots.begin(), project.externalSourceRoots.end(),
+		        [&](const auto& root) { return IsPathWithinRoot(key.second, root.second); });
+		Tools::AssetImportSettings settings;
+		if (mounted) {
+			Tools::AssetBuildContext context(request);
+			if (!context.Initialize(error) ||
+			    !Tools::AssetBuildCache::ReadSettings(project, context.Identity("request"), settings, error))
+				return nullptr;
+		}
+		return &m_ImportSettings.emplace(key, std::move(settings)).first->second;
+	}
+
+	bool BuildPanel::ReviewImport(Tools::AssetBuildRequest request, const std::filesystem::path& directory,
+	    std::shared_ptr<Tools::ProjectImportReview> result, JobHandle& job, std::string& error) {
+		return m_Jobs.Submit(
+		    [request = std::move(request), directory, result = std::move(result)](
+		        const CancellationToken& token) mutable {
+			    request.cancellation = token;
+			    std::string failure;
+			    if (!Tools::ReviewProjectSource(std::move(request), directory, *result, failure))
+				    throw std::runtime_error(failure);
+		    },
+		    job, error);
+	}
+
+	bool BuildPanel::Start(Tools::AssetBuildRequest request, std::string& error,
+	    const std::filesystem::path& importDirectory, std::shared_ptr<const Tools::ProjectImportReview> approved) {
 		if (Busy()) {
 			error = "An asset request is still active";
 			return false;
@@ -87,22 +144,37 @@ namespace Catalpa::Editor {
 			task->done = done;
 			task->total = total;
 		};
+		const auto submittedSource = task->recipe->source;
 		JobHandle job;
 		if (!m_Jobs.Submit(
-		        [task, request = std::move(request)](const CancellationToken& token) mutable {
+		        [task, importDirectory, approved = std::move(approved), request = std::move(request)](
+		            const CancellationToken& token) mutable {
 			        request.cancellation = token;
-			        auto result = Tools::AssetCooker::Build(std::move(request));
+			        Tools::AssetBuildResult result;
+			        std::shared_ptr<const Tools::AssetBuildRequest> importedRecipe;
+			        if (importDirectory.empty() ||
+			            Tools::ImportProjectSource(request, importDirectory, result.error, approved.get())) {
+				        auto recipe = request;
+				        recipe.cancellation = {};
+				        recipe.progress = {};
+				        importedRecipe = std::make_shared<const Tools::AssetBuildRequest>(std::move(recipe));
+				        result = Tools::AssetCooker::Build(std::move(request));
+			        }
+
 			        std::lock_guard lock(task->mutex);
+			        if (importedRecipe)
+				        task->recipe = std::move(importedRecipe);
 			        task->result = std::move(result);
 		        },
 		        job, error))
 			return false;
 		/* 烘焙进行中保留上一次可用的目录和选择；新目录安装成功后才释放旧缓存。 */
-		if (m_Recipe && m_Recipe->source != task->recipe->source) {
+		if (m_Recipe && m_Recipe->source != submittedSource) {
 			m_Watcher.Clear();
 			m_WatchEnabled = false;
 			m_ReimportPending = false;
 		}
+		++m_Generation;
 		m_Task = std::move(task);
 		m_Job = std::move(job);
 		m_Error.clear();
@@ -129,6 +201,7 @@ namespace Catalpa::Editor {
 	}
 
 	void BuildPanel::CloseProject() {
+		m_ImportSettings.clear();
 		m_Watcher.Clear();
 		m_WatchEnabled = false;
 		m_ReimportPending = false;
@@ -150,26 +223,6 @@ namespace Catalpa::Editor {
 		m_Error.clear();
 		m_AssetsReady = false;
 		m_ReturnScene = false;
-		std::vector<SceneHandle> changed;
-		for (const auto& [handle, root] : m_CreatedRoots)
-			if (auto* scene = m_Scenes.GetScene(handle)) {
-				const auto entity = scene->Resolve(root);
-				if (entity != EntityId{}) {
-					const auto status = scene->QueueDestroySubtree(entity);
-					if (status.IsSuccess()) {
-						if (std::find(changed.begin(), changed.end(), handle) == changed.end())
-							changed.push_back(handle);
-					} else
-						CAT_ERROR("Model cleanup: {0}", status.message);
-				}
-			}
-		for (auto handle : changed)
-			if (auto* scene = m_Scenes.GetScene(handle)) {
-				const auto status = scene->CommitPending();
-				if (!status.IsSuccess())
-					CAT_ERROR("Model cleanup commit: {0}", status.message);
-			}
-		m_CreatedRoots.clear();
 		if (m_PreviewScene.HasValue()) {
 			const bool restore = m_Scenes.GetActiveHandle() == m_PreviewScene;
 			const auto status = m_Scenes.Unload(m_PreviewScene);
@@ -233,47 +286,19 @@ namespace Catalpa::Editor {
 		/* Runtime 安装整份已发布目录，本面板只请求本次源资产及它的依赖。 */
 		m_Result = std::move(next);
 		m_Recipe = std::move(recipe);
-		/* 报告由已成功的生产链发布；只观察其中明确记录的输入，不猜测来源目录。 */
-		try {
-			VirtualFileSystem fs;
-			VirtualPath path;
-			std::vector<std::byte> bytes;
-			std::vector<std::filesystem::path> inputs{m_Recipe->source, m_Recipe->project.projectFile};
-			const auto relative = m_Result.report.lexically_relative(m_Result.cookedRoot);
-			if (!fs.MountReadOnly("watch-report", m_Result.cookedRoot, 0, m_WatchError) ||
-			    !VirtualPath::Parse("watch-report:/" + Tools::AssetPathText(relative), path, m_WatchError) ||
-			    !fs.ReadFile(path, 4 * 1024 * 1024, bytes, m_WatchError))
-				throw std::runtime_error(m_WatchError);
-			std::unique_ptr<ArchiveValue> checked;
-			ArchiveError diagnostic;
-			ArchiveLimits limits;
-			limits.maxBytes = 4 * 1024 * 1024;
-			limits.maxDepth = 24;
-			limits.maxNodes = 262144;
-			if (!JsonArchive::Parse(
-			        {reinterpret_cast<const char*>(bytes.data()), bytes.size()}, checked, diagnostic, limits))
-				throw std::runtime_error(diagnostic.ToString());
-			const auto document = nlohmann::json::parse(bytes.begin(), bytes.end());
-			const auto& values = document.at("inputs");
-			if (!values.is_array() || values.size() > 4094)
-				throw std::runtime_error("Watch input budget exceeded");
-			for (const auto& value : values)
-				inputs.push_back(std::filesystem::u8path(value.at("path").get<std::string>()));
-			if (!m_Watcher.SetPaths(inputs, m_WatchError)) {
-				m_WatchEnabled = false;
-				m_Watcher.Clear();
-			}
-		} catch (const std::exception& e) {
-			m_WatchError = e.what();
+		/* 自动重导入沿用已提交配方，完成后保留作者在属性中尚未提交的选项。 */
+		m_ImportSettings.try_emplace(
+		    std::pair{m_Recipe->project.projectFile, m_Recipe->source.lexically_normal()}, m_Recipe->settings);
+		if (!m_Watcher.SetPaths(m_Result.watchInputs, m_Result.missingTextureInputs, m_WatchError)) {
 			m_WatchEnabled = false;
 			m_Watcher.Clear();
 		}
 		m_RecordIndices.clear();
 		for (size_t i = 0; i < m_Result.records.size(); ++i)
 			m_RecordIndices.emplace(m_Result.records[i].id, i);
-		/* 重复构建可复用同版本缓存。这里只回收由本面板加载且新源已不再使用的资产。 */
+		/* 场景可能仍绑定先前构建的其他源；仅在完整的新目录移除记录后回收。 */
 		for (auto it = m_ProjectAssets.begin(); it != m_ProjectAssets.end();) {
-			if (m_RecordIndices.contains(*it)) {
+			if (registry.Find(*it)) {
 				++it;
 				continue;
 			}
@@ -352,23 +377,55 @@ namespace Catalpa::Editor {
 		if (std::exchange(m_PreviewRequested, false)) {
 			if (!UsePreviewScene(viewport))
 				Fail(m_Error);
-		} else if (std::exchange(m_InstantiateRequested, false)) {
-			const auto handle = m_Scenes.GetActiveHandle();
-			std::shared_ptr<ModelInstantiationResult> instance;
-			m_Error.clear();
-			const auto status = m_Scenes.WithActive([&](Scene& scene) -> WorldStatus {
-				if (!InstantiateSelectedModel(scene, instance))
-					return {WorldError::CommandFailed, "Cannot instantiate model"};
-				return {};
-			});
-			if (!status.IsSuccess())
-				Fail(m_Error.empty() ? status.message : m_Error);
-			if (instance && instance->success) {
-				for (auto root : instance->roots)
-					m_CreatedRoots.emplace_back(handle, root);
-				m_Phase = "Model instantiated at the scene safe point";
-			}
 		}
+	}
+
+	bool BuildPanel::PlaceModel(
+	    SceneDocument& doc, Math::Vec3 position, PersistentEntityId& created, std::string& error, AssetId modelId) try {
+		if (doc.Playing() || !doc.Resolve() || m_Scenes.GetActiveHandle() != doc.Handle() ||
+		    doc.Handle() == m_PreviewScene || !Ready() || !m_Recipe) {
+			error = "Model placement requires the active author scene and a completed model build";
+			return false;
+		}
+		SceneHandle stage;
+		const auto status = m_Scenes.CreateScene("Model placement candidate", stage);
+		if (!status.IsSuccess()) {
+			error = status.message;
+			return false;
+		}
+		struct Cleanup {
+			SceneManager& manager;
+			SceneHandle scene;
+			~Cleanup() { (void)manager.Unload(scene); }
+		} cleanup{m_Scenes, stage};
+		auto* candidate = m_Scenes.GetScene(stage);
+		PersistentEntityId root;
+		if (!GeneratePersistentEntityId(root, error))
+			return false;
+		Math::TransformTRS local;
+		local.translation = position;
+		auto prepared = candidate->QueueCreate(root, Tools::AssetPathText(m_Recipe->source.stem()), local);
+		if (prepared.IsSuccess())
+			prepared = candidate->CommitPending();
+		if (!prepared.IsSuccess()) {
+			error = prepared.message;
+			return false;
+		}
+		std::shared_ptr<ModelInstantiationResult> instance;
+		const auto anchor = candidate->Resolve(root);
+		if (!InstantiateModel(modelId.HasValue() ? modelId : m_Selected, *candidate, instance, nullptr, anchor)) {
+			error = m_Error;
+			return false;
+		}
+		SceneSubtreeSnapshot snapshot;
+		if (!ModelInstantiation::PreparePlacement(*candidate, anchor, *doc.Resolve(), snapshot, error) ||
+		    !PlaceAuthorModel(doc, root, std::move(snapshot), error))
+			return false;
+		created = root;
+		return true;
+	} catch (const std::exception& failure) {
+		error = failure.what();
+		return false;
 	}
 
 	/**
@@ -399,7 +456,7 @@ namespace Catalpa::Editor {
 				return discard();
 			}
 			std::shared_ptr<ModelInstantiationResult> result;
-			if (!InstantiateSelectedModel(*scene, result, &viewport))
+			if (!InstantiateModel(m_Selected, *scene, result, &viewport))
 				return discard();
 
 			/* 复用普通帧提取的像素视口和相机校验，候选无效时留在原场景。 */
@@ -437,7 +494,6 @@ namespace Catalpa::Editor {
 				m_Error = status.message;
 				return false;
 			}
-			std::erase_if(m_CreatedRoots, [&](const auto& owned) { return owned.first == replaced; });
 		}
 		m_Error.clear();
 		m_Phase = "Model preview ready";
@@ -555,16 +611,17 @@ namespace Catalpa::Editor {
 	}
 
 	/**
-	 * @brief 实例化已选择的模型。
+	 * @brief 按明确的产物身份实例化模型并验证其依赖版本。
 	 *
+	 * @param[in] modelId 当前构建结果中的模型资产标识。
 	 * @param[in] scene 此次操作所针对的场景。
 	 * @param[out] result 接收 ModelInstantiationResult 结果。
 	 * @param[in] previewViewport 可选的预览像素范围；提供时先为模型配置取景相机与光源。
 	 *
 	 * @return 模型及其依赖的构建版本匹配、实例化事务已提交且结果成功时为 true。
 	 */
-	bool BuildPanel::InstantiateSelectedModel(
-	    Scene& scene, std::shared_ptr<ModelInstantiationResult>& result, const CameraViewport* previewViewport) {
+	bool BuildPanel::InstantiateModel(AssetId modelId, Scene& scene, std::shared_ptr<ModelInstantiationResult>& result,
+	    const CameraViewport* previewViewport, EntityId parent) {
 		/* 查询时同时核对 ID 和内容版本。回退或上一次构建的版本均不能进入这次场景。 */
 		const auto acquireExact = [&](AssetId id, auto& value) {
 			bool fallback = false;
@@ -580,7 +637,7 @@ namespace Catalpa::Editor {
 		};
 
 		AssetVersionRef<ModelAsset> model;
-		if (!acquireExact(m_Selected, model))
+		if (!acquireExact(modelId, model))
 			return false;
 
 		std::vector<AssetVersionRef<MeshAsset>> meshes;
@@ -606,7 +663,7 @@ namespace Catalpa::Editor {
 			return false;
 		/* 在工作区的主线程更新阶段提交，并使用票据同时检查队列和模型实例化事务的结果。 */
 		if (!ModelInstantiation::Queue(
-		        scene, std::move(model), std::move(meshes), std::move(materials), result, m_Error))
+		        scene, std::move(model), std::move(meshes), std::move(materials), result, m_Error, parent))
 			return false;
 		const auto committed = scene.CommitPending();
 		if (!committed.IsSuccess()) {

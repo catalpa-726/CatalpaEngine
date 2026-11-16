@@ -118,6 +118,16 @@ namespace Catalpa {
 	[[nodiscard]] CATALPA_API bool CreateBuiltinMaterialDefinition(BuiltinMaterialKind kind, AssetId shaderId,
 	    std::shared_ptr<const MaterialDefinition>& output, std::string& error);
 	/**
+	 * @brief 生成运行时与作者材质烘焙共用的内置定义文本。
+	 * @param[in] kind 选择内置材质类型。
+	 * @param[in] shaderId 所引用着色器的稳定身份。
+	 * @param[out] output 成功时接收定义的 JSON 文本。
+	 * @param[out] error 失败时接收诊断信息。
+	 * @return 定义可生成时为 true。
+	 */
+	[[nodiscard]] CATALPA_API bool WriteBuiltinMaterialDefinition(
+	    BuiltinMaterialKind kind, AssetId shaderId, std::string& output, std::string& error);
+	/**
 	 * @brief 用固定标识和内容版本构造内置材质实例。
 	 * 错误材质采用品红色和 Unlit 着色模型，沿用调用方提供的内置标识。
 	 *

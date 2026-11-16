@@ -2,11 +2,15 @@
 #include "AssetEditors/AssetEditorRegistry.h"
 #include "Documents/DocumentManager.h"
 #include "Panels/HierarchyPanel.h"
+#include "Panels/ContentBrowserPanel.h"
 #include "Panels/InspectorPanel.h"
 #include "Viewport/PickingController.h"
 #include "Viewport/TransformGizmo.h"
 #include "Viewport/EditorCameraController.h"
 #include "Scene/SceneAsset.h"
+#include "Scene/SceneSubtree.h"
+#include "Application/WorkspaceAssetActions.h"
+#include "Application/WorkspaceSettings.h"
 
 namespace Catalpa {
 	class AssetDependencyGraph;
@@ -18,6 +22,9 @@ namespace Catalpa::Editor {
 	class WorkspaceEditing {
 	public:
 		explicit WorkspaceEditing(Application& app);
+
+		/** @brief 供工作区恢复及保存独立于场景文档的导航和吸附偏好。 */
+		ViewportSettings& ViewportPreferences() noexcept { return m_ViewportSettings; }
 
 		~WorkspaceEditing();
 		/**
@@ -114,12 +121,69 @@ namespace Catalpa::Editor {
 		 */
 		void ReturnFromGrove();
 		bool CanReturnFromGrove() const noexcept { return m_PreGroveScene.HasValue(); }
+		/** @brief 在所有作者窗口绘制后处理未被文本输入和运行模式占用的快捷键。 */
+		void HandleShortcuts();
+		bool TakeHierarchyRequest() noexcept { return std::exchange(m_RevealHierarchy, false); }
+		/**
+		 * @brief 处理本项目的异步源资产动作并提交到发起编辑的文档。
+		 * @param[in,out] build 当前构建服务，空值表示尚未绑定。
+		 * @param[in] shaderRoot 构建资产使用的着色器目录。
+		 */
+		void UpdateAssetActions(BuildPanel* build, const std::filesystem::path& shaderRoot);
+		/**
+		 * @brief 打开作者源文件，为脚本和图文档绑定实际构建身份。
+		 * @param[in] path 要打开的项目源文件绝对路径。
+		 */
+		void OpenSourceAsset(const std::filesystem::path& path);
+		/**
+		 * @brief 提交模型或预制体资产在场景视口内的放置请求。
+		 * @param[in] path 项目源文件路径。
+		 * @param[in] position 放置点的世界坐标，单位为米。
+		 */
+		void DropSourceIntoScene(const std::filesystem::path& path, Math::Vec3 position);
+		/**
+		 * @brief 记录外部文件拖入视口时的落点与场景代次。
+		 * @param[in] x 光标客户区水平坐标，单位为窗口逻辑像素。
+		 * @param[in] y 光标客户区垂直坐标，单位为窗口逻辑像素。
+		 * @return 导入成功后调用的放置函数，视口以外返回空函数。
+		 */
+		ImportPlacement MakeImportPlacement(float x, float y);
+		/**
+		 * @brief 按作者类型创建未保存的文档并打开对应编辑器。
+		 * @param[in] type 受支持的脚本、行为图或材质图类型。
+		 */
+		void CreateAssetDraft(std::string_view type);
+		/** @brief 保存当前活动文档，供发布面板与快捷键复用同一保存路径。 */
+		bool SaveActive() {
+			auto* doc = m_Documents.Active();
+			return doc && SaveDocument(*doc);
+		}
+		SceneDocument* CurrentScene() { return ActiveScene(); }
+		/**
+		 * @brief 保存当前作者场景；未命名场景即使尚无编辑记录也使用另存为。
+		 * @return 作者场景写入成功时为 true；取消、Play 或写入失败时为 false。
+		 */
+		bool SaveCurrentScene() {
+			auto* scene = ActiveScene();
+			return scene && SaveDocument(*scene);
+		}
 
 	private:
+		/**
+		 * @brief 检查实例是否使用作者或 Cook 后的标准单色无光照定义。
+		 * @param[in] source 当前打开的材质实例。
+		 * @return 定义明确由引擎提供，且允许按基础色复制时为 true。
+		 */
+		static bool IsStandardUnlit(const MaterialInstance& source);
+		/**
+		 * @brief 打开独立的标准 PBR 草稿，会话和作者项目均可预览。
+		 * @param[in] source 提供基础色和面剔除的标准无光照材质；空指针表示沿用标准 PBR 默认值。
+		 */
+		void CreatePbrDraft(const MaterialInstance* source = nullptr);
 		SceneDocument* ActiveScene();
 		void ActivateAsset(AssetDocument&);
 		void DrawViewport(SceneDocument*, const PanelText&, uint32_t centerDockId);
-		EditorCameraInput ViewportInput(bool hovered, bool gizmoBusy);
+		EditorCameraInput ViewportInput(bool hovered, bool gizmoBusy, bool canAdjustSpeed);
 		bool RoutePlayUIInput(float x, float y, float width, float height, Extent2D extent, bool hovered, bool focused);
 		void BlurPlayUI();
 		bool SaveDocument(Document&, bool saveAs = false);
@@ -137,6 +201,51 @@ namespace Catalpa::Editor {
 		bool StopPlay();
 		void AuthorComponentControls(SceneDocument&);
 		void PrefabMenu();
+		enum class EditAction { Undo, Redo, Copy, Paste, Delete, Rename, Frame, Save };
+		/**
+		 * @brief 检查活动文档、运行状态和当前选择是否允许执行编辑动作。
+		 * @param[in] action 菜单、快捷键或上下文入口请求的动作。
+		 * @return 该动作当前可提交时为 true。
+		 */
+		bool CanEditAction(EditAction);
+		/**
+		 * @brief 在统一的文档历史入口执行编辑动作，失败原因保留在工作区诊断中。
+		 * @param[in] action 需要执行的编辑动作，执行前重新检查可用状态。
+		 */
+		void PerformEditAction(EditAction);
+		/** @brief 按所选子树的世界包围盒和当前视口宽高比调整独立编辑相机。 */
+		void FrameSelection();
+		/**
+		 * @brief 绘制实体的脚本或行为图选择器并接收兼容的拖放。
+		 * @param[in,out] doc 所选实体所属的作者场景。
+		 * @param[in] id 目标实体的持久身份。
+		 * @param[in] script 为 true 时仅筛选 Lua 源文件。
+		 * @param[in] bound 当前引用的稳定资产 ID。
+		 */
+		void DrawBehaviorPicker(SceneDocument& doc, PersistentEntityId id, bool script, AssetId bound);
+		/** @brief 在网格的指定材质槽选择项目材质，异步构建期间固定实体、网格与原材质。 */
+		void DrawMaterialPicker(
+		    SceneDocument& doc, PersistentEntityId id, size_t slot, const MeshRendererComponent& mesh);
+		/** @brief 优先打开绑定材质的项目源文件；内置或导入子材质使用独立草稿。 */
+		void OpenBoundMaterial(const AssetVersionRef<MaterialInstance>& material);
+		/**
+		 * @brief 提交构建请求并固定后续实例化或组件编辑的目标。
+		 * @param[in] source 需要构建的源文件。
+		 * @param[in] action 构建成功后提交的作者操作。
+		 * @param[in,out] doc 当前可编辑的场景文档。
+		 * @param[in] entity 需要绑定行为或材质的目标身份。
+		 * @param[in] position 放置实体时的世界位置，单位为米。
+		 * @return 成功排队并记录目标时为 true。
+		 */
+		bool StartSourceAction(const std::filesystem::path& source, AuthorAssetAction action,
+		    SceneDocument* doc = nullptr, PersistentEntityId entity = {}, Math::Vec3 position = {});
+		WorkspaceAssetActions m_AssetActions;
+		Math::Vec4 m_DropRect{};
+		StableId m_DropDocument;
+		uint64_t m_DropEpoch = 0;
+		std::optional<SceneSubtreeSnapshot> m_Clipboard;
+		StableId m_ClipboardDocument;
+		bool m_RevealHierarchy = false, m_GameView = false;
 		std::array<char, 64> m_ScriptAsset{}, m_BehaviorAsset{};
 		std::array<char, 129> m_PropertyName{};
 		int m_PropertyType = 2;
@@ -172,7 +281,10 @@ namespace Catalpa::Editor {
 		PickingController m_Picking;
 		TransformGizmo m_Gizmo;
 		EditorCameraController m_Camera;
+		ViewportSettings m_ViewportSettings;
 		bool m_RightLook = false;
+		/* 中键手势只延续到连续命中场景图像的下一帧，切换视图或失焦后须重新按下。 */
+		int m_SpeedGestureFrame = -2;
 		bool m_PlayUIActive = false, m_PlayUICapture = false;
 		bool m_ResetCamera = true, m_ShowNormals = false, m_ShowGrid = false;
 		AssetEditorRegistry m_AssetEditors;

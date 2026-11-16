@@ -3,22 +3,94 @@
 #include "Application/WorkspaceEditing.h"
 
 #include "AssetPipeline/AssetImportRegistry.h"
+#include "Assets/BuiltinAssetIds.h"
 #include "Core/Application.h"
 #include "Core/Window.h"
 #include "Core/KeyCodes.h"
 #include "UI/UIInputRouter.h"
 #include "Commands/AssetCommands.h"
 #include "Commands/SceneCommands.h"
+#include "Commands/PrefabCommands.h"
 #include "Panels/BuildPanel.h"
 #include "Panels/EditorText.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "ImGuizmo.h"
 #include "Viewport/ToolbarButton.h"
+#include "Viewport/ViewportPlacement.h"
 
 namespace Catalpa::Editor {
 	namespace {
 		constexpr uint64_t SceneSurface = 0x43415453434e4501ULL;
+
+		/** @brief 优先使用作者文件、导入子资源和内置材质的名称，未保存的草稿显示本地化类型。 */
+		std::string DraftTitle(const AssetDocument& doc) {
+			std::string name;
+			if (!doc.AuthorPath().empty())
+				name = Tools::AssetPathText(doc.AuthorPath().filename());
+			else if (!doc.ProductName().empty())
+				name = doc.ProductName();
+			else if (doc.Asset() == BuiltinAssetIds::DefaultUnlitInstance)
+				name = UiText("material.default_unlit", "Default unlit material");
+			else if (doc.Asset() == BuiltinAssetIds::DefaultPbrInstance)
+				name = UiText("material.default_pbr", "Default PBR material");
+			else if (doc.Asset() == BuiltinAssetIds::ErrorInstance)
+				name = UiText("material.error_instance", "Error material");
+			else {
+				const std::string type(doc.TypeKey());
+				name = UiText(("asset.type." + type).c_str(), type.c_str());
+				if (doc.Source())
+					name += " (" + std::string(UiText("document.untitled", "Untitled")) + ")";
+			}
+			if (doc.History().Dirty())
+				name += " *";
+			return name;
+		}
+
+		/** @brief 将完整路径和版本信息保留在悬停提示内。 */
+		void DraftTooltip(const AssetDocument& doc) {
+			if (!ImGui::BeginItemTooltip())
+				return;
+			if (!doc.AuthorPath().empty())
+				ImGui::TextWrapped("%s", Tools::AssetPathText(doc.AuthorPath()).c_str());
+			ImGui::Text(
+			    "%s / v%llu", doc.Asset().ToString().c_str(), static_cast<unsigned long long>(doc.SourceVersion()));
+			ImGui::EndTooltip();
+		}
+
+		/** @brief 在场景工具栏显示移动速度；窄视口换行，弹窗可按对数拖动或直接输入米/秒。 */
+		void DrawCameraSpeed(float& speed, const PanelText& text) {
+			char value[32];
+			std::snprintf(value, sizeof(value), " %.2f m/s", speed);
+			const auto caption = text("viewport.camera_speed", "Camera speed", nullptr);
+			const auto& style = ImGui::GetStyle();
+			const float rightEdge = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+			/* 按最大显示位数预留宽度，调速跨过整十或整百时不会改变视口高度。 */
+			const float width = ImGui::CalcTextSize((caption + " 0000.00 m/s").c_str()).x + 2 * style.FramePadding.x;
+			if (ImGui::GetItemRectMax().x + style.ItemSpacing.x + width <= rightEdge)
+				ImGui::SameLine();
+			if (ImGui::Button((caption + value + "###CameraSpeed").c_str()))
+				ImGui::OpenPopup("CameraSpeedOptions");
+			if (ImGui::BeginPopup("CameraSpeedOptions")) {
+				const float sliderWidth =
+				    std::min(18 * ImGui::GetFontSize(), ImGui::GetMainViewport()->WorkSize.x * .8f);
+				ImGui::SetNextItemWidth(sliderWidth);
+				float edited = speed;
+				if (ImGui::SliderFloat("##CameraMoveSpeed", &edited, ViewportSettings::MinCameraSpeed,
+				        ViewportSettings::MaxCameraSpeed, "%.2f m/s",
+				        ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp |
+				            ImGuiSliderFlags_NoRoundToFormat) &&
+				    std::isfinite(edited))
+					speed = edited;
+				ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + sliderWidth);
+				ImGui::TextUnformatted(text("viewport.camera_speed_help",
+				    "Hold the middle mouse button and drag up or down, or scroll while holding it. Ctrl+click the slider to enter a speed in m/s.",
+				    nullptr)
+				        .c_str());
+				ImGui::PopTextWrapPos();
+				ImGui::EndPopup();
+			}
+		}
 
 		/**
 		 * @brief 绘制视口投影和法线显示模式的切换控件。
@@ -66,7 +138,8 @@ namespace Catalpa::Editor {
 		 * @param[out] error 失败时接收原因说明。
 		 */
 		void DrawImportSettings(AssetDocument& doc, BuildPanel* build, const PanelText& text, std::string& error) {
-			if (ImGui::CollapsingHeader(text("edit.cook_diagnostics", "Cook diagnostics", "CookDiagnostics").c_str())) {
+			if ((!doc.Report().empty() || !doc.Diagnostics().empty()) &&
+			    ImGui::CollapsingHeader(text("edit.cook_diagnostics", "Cook diagnostics", "CookDiagnostics").c_str())) {
 				ImGui::TextWrapped("%s", Tools::AssetPathText(doc.Report()).c_str());
 				for (const auto& diagnostic : doc.Diagnostics())
 					ImGui::TextWrapped("%s: %s", diagnostic.element.c_str(), diagnostic.message.c_str());
@@ -216,6 +289,10 @@ namespace Catalpa::Editor {
 		if (m_App.GetScenes().GetScene(m_HostScene))
 			(void)m_App.GetScenes().SetActive(m_HostScene);
 		m_Documents.Clear();
+		m_Clipboard.reset();
+		m_ClipboardDocument = {};
+		m_AssetActions = {};
+		m_GameView = false;
 		m_OpenAsset = {};
 		m_LastScene = {};
 		m_Error.clear();
@@ -249,22 +326,29 @@ namespace Catalpa::Editor {
 
 	void WorkspaceEditing::Menu(const PanelText& text) {
 		DocumentMenu();
-		if (ImGui::BeginMenu(text("menu.edit", "Edit", nullptr).c_str())) {
-			auto* doc = m_Documents.Active();
-			if (ImGui::MenuItem(text("edit.undo", "Undo", nullptr).c_str(), nullptr, false,
-			        doc && !m_PlayDocument.HasValue() && doc->History().CanUndo()))
-				doc->History().Undo(*doc, m_Error);
-			if (ImGui::MenuItem(text("edit.redo", "Redo", nullptr).c_str(), nullptr, false,
-			        doc && !m_PlayDocument.HasValue() && doc->History().CanRedo()))
-				doc->History().Redo(*doc, m_Error);
-			ImGui::EndMenu();
-		}
+		if (!ImGui::BeginMenu(text("menu.edit", "Edit", nullptr).c_str()))
+			return;
+		const auto item = [&](const char* key, const char* label, const char* shortcut, EditAction action) {
+			if (ImGui::MenuItem(text(key, label, nullptr).c_str(), shortcut, false, CanEditAction(action)))
+				PerformEditAction(action);
+		};
+		item("edit.undo", "Undo", "Ctrl+Z", EditAction::Undo);
+		item("edit.redo", "Redo", "Ctrl+Y / Ctrl+Shift+Z", EditAction::Redo);
+		ImGui::Separator();
+		item("edit.copy", "Copy", "Ctrl+C", EditAction::Copy);
+		item("edit.paste", "Paste", "Ctrl+V", EditAction::Paste);
+		item("hierarchy.delete", "Delete subtree", "Delete", EditAction::Delete);
+		item("hierarchy.rename", "Rename", "F2", EditAction::Rename);
+		item("hierarchy.frame", "Frame selection", "F", EditAction::Frame);
+		ImGui::EndMenu();
 	}
 
 	void WorkspaceEditing::SceneTree(const PanelText& text) {
 		if (auto* doc = ActiveScene()) {
 			ImGui::BeginDisabled(doc->Playing());
 			const bool edited = m_Hierarchy.Draw(*doc, m_Selection, text, m_Error);
+			if (m_Hierarchy.TakeFrameRequest())
+				FrameSelection();
 			/* 层级中的点击/创建/删除比上一帧的像素读回更新，迟到结果不可覆盖它。 */
 			if (edited)
 				m_Picking.Cancel(m_App);
@@ -285,16 +369,18 @@ namespace Catalpa::Editor {
 			if (ImGui::IsWindowFocused())
 				m_Documents.Activate(doc->Id());
 			AssetVersionRef<MaterialInstance> material;
-			const bool inspected = m_Inspector.Draw(*doc, m_Selection, text, material, m_Error);
+			const bool inspected = m_Inspector.Draw(
+			    *doc, m_Selection, text, material, m_Error, [&](size_t slot, const MeshRendererComponent& mesh) {
+				    DrawMaterialPicker(
+				        *doc, doc->Resolve()->MakeReference(m_Selection.Resolve(*doc)).persistent, slot, mesh);
+			    });
 			AuthorComponentControls(*doc);
-			(void)DrawPhysicsNavigationInspector(*doc, m_Selection.Resolve(*doc), m_Error, text);
-			DrawAudioUIInspector(m_App, *doc, m_Selection.Resolve(*doc), text, m_Error);
-			if (material.HasValue()) {
-				if (auto* draft = m_Documents.Open(material, m_Error)) {
-					m_OpenAsset = draft->Id();
-					ActivateAsset(*draft);
-				}
-			}
+			(void)DrawPhysicsNavigationInspector(
+			    *doc, m_Selection.Resolve(*doc), m_Error, text, m_Inspector.PendingComponentType());
+			DrawAudioUIInspector(
+			    m_App, *doc, m_Selection.Resolve(*doc), text, m_Error, m_Inspector.PendingComponentType());
+			if (material.HasValue())
+				OpenBoundMaterial(material);
 			return inspected;
 		}
 		return false;
@@ -399,14 +485,15 @@ namespace Catalpa::Editor {
 	 *
 	 * @param[in] hovered 指针是否位于视口的场景图像内。
 	 * @param[in] gizmoBusy 变换操纵器是否正在处理手势。
+	 * @param[in] canAdjustSpeed 当前视图是否允许通过中键改变移动速度。
 	 *
 	 * @return 当前帧的编辑相机输入；视口或输入焦点不允许导航时，各移动、旋转和滚轮分量保持默认值。
 	 */
-	EditorCameraInput WorkspaceEditing::ViewportInput(bool hovered, bool gizmoBusy) {
+	EditorCameraInput WorkspaceEditing::ViewportInput(bool hovered, bool gizmoBusy, bool canAdjustSpeed) {
 		EditorCameraInput input;
 		const auto& io = ImGui::GetIO();
-		if (!hovered || gizmoBusy || ImGui::IsAnyItemActive() || io.WantTextInput || io.AppFocusLost || io.KeyCtrl ||
-		    io.KeyAlt || io.KeySuper) {
+		if (!hovered || gizmoBusy || ImGui::IsAnyItemActive() || ImGui::GetDragDropPayload() || io.WantTextInput ||
+		    io.AppFocusLost || io.KeyCtrl || io.KeyAlt || io.KeySuper) {
 			m_RightLook = false;
 			return input;
 		}
@@ -415,13 +502,16 @@ namespace Catalpa::Editor {
 		 * 滚轮跟随悬停的图像；其他面板已消费的滚动，以及 Shift 横向滚动，不驱动相机。
 		 * 键盘导航和右键转向仍要求视口获得焦点。
 		 */
-		if (io.MouseWheel != 0 && !io.KeyShift &&
+		const bool wheelAvailable = io.MouseWheel != 0 && !io.KeyShift &&
 		    ImGui::GetCurrentContext()->WheelingWindowScrolledFrame != ImGui::GetFrameCount() &&
-		    ImGui::TestKeyOwner(ImGuiKey_MouseWheelY, ImGui::GetCurrentWindowRead()->ID))
+		    ImGui::TestKeyOwner(ImGuiKey_MouseWheelY, ImGui::GetCurrentWindowRead()->ID);
+		const bool middleDown = canAdjustSpeed && ImGui::IsMouseDown(ImGuiMouseButton_Middle);
+		if (wheelAvailable && !middleDown)
 			input.wheel = io.MouseWheel;
 
 		const bool rightPressed = ImGui::IsMouseClicked(ImGuiMouseButton_Right);
-		if (rightPressed)
+		const bool middlePressed = middleDown && ImGui::IsMouseClicked(ImGuiMouseButton_Middle);
+		if (rightPressed || middlePressed)
 			ImGui::SetWindowFocus();
 		if (!ImGui::IsWindowFocused()) {
 			m_RightLook = false;
@@ -432,6 +522,21 @@ namespace Catalpa::Editor {
 			return float(ImGui::IsKeyDown(positive)) - float(ImGui::IsKeyDown(negative));
 		};
 		input.seconds = io.DeltaTime;
+		const int frame = ImGui::GetFrameCount();
+		const bool adjustingSpeed = middleDown && (middlePressed || m_SpeedGestureFrame == frame - 1);
+		if (adjustingSpeed) {
+			m_SpeedGestureFrame = frame;
+			/* 忽略按下前的鼠标位移。上移 80 个逻辑像素或滚轮向上 4 格使速度翻倍。 */
+			const double octaves = (middlePressed ? 0.0 : -double(io.MouseDelta.y) / 80.0) +
+			    (wheelAvailable ? double(io.MouseWheel) / 4.0 : 0.0);
+			if (octaves != 0 && std::isfinite(octaves)) {
+				const double value = std::log2(double(m_ViewportSettings.cameraSpeed)) + octaves;
+				m_ViewportSettings.cameraSpeed =
+				    static_cast<float>(std::exp2(std::clamp(value, std::log2(double(ViewportSettings::MinCameraSpeed)),
+				        std::log2(double(ViewportSettings::MaxCameraSpeed)))));
+			}
+		}
+		input.speedMetresPerSecond = m_ViewportSettings.cameraSpeed;
 		input.right = axis(ImGuiKey_D, ImGuiKey_A);
 		input.forward = axis(ImGuiKey_W, ImGuiKey_S);
 		input.up = axis(ImGuiKey_E, ImGuiKey_Q);
@@ -439,7 +544,7 @@ namespace Catalpa::Editor {
 			m_RightLook = true;
 		if (!ImGui::IsMouseDown(ImGuiMouseButton_Right))
 			m_RightLook = false;
-		if (m_RightLook && !rightPressed) {
+		if (m_RightLook && !rightPressed && !adjustingSpeed) {
 			input.lookX = io.MouseDelta.x;
 			input.lookY = io.MouseDelta.y;
 		}
@@ -599,6 +704,46 @@ namespace Catalpa::Editor {
 		return m_Picking.Request(m_App, doc, frame, x, y, error);
 	}
 
+	ImportPlacement WorkspaceEditing::MakeImportPlacement(float x, float y) {
+		if (!m_Project || m_GameView || m_PlayDocument.HasValue() || !m_DropDocument.HasValue() || m_DropRect.z <= 0 ||
+		    m_DropRect.w <= 0 || x < m_DropRect.x || y < m_DropRect.y || x >= m_DropRect.x + m_DropRect.z ||
+		    y >= m_DropRect.y + m_DropRect.w)
+			return {};
+		auto* doc = ActiveScene();
+		RenderSurfaceSnapshot frame;
+		Math::Vec3 position;
+		if (!doc || doc->Id() != m_DropDocument || !doc->Resolve() || !m_App.GetEditorPreview(SceneSurface, frame) ||
+		    !frame.view.independentCamera || frame.sceneIdentity != doc->Resolve()->GetWorld().GetIdentity() ||
+		    !FindViewportPlacement(*doc->Resolve(), frame.view, (x - m_DropRect.x) / m_DropRect.z,
+		        (y - m_DropRect.y) / m_DropRect.w, position))
+			return {};
+		const auto project = m_Project->id;
+		const auto epoch = m_DropEpoch;
+		const auto world = frame.sceneIdentity;
+		return [this, project, epoch, world, position](
+		           BuildPanel& build, const std::filesystem::path& path, std::string& error) {
+			const auto ext = Tools::AssetSourceExtension(path);
+			if (ext != ".gltf" && ext != ".glb" && ext != ".fbx" && ext != ".obj" && ext != ".prefab")
+				return true;
+			auto* active = ActiveScene();
+			if (!m_Project || m_Project->id != project || epoch != m_DropEpoch || !active || active->Playing() ||
+			    !active->Resolve() || active->Resolve()->GetWorld().GetIdentity() != world) {
+				error = "Source imported; its original author scene is no longer active";
+				return false;
+			}
+			PersistentEntityId root;
+			if (ext == ".prefab") {
+				if (!InstantiateAuthorPrefab(
+				        *active, m_App.GetAssets(), build.Result().primary, {}, root, error, position))
+					return false;
+			} else if (!build.PlaceModel(*active, position, root, error, build.Result().primary))
+				return false;
+			m_Selection.Select(*active, active->Resolve()->Resolve(root));
+			m_Documents.Activate(active->Id());
+			return true;
+		};
+	}
+
 	/**
 	 * @brief 绘制视口。
 	 *
@@ -607,6 +752,12 @@ namespace Catalpa::Editor {
 	 * @param[in] centerDockId 主窗口中央停靠节点的标识。
 	 */
 	void WorkspaceEditing::DrawViewport(SceneDocument* doc, const PanelText& text, uint32_t centerDockId) {
+		m_DropRect = {};
+		const StableId dropDocument = doc && !doc->Playing() ? doc->Id() : StableId{};
+		if (m_DropDocument != dropDocument) {
+			++m_DropEpoch;
+			m_DropDocument = dropDocument;
+		}
 		/* 仅迁移这个稳定窗口：旧版保存的浮动位置或侧边 DockId 不影响其他面板。 */
 		if (centerDockId)
 			ImGui::SetNextWindowDockID(centerDockId, ImGuiCond_Always);
@@ -629,13 +780,29 @@ namespace Catalpa::Editor {
 		}
 		if (ImGui::IsWindowFocused())
 			m_Documents.Activate(doc->Id());
-		if (!doc->Playing()) {
+		if (ImGui::Selectable(text("viewport.scene_tab", "Scene", "SceneTab").c_str(), !m_GameView, 0,
+		        {ImGui::GetFontSize() * 4, 0})) {
+			m_GameView = false;
+			BlurPlayUI();
+		}
+		ImGui::SameLine();
+		if (ImGui::Selectable(
+		        text("viewport.game_tab", "Game", "GameTab").c_str(), m_GameView, 0, {ImGui::GetFontSize() * 4, 0})) {
+			m_GameView = true;
+			m_Picking.Cancel(m_App);
+			m_Gizmo.Cancel(m_Error);
+		}
+		const bool gameView = m_GameView;
+		const auto renderHandle = doc->Playing() ? doc->PlayHandle() : doc->Handle();
+		if (!gameView) {
 			const bool wide = ImGui::GetContentRegionAvail().x >= ImGui::GetFrameHeight() * 20;
 			if (wide) {
 				DrawViewModes(m_Camera, m_ShowNormals, m_Error, text);
 				ImGui::SameLine();
 			}
-			m_Gizmo.Toolbar(text);
+			ImGui::BeginDisabled(doc->Playing());
+			m_Gizmo.Toolbar(text, m_ViewportSettings);
+			ImGui::EndDisabled();
 			ImGui::SameLine();
 			if (ToolbarButton(
 			        "##grid", ToolIcon::Grid, text("viewport.grid", "Ground grid (1 m)", nullptr), m_ShowGrid))
@@ -666,6 +833,9 @@ namespace Catalpa::Editor {
 				m_Picking.Cancel(m_App);
 				m_ResetCamera = true;
 			}
+			ImGui::BeginDisabled(doc->Playing());
+			DrawCameraSpeed(m_ViewportSettings.cameraSpeed, text);
+			ImGui::EndDisabled();
 		}
 
 		const auto available = ImGui::GetContentRegionAvail(), origin = ImGui::GetCursorScreenPos();
@@ -682,25 +852,53 @@ namespace Catalpa::Editor {
 		const Extent2D extent{uint32_t(std::clamp(available.x * density.x, 1.f, 4096.f)),
 		    uint32_t(std::clamp(available.y * density.y, 1.f, 4096.f))};
 		RenderSurfaceSnapshot frame;
-		const auto* renderedScene = m_App.GetScenes().GetScene(doc->Playing() ? doc->PlayHandle() : doc->Handle());
-		const bool ready = renderedScene && (doc->Playing() || !m_ResetCamera) &&
+		const auto* renderedScene = m_App.GetScenes().GetScene(renderHandle);
+		const bool ready = renderedScene && (gameView || !m_ResetCamera) &&
 		    m_App.GetEditorPreview(SceneSurface, frame) && frame.textureToken && frame.extent == extent &&
-		    frame.view.independentCamera != doc->Playing() &&
-		    frame.sceneIdentity == renderedScene->GetWorld().GetIdentity();
-		if (!doc->Playing())
+		    frame.view.independentCamera != gameView && frame.sceneIdentity == renderedScene->GetWorld().GetIdentity();
+		if (!doc->Playing() && !gameView)
 			m_Picking.Update(m_App, doc, ready ? &frame : nullptr, m_Selection, m_Error);
 		EditorCameraInput input;
 		if (ready) {
 			ImGui::Image(ImTextureRef(static_cast<ImTextureID>(frame.textureToken)), available);
 			const bool hovered = ImGui::IsItemHovered(), clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
-			if (doc->Playing()) {
+			if (!doc->Playing() && !gameView) {
+				const auto mainOrigin = ImGui::GetMainViewport()->Pos;
+				m_DropRect = {origin.x - mainOrigin.x, origin.y - mainOrigin.y, available.x, available.y};
+			}
+			if (!doc->Playing() && !gameView && ImGui::BeginDragDropTarget()) {
+				if (const auto* payload =
+				        ImGui::AcceptDragDropPayload("CATALPA_SOURCE", ImGuiDragDropFlags_AcceptBeforeDelivery);
+				    payload && payload->DataSize > 1 &&
+				    static_cast<const char*>(payload->Data)[payload->DataSize - 1] == 0) {
+					const auto mouse = ImGui::GetMousePos();
+					Math::Vec3 placement;
+					if (FindViewportPlacement(*doc->Resolve(), frame.view, (mouse.x - origin.x) / available.x,
+					        (mouse.y - origin.y) / available.y, placement)) {
+						auto* draw = ImGui::GetWindowDrawList();
+						const auto projected = frame.view.matrices.viewProjection * Math::Vec4(placement, 1);
+						if (projected.w > 1e-6f) {
+							const ImVec2 marker{origin.x + (projected.x / projected.w + 1) * .5f * available.x,
+							    origin.y + (projected.y / projected.w + 1) * .5f * available.y};
+							draw->AddCircle(marker, ImGui::GetFontSize(), IM_COL32(53, 182, 129, 255), 24, 2);
+						}
+						if (payload->IsDelivery() && !ImGui::IsKeyDown(ImGuiKey_Escape))
+							DropSourceIntoScene(
+							    std::filesystem::u8path(static_cast<const char*>(payload->Data)), placement);
+					}
+				}
+				ImGui::EndDragDropTarget();
+			}
+			if (gameView) {
 				if (clicked)
 					ImGui::SetWindowFocus();
-				const bool uiConsumed = RoutePlayUIInput(
-				    origin.x, origin.y, available.x, available.y, extent, hovered, ImGui::IsWindowFocused());
-				if (!uiConsumed && hovered && ImGui::IsWindowFocused() && !ImGui::GetIO().WantTextInput)
+				const bool uiConsumed = doc->Playing() &&
+				    RoutePlayUIInput(
+				        origin.x, origin.y, available.x, available.y, extent, hovered, ImGui::IsWindowFocused());
+				if (doc->Playing() && !uiConsumed && hovered && ImGui::IsWindowFocused() &&
+				    !ImGui::GetIO().WantTextInput)
 					m_App.AllowEditorPlayInput();
-				(void)m_App.SetEditorPreview(doc->PlayHandle(), SceneSurface, extent, m_Error);
+				(void)m_App.SetEditorPreview(renderHandle, SceneSurface, extent, m_Error);
 				ImGui::End();
 				return;
 			}
@@ -718,10 +916,11 @@ namespace Catalpa::Editor {
 				m_Picking.Cancel(m_App);
 				m_Camera.AlignAxis(std::abs(axis) - 1, axis > 0 ? 1.f : -1.f, pivot, m_Error);
 			}
-			const bool gizmo = (!overAxes || ImGuizmo::IsUsing()) &&
-			    m_Gizmo.Draw(*doc, m_Selection, frame.view, origin.x, origin.y, available.x, available.y, m_Error);
-			input = ViewportInput(hovered && !overAxes, gizmo);
-			if (clicked && !gizmo && !overAxes) {
+			const bool gizmo = !doc->Playing() && (!overAxes || ImGuizmo::IsUsing()) &&
+			    m_Gizmo.Draw(*doc, m_Selection, frame.view, origin.x, origin.y, available.x, available.y, m_Error,
+			        m_ViewportSettings);
+			input = ViewportInput(hovered && !overAxes, gizmo, !doc->Playing());
+			if (!doc->Playing() && clicked && !gizmo && !overAxes) {
 				const auto mouse = ImGui::GetIO().MousePos;
 				const auto x = uint32_t(
 				    std::clamp((mouse.x - origin.x) / available.x * extent.width, 0.f, float(extent.width - 1)));
@@ -737,15 +936,15 @@ namespace Catalpa::Editor {
 		}
 
 		auto next = m_Camera;
-		if (doc->Playing()) {
-			(void)m_App.SetEditorPreview(doc->PlayHandle(), SceneSurface, extent, m_Error);
+		if (gameView) {
+			(void)m_App.SetEditorPreview(renderHandle, SceneSurface, extent, m_Error);
 			ImGui::End();
 			return;
 		}
 		std::string viewError;
 		if (m_ResetCamera) {
 			/* 用真实输出尺寸筛选可作为导航起点的相机，坏的场景镜头不能锁住编辑视口。 */
-			if (!next.Reset(doc->Resolve(), viewError, {extent.width, extent.height})) {
+			if (!next.Reset(renderedScene, viewError, {extent.width, extent.height})) {
 				m_Error = std::move(viewError);
 				ImGui::End();
 				return;
@@ -757,10 +956,10 @@ namespace Catalpa::Editor {
 		display.showNormals = m_ShowNormals;
 		display.showGrid = m_ShowGrid;
 		const auto selected = m_Selection.Resolve(*doc);
-		if (selected.HasValue())
+		if (!doc->Playing() && selected.HasValue())
 			display.selected = {selected.world, selected.index, selected.generation};
 		if (next.Navigate(input, viewError) &&
-		    m_App.SetEditorCameraPreview(doc->Handle(), SceneSurface, extent, next.Pose(), next.Lens(),
+		    m_App.SetEditorCameraPreview(renderHandle, SceneSurface, extent, next.Pose(), next.Lens(),
 		        next.HistoryRevision(), viewError, display)) {
 			m_Camera = next;
 			m_ResetCamera = false;
@@ -818,13 +1017,25 @@ namespace Catalpa::Editor {
 			if (ImGui::Begin(text("panel.asset_editor", "Asset Editor", "Catalpa.AssetEditor").c_str(), &open)) {
 				if (ImGui::IsWindowFocused() && m_Documents.Active() != asset)
 					ActivateAsset(*asset);
-				if (ImGui::BeginCombo(text("document.assets", "Open drafts", "OpenDrafts").c_str(),
-				        asset->Asset().ToString().c_str())) {
+				ImGui::AlignTextToFramePadding();
+				const char* draftsText = UiText("document.assets", "Open drafts");
+				ImGui::TextUnformatted(draftsText);
+				const float spacing = ImGui::GetStyle().ItemInnerSpacing.x;
+				const float remaining = ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(draftsText).x - spacing;
+				if (remaining >= ImGui::GetFontSize() * 8.f)
+					ImGui::SameLine(0, spacing);
+				ImGui::SetNextItemWidth(std::min(ImGui::GetContentRegionAvail().x, ImGui::GetFontSize() * 27.f));
+				const bool choices = ImGui::BeginCombo("###OpenDrafts", DraftTitle(*asset).c_str());
+				if (choices) {
+					std::map<std::string, unsigned> names;
+					std::map<std::string_view, unsigned> types;
 					for (auto* candidate : m_Documents.Assets()) {
-						auto label =
-						    candidate->Asset().ToString() + " / v" + std::to_string(candidate->SourceVersion());
-						if (candidate->History().Dirty())
-							label += " *";
+						auto label = DraftTitle(*candidate);
+						const auto count = ++names[label];
+						if (count > 1)
+							label += " (" + std::to_string(count) + ")";
+						const auto type = candidate->TypeKey();
+						label += "###" + std::string(type) + std::to_string(++types[type]);
 						if (ImGui::Selectable(label.c_str(), candidate == asset)) {
 							CancelPendingOpen();
 							m_OpenAsset = candidate->Id();
@@ -832,8 +1043,43 @@ namespace Catalpa::Editor {
 							ActivateAsset(*asset);
 							m_AskDiscard = false;
 						}
+						DraftTooltip(*candidate);
 					}
 					ImGui::EndCombo();
+				} else
+					DraftTooltip(*asset);
+				if (auto material = asset->Material()) {
+					if (material->definition.Get()->shadingModel == MaterialShadingModel::Unlit) {
+						const auto* base = FindMaterialParameter(*material, "base_color");
+						const auto* rgba = base ? std::get_if<std::array<float, 4>>(base) : nullptr;
+						const bool plain = IsStandardUnlit(*material);
+						const bool hdr = rgba && *std::max_element(rgba->begin(), rgba->begin() + 3) > 1.f;
+						const bool copy = plain && rgba && !hdr;
+						if (plain && hdr)
+							ImGui::TextWrapped("%s",
+							    UiText("material.pbr_copy_hdr",
+							        "PBR base RGB must be in [0,1]. Create a blank PBR material and use emission for HDR colors."));
+						ImGui::BeginDisabled(m_PlayDocument.HasValue());
+						const auto button = copy
+						    ? text("material.pbr_copy", "Create PBR copy from base color", "CreatePbrCopy")
+						    : text("material.pbr_empty", "Create blank PBR material", "CreateEmptyPbr");
+						if (ImGui::Button(button.c_str())) {
+							CreatePbrDraft(copy ? material.get() : nullptr);
+							if (auto* next = dynamic_cast<AssetDocument*>(m_Documents.Find(m_OpenAsset)))
+								asset = next;
+						}
+						ImGui::SetItemTooltip("%s",
+						    copy
+						        ? UiText("material.pbr_copy_hint",
+						              "The new draft inherits base color and face culling. The original material and object bindings are preserved.")
+						        : UiText("material.pbr_empty_hint",
+						              "Create a separate standard PBR draft. Parameters, textures and bindings remain with the original material."));
+						ImGui::EndDisabled();
+					}
+					if (!m_Project)
+						ImGui::TextWrapped("%s",
+						    UiText("material.session_draft",
+						        "Temporary session. To save a material, open an author project before creating it."));
 				}
 				m_AssetEditors.Draw(m_App, *asset, text, m_Error);
 				DrawImportSettings(*asset, build, text, m_Error);

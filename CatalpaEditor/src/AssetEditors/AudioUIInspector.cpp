@@ -203,8 +203,8 @@ namespace Catalpa::Editor {
 		}
 	} /* 命名空间 */
 
-	void DrawAudioUIInspector(
-	    Application& app, SceneDocument& doc, EntityId entity, const PanelText& text, std::string& error) try {
+	void DrawAudioUIInspector(Application& app, SceneDocument& doc, EntityId entity, const PanelText& text,
+	    std::string& error, std::string_view addType) try {
 		auto* scene = doc.Resolve();
 		if (!scene || doc.Playing() || !scene->GetWorld().IsAlive(entity))
 			return;
@@ -236,7 +236,7 @@ namespace Catalpa::Editor {
 				if (ImGui::Button(label("audio.remove_source", "Remove audio source").c_str()))
 					Edit<AudioSourceComponent>(doc, entity, {}, error);
 			}
-		} else {
+		} else if (addType == "AudioSourceComponent") {
 			static AssetId clip;
 			AssetInput(label("audio.new_clip", "Clip UUID for new audio source").c_str(), clip, error);
 			if (clip.HasValue() && ImGui::Button(label("audio.add_source", "Add audio source").c_str())) {
@@ -254,7 +254,8 @@ namespace Catalpa::Editor {
 				Edit(doc, entity, std::optional(listener), error);
 			if (ImGui::Button(label("audio.remove_listener", "Remove audio listener").c_str()))
 				Edit<AudioListenerComponent>(doc, entity, {}, error);
-		} else if (ImGui::Button(label("audio.add_listener", "Add audio listener").c_str()))
+		} else if (addType == "AudioListenerComponent" &&
+		    ImGui::Button(label("audio.add_listener", "Add audio listener").c_str()))
 			Edit(doc, entity, std::optional(AudioListenerComponent{}), error);
 
 		if (world.Has<UIComponent>(entity)) {
@@ -273,7 +274,7 @@ namespace Catalpa::Editor {
 				if (ImGui::Button(label("ui.remove_component", "Remove Game UI").c_str()))
 					Edit<UIComponent>(doc, entity, {}, error);
 			}
-		} else {
+		} else if (addType == "UIComponent") {
 			static AssetId document;
 			AssetInput(label("ui.new_document", "Document UUID for new Game UI").c_str(), document, error);
 			if (document.HasValue() && ImGui::Button(label("ui.add_component", "Add Game UI").c_str())) {

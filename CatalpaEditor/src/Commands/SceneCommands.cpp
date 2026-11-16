@@ -249,6 +249,41 @@ namespace Catalpa::Editor {
 		    std::make_unique<SceneCommand>(doc.Id(), "history.delete", remove, restore, std::vector{parent}), error);
 	}
 
+	bool PasteAuthorSubtree(
+	    SceneDocument& doc, const SceneSubtreeSnapshot& source, PersistentEntityId& created, std::string& error) {
+		auto* scene = doc.Resolve();
+		auto copy = std::make_shared<SceneSubtreeSnapshot>();
+		if (!scene || doc.Playing() || !Status(scene->PrepareSubtreeCopy(source, *copy), error))
+			return false;
+		copy->ForEachIdentity([&](auto id) { doc.ReserveIdentity(id); });
+		const auto parent = copy->Parent();
+		const auto root = copy->Root();
+		auto restore = [copy, parent, &doc](Scene& target) {
+			if (auto status = target.ValidateSubtreeCopy(*copy); !status.IsSuccess())
+				return status;
+			const auto status = target.RestoreForUndo(*copy, target.Resolve(parent));
+			if (status.IsSuccess())
+				doc.RefreshRestoredTargets(*copy);
+			return status;
+		};
+		auto remove = [copy, root, &doc](Scene& target) {
+			std::string error;
+			if (!doc.CheckTarget(root, error))
+				return WorldStatus{
+				    WorldError::InvalidEntity, "Pasted entity generation no longer matches this command"};
+			SceneSubtreeSnapshot removed;
+			const auto status = target.RemoveForUndo(target.Resolve(root), removed, copy.get());
+			if (status.IsSuccess())
+				doc.RefreshDeletedTargets();
+			return status;
+		};
+		if (!doc.History().Execute(doc,
+		        std::make_unique<SceneCommand>(doc.Id(), "history.paste", restore, remove, std::vector{parent}), error))
+			return false;
+		created = root;
+		return true;
+	}
+
 	bool RenameEntity(
 	    SceneDocument& doc, PersistentEntityId id, std::string name, const std::string& expected, std::string& error) {
 		if (name == expected)
@@ -356,6 +391,19 @@ namespace Catalpa::Editor {
 			    x.fogDensityPerMeter == y.fogDensityPerMeter;
 		}
 
+		bool Same(const CameraComponent& a, const CameraComponent& b) {
+			return a.lens == b.lens && a.enabled == b.enabled && a.priority == b.priority && a.viewId == b.viewId;
+		}
+
+		bool Same(const MeshRendererComponent& a, const MeshRendererComponent& b) {
+			const auto version = [](const auto& x, const auto& y) {
+				return x.GetId() == y.GetId() && x.GetVersion() == y.GetVersion() && x.Get() == y.Get();
+			};
+			return a.mesh == b.mesh && a.visible == b.visible && a.color == b.color &&
+			    version(a.meshVersion, b.meshVersion) && std::ranges::equal(a.materials, b.materials, version) &&
+			    std::ranges::equal(a.lods, b.lods, version) && a.lodErrors == b.lodErrors;
+		}
+
 		/**
 		 * @brief 编辑可选。
 		 *
@@ -369,7 +417,7 @@ namespace Catalpa::Editor {
 		 * @return 成功时返回 true，失败时返回 false 并通过错误参数说明原因。
 		 */
 		template <class T>
-		bool EditOptional(SceneDocument& doc, PersistentEntityId id, const T& next,
+		bool EditOptional(SceneDocument& doc, PersistentEntityId id, std::optional<T> next,
 		    WorldStatus (Scene::*set)(EntityId, const T&), WorldStatus (Scene::*remove)(EntityId), std::string& error) {
 			auto* scene = doc.Resolve();
 			if (!scene) {
@@ -380,6 +428,9 @@ namespace Catalpa::Editor {
 			std::optional<T> before;
 			if (scene->GetWorld().Has<T>(entity) && !Status(scene->GetWorld().Get(entity, before.emplace()), error))
 				return false;
+			auto revision = std::make_shared<uint64_t>(0);
+			if constexpr (std::is_same_v<T, CameraComponent>)
+				*revision = before ? before->historyRevision : 0;
 			auto update = [=](std::optional<T> expected, std::optional<T> value) {
 				return [=](Scene& scene) -> WorldStatus {
 					const auto target = scene.Resolve(id);
@@ -392,7 +443,17 @@ namespace Catalpa::Editor {
 						if (!Same(*expected, current))
 							return {WorldError::Busy, "Component changed outside this edit"};
 					}
-					return Commit(scene, value ? (scene.*set)(target, *value) : (scene.*remove)(target));
+					auto published = value;
+					if constexpr (std::is_same_v<T, CameraComponent>) {
+						if (published) {
+							if (*revision == UINT64_MAX)
+								return {WorldError::CapacityExceeded, "Camera history revision exhausted"};
+							published->historyRevision = ++*revision;
+							if (auto status = CheckCameraPresentation(scene, target, *published); !status.IsSuccess())
+								return status;
+						}
+					}
+					return Commit(scene, published ? (scene.*set)(target, *published) : (scene.*remove)(target));
 				};
 			};
 			return doc.History().Execute(doc,
@@ -403,12 +464,59 @@ namespace Catalpa::Editor {
 	}
 
 	bool EditLight(SceneDocument& doc, PersistentEntityId id, const LightComponent& value, std::string& error) {
-		return EditOptional(doc, id, value, &Scene::QueueSetLight, &Scene::QueueRemoveLight, error);
+		return EditOptional<LightComponent>(doc, id, value, &Scene::QueueSetLight, &Scene::QueueRemoveLight, error);
 	}
 
 	bool EditEnvironment(
 	    SceneDocument& doc, PersistentEntityId id, const EnvironmentComponent& value, std::string& error) {
-		return EditOptional(doc, id, value, &Scene::QueueSetEnvironment, &Scene::QueueRemoveEnvironment, error);
+		return EditOptional<EnvironmentComponent>(
+		    doc, id, value, &Scene::QueueSetEnvironment, &Scene::QueueRemoveEnvironment, error);
+	}
+
+	bool AddAuthorCamera(SceneDocument& doc, PersistentEntityId id, std::string& error) {
+		auto* scene = doc.Resolve();
+		if (!scene || doc.Playing() || scene->GetWorld().Has<CameraComponent>(scene->Resolve(id))) {
+			error = "Camera already exists or author scene is unavailable";
+			return false;
+		}
+		uint64_t view = 0;
+		const auto status = scene->GetWorld().ForEach([&](EntityId entity) {
+			if (!scene->GetWorld().Has<CameraComponent>(entity))
+				return WorldStatus{};
+			CameraComponent camera;
+			const auto result = scene->GetWorld().Get(entity, camera);
+			view = std::max(view, camera.viewId);
+			return result;
+		});
+		if (!Status(status, error) || view == UINT64_MAX) {
+			if (view == UINT64_MAX)
+				error = "Camera view identity exhausted";
+			return false;
+		}
+		CameraComponent camera;
+		camera.viewId = view + 1;
+		return EditOptional<CameraComponent>(doc, id, camera, &Scene::QueueSetCamera, &Scene::QueueRemoveCamera, error);
+	}
+
+	bool SetAuthorMesh(
+	    SceneDocument& doc, PersistentEntityId id, const MeshRendererComponent& mesh, std::string& error) {
+		return EditOptional<MeshRendererComponent>(
+		    doc, id, mesh, &Scene::QueueSetMeshRenderer, &Scene::QueueRemoveMeshRenderer, error);
+	}
+
+	bool RemoveAuthorComponent(SceneDocument& doc, PersistentEntityId id, std::string_view type, std::string& error) {
+		if (type == "CameraComponent")
+			return EditOptional<CameraComponent>(doc, id, {}, &Scene::QueueSetCamera, &Scene::QueueRemoveCamera, error);
+		if (type == "LightComponent")
+			return EditOptional<LightComponent>(doc, id, {}, &Scene::QueueSetLight, &Scene::QueueRemoveLight, error);
+		if (type == "EnvironmentComponent")
+			return EditOptional<EnvironmentComponent>(
+			    doc, id, {}, &Scene::QueueSetEnvironment, &Scene::QueueRemoveEnvironment, error);
+		if (type == "MeshRendererComponent")
+			return EditOptional<MeshRendererComponent>(
+			    doc, id, {}, &Scene::QueueSetMeshRenderer, &Scene::QueueRemoveMeshRenderer, error);
+		error = "This component has a dedicated author editor";
+		return false;
 	}
 
 	bool EditMeshDisplay(

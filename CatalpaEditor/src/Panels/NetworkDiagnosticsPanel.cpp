@@ -1,6 +1,7 @@
 #include "catpch.h"
 
 #include "Panels/NetworkDiagnosticsPanel.h"
+#include "Panels/FormLayout.h"
 
 #include "Core/Application.h"
 #include "Core/Id/StableIdGenerator.h"
@@ -241,12 +242,12 @@ namespace Catalpa::Editor {
 		        nullptr)
 		        .c_str());
 		ImGui::BeginDisabled(bool(m_Server));
-		ImGui::InputScalar(text("network.delay", "Delay ticks", "DelayTicks").c_str(), ImGuiDataType_U32,
-		    &m_Settings.faults.delayTicks);
-		ImGui::InputScalar(text("network.drop", "Drop every N packets (0 off)", "DropEvery").c_str(), ImGuiDataType_U32,
-		    &m_Settings.faults.dropEvery);
-		ImGui::InputScalar(text("network.duplicate", "Duplicate every N (0 off)", "DuplicateEvery").c_str(),
-		    ImGuiDataType_U32, &m_Settings.faults.duplicateEvery);
+		PlaceFormLabel(text("network.delay", "Delay ticks", nullptr));
+		ImGui::InputScalar("###DelayTicks", ImGuiDataType_U32, &m_Settings.faults.delayTicks);
+		PlaceFormLabel(text("network.drop", "Drop every N packets (0 off)", nullptr));
+		ImGui::InputScalar("###DropEvery", ImGuiDataType_U32, &m_Settings.faults.dropEvery);
+		PlaceFormLabel(text("network.duplicate", "Duplicate every N (0 off)", nullptr));
+		ImGui::InputScalar("###DuplicateEvery", ImGuiDataType_U32, &m_Settings.faults.duplicateEvery);
 		ImGui::Checkbox(text("network.reorder", "Reorder due packets", "ReorderPackets").c_str(),
 		    &m_Settings.faults.reverseDuePackets);
 		ImGui::EndDisabled();
@@ -262,7 +263,6 @@ namespace Catalpa::Editor {
 			Close(app);
 			return;
 		}
-		ImGui::SameLine();
 		ImGui::Checkbox(text("network.animate", "Animate authority", "AnimateAuthority").c_str(), &m_Animate);
 		auto* authority = app.GetScenes().GetScene(m_ServerScene);
 		if (authority) {
@@ -288,16 +288,17 @@ namespace Catalpa::Editor {
 		}
 		m_LastTime = now;
 		const auto a = m_Server->Stats(), b = m_Client->Stats();
-		ImGui::Text("%s %llu | %s %llu | %s %llu | %s %llu | %s %zu", text("network.tick", "Tick", nullptr).c_str(),
-		    static_cast<unsigned long long>(m_Tick), text("network.authority_sent", "Authority sent", nullptr).c_str(),
-		    static_cast<unsigned long long>(a.sent),
+		ImGui::TextWrapped("%s %llu | %s %llu | %s %llu | %s %llu | %s %zu",
+		    text("network.tick", "Tick", nullptr).c_str(), static_cast<unsigned long long>(m_Tick),
+		    text("network.authority_sent", "Authority sent", nullptr).c_str(), static_cast<unsigned long long>(a.sent),
 		    text("network.replica_received", "Replica received", nullptr).c_str(),
 		    static_cast<unsigned long long>(b.received),
 		    text("network.stale_duplicates", "Stale/duplicates", nullptr).c_str(),
 		    static_cast<unsigned long long>(b.stale),
 		    text("network.pending_deletes", "Pending deletes", nullptr).c_str(), a.pendingDespawn);
-		ImGui::Text("%s %zu; %s %llu; %s %.3f %s", text("network.replica_objects", "Replica objects", nullptr).c_str(),
-		    b.live, text("network.rejected", "Rejected", nullptr).c_str(), static_cast<unsigned long long>(b.rejected),
+		ImGui::TextWrapped("%s %zu; %s %llu; %s %.3f %s",
+		    text("network.replica_objects", "Replica objects", nullptr).c_str(), b.live,
+		    text("network.rejected", "Rejected", nullptr).c_str(), static_cast<unsigned long long>(b.rejected),
 		    text("network.skipped_catch_up", "Skipped preview catch-up", nullptr).c_str(), m_DroppedSeconds,
 		    text("network.seconds", "Seconds", nullptr).c_str());
 		if (ImGui::BeginTable("LoopbackViews", 2, ImGuiTableFlags_Resizable)) {

@@ -42,6 +42,7 @@ namespace Catalpa::Editor {
 		void UpdateCompile(Application&, AssetDocument&, const Tools::MaterialGraphSource&, std::string&);
 		bool PublishPreview(Application&, AssetDocument&, const Tools::MaterialGraphSource&, std::string&);
 		GraphCanvas m_Canvas;
+		MaterialColorPicker m_ColorPicker;
 		MaterialEditor m_Preview;
 		std::unique_ptr<AssetDocument> m_PreviewDocument;
 		StableId m_Document, m_Selected;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Application/WorkspaceSettings.h"
 #include "Camera/CameraLens.h"
 #include "Core/Math/TransformMath.h"
 #include "Scene/Scene.h"
@@ -11,6 +12,7 @@ namespace Catalpa::Editor {
 		float lookX = 0, lookY = 0;
 		float seconds = 0;
 		float wheel = 0;
+		float speedMetresPerSecond = ViewportSettings{}.cameraSpeed;
 	};
 
 	/* 工作区持有的独立视角。只在显式复位时读取场景相机，移动过程不修改 World。 */
@@ -56,6 +58,15 @@ namespace Catalpa::Editor {
 		 * @return 成功时返回 true，失败时返回 false 并通过错误参数说明原因。
 		 */
 		bool AlignAxis(int axis, float sign, Math::Vec3 pivot, std::string& error);
+		/**
+		 * @brief 保持朝向并将独立相机取景移到选中对象的包围球。
+		 * @param[in] center 世界空间包围球中心，单位为米。
+		 * @param[in] radius 世界空间包围球半径，必须有限且为正。
+		 * @param[out] error 参数或相机历史无效时接收原因。
+		 * @param[in] viewport 当前显示帧的视口，用宽高比决定取景所受的较窄视场限制。
+		 * @return 独立视图更新成功时为 true，不修改场景相机。
+		 */
+		bool Frame(Math::Vec3 center, float radius, std::string& error, CameraViewport viewport = {640, 480});
 
 		const Math::TransformTRS& Pose() const noexcept { return m_Pose; }
 
