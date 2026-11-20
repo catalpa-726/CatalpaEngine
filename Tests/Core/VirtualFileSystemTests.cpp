@@ -204,6 +204,15 @@ namespace Catalpa::Tests {
 			context.Check(remapped.ReadFile(path, 100, output, error) && Text(output) == "fixture only",
 			    "Explicit replacement root supplies the same logical locator");
 
+			const auto created = low / "new.behavior";
+			tree.paths.push_back(created);
+			context.Check(AtomicFileWriter::CreateNew(created, "first", error), "Atomic create publishes a new document");
+			context.Check(!AtomicFileWriter::CreateNew(created, "conflicting draft", error) && !error.empty(),
+			    "Atomic create rejects a duplicate name");
+			setPath("content:/new.behavior");
+			context.Check(vfs.ReadFile(path, 100, output, error) && Text(output) == "first",
+			    "A duplicate name preserves the first document");
+
 			const auto saved = low / "saved.json";
 			tree.paths.push_back(saved);
 			const bool createdSave = AtomicFileWriter::Write(saved, "first", error);

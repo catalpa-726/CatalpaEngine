@@ -3,6 +3,7 @@
 #include "catpch.h"
 
 #include "Geometry/MeshData.h"
+#include "Assets/AssetId.h"
 
 namespace Catalpa {
 
@@ -48,4 +49,6 @@ namespace Catalpa {
 	 * @return 网格生成成功时返回正常状态，否则返回尺寸、分配或网格校验错误。
 	 */
 	[[nodiscard]] CATALPA_API MeshStatus CreatePlaneMesh(float width, float depth, MeshData& output);
+	/** @brief 按内置资产身份创建带法线、UV 和切线的标准几何体，尺寸以米计。 */
+	[[nodiscard]] CATALPA_API MeshStatus CreateBuiltinPrimitiveMesh(AssetId id, MeshData& output);
 }

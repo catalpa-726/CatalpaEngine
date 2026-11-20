@@ -38,6 +38,9 @@ namespace Catalpa {
 		 */
 		bool CreateBody(const PhysicsBodyDesc&, const CollisionShapeAsset&, const PhysicsMaterialAsset&,
 		    PhysicsBodyHandle&, std::string& error);
+		/** @brief 形状可为空，此时刚体参与运动积分，但不产生接触或查询命中。 */
+		bool CreateBody(const PhysicsBodyDesc&, const CollisionShapeAsset*, const PhysicsMaterialAsset&,
+		    PhysicsBodyHandle&, std::string& error);
 		/**
 		 * @brief 销毁刚体。
 		 *

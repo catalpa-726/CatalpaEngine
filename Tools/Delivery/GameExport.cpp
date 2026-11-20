@@ -3,6 +3,7 @@
 
 #include "AssetPipeline/AssetBuildCache.h"
 #include "AssetPipeline/AssetCooker.h"
+#include "AssetPipeline/Importers/TextureImporter.h"
 #include "AssetPipeline/AssetImportRegistry.h"
 #include "Assets/AssetManifest.h"
 #include "Assets/PackageReader.h"
@@ -73,7 +74,7 @@ namespace Catalpa::Tools {
 		AssetBuildResult CookEntry(
 		    const GameExportRequest& request, const ProjectConfig& original, const ProjectConfig& staging) {
 			const auto shaders = request.toolResources / "Shaders";
-			std::map<AssetId, fs::path> sources;
+			std::map<AssetId, fs::path> sources, scriptSources;
 			auto importers = AssetImportRegistry::Defaults();
 			auto scan = [&](const fs::path& root, const std::string& name) {
 				for (const auto& f : fs::recursive_directory_iterator(root)) {
@@ -87,7 +88,12 @@ namespace Catalpa::Tools {
 					if (!IsPathWithinRoot(file, root))
 						throw std::runtime_error("Source redirects outside its root: " + AssetPathText(file));
 					auto logical = name + "/" + AssetPathText(file.lexically_relative(root));
-					sources.emplace(AssetBuildIdentity(original.id.ToString() + "/" + logical + "/request"), file);
+					const auto identity = original.id.ToString() + "/" + logical + "/";
+					sources.emplace(AssetBuildIdentity(identity + "request"), file);
+					/* 首次导出即可定位具体脚本，并将编译器的行号与诊断返回给作者。 */
+					const auto ext = AssetSourceExtension(file);
+					if (ext == ".cs" || ext == ".lua" || ext == ".script")
+						scriptSources.emplace(AssetBuildIdentity(identity + "script"), file);
 				}
 			};
 			scan(original.contentRoot, "content");
@@ -114,6 +120,9 @@ namespace Catalpa::Tools {
 				job.cancellation = request.cancellation;
 				if (!AssetBuildCache::ReadSettings(original, owners.at(source), job.settings, error))
 					throw std::runtime_error(error);
+				/* 全新项目也能仅凭原图重建场景引用的各个颜色空间视图。 */
+				if (TextureImporter::SupportsMaterialMap(source))
+					job.settings.materialTextureViews = true;
 				return AssetCooker::Build(std::move(job));
 			};
 			if (!owners.contains(entry) || AssetSourceExtension(entry) != ".scene")
@@ -126,7 +135,9 @@ namespace Catalpa::Tools {
 				while (!result.success && result.missingDependency.HasValue()) {
 					const auto missing = result.missingDependency;
 					fs::path dependency;
-					if (auto* record = previous.Find(missing)) {
+					if (const auto script = scriptSources.find(missing); script != scriptSources.end())
+						dependency = script->second;
+					else if (auto* record = previous.Find(missing)) {
 						auto path = fs::u8path(record->locator.path.RelativePath());
 						auto part = path.begin();
 						AssetId owner;
@@ -198,7 +209,8 @@ namespace Catalpa::Tools {
 					deployed.push_back(name);
 			}
 			for (const auto* required :
-			    {"CatalpaBox.exe", "Catalpa.dll", "ThirdPartyNotices.md", "Resources/Environment/Overcast.catasset",
+			    {"CatalpaBox.exe", "Catalpa.dll", "ThirdPartyNotices.md", "Resources/Managed/Catalpa.Scripting.dll",
+			        "Resources/Environment/Overcast.catasset",
 			        "Resources/Config/InputProfiles.json", "Resources/Config/RendererProfiles.json",
 			        "Resources/Config/AudioDefaults.json", "Resources/Config/PhysicsDefaults.json",
 			        "Resources/Config/UIRuntimeDefaults.json", "Resources/Localization/en-US.json",

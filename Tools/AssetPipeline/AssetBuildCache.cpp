@@ -79,6 +79,7 @@ namespace Catalpa::Tools {
 			settings.sourceUp = value.at("up").get<std::string>();
 			settings.generateNormals = value.at("normals");
 			settings.generateTangents = value.at("tangents");
+			settings.materialTextureViews = value.value("materialTextureViews", false);
 			value.at("dependencyRemaps").get_to(settings.dependencyRemaps);
 			settings.maxVertices = value.at("maxVertices");
 			settings.maxIndices = value.at("maxIndices");

@@ -50,6 +50,41 @@
         0
       ],
       "min": 0
+    },
+    {
+      "id": "baseColor_texture",
+      "type": "texture2d",
+      "default": null,
+      "textureSemantic": "baseColor",
+      "allowTextureFallback": true
+    },
+    {
+      "id": "normal_texture",
+      "type": "texture2d",
+      "default": null,
+      "textureSemantic": "normal",
+      "allowTextureFallback": true
+    },
+    {
+      "id": "metallicRoughness_texture",
+      "type": "texture2d",
+      "default": null,
+      "textureSemantic": "metallicRoughness",
+      "allowTextureFallback": true
+    },
+    {
+      "id": "emissive_texture",
+      "type": "texture2d",
+      "default": null,
+      "textureSemantic": "emissive",
+      "allowTextureFallback": true
+    },
+    {
+      "id": "occlusion_texture",
+      "type": "texture2d",
+      "default": null,
+      "textureSemantic": "occlusion",
+      "allowTextureFallback": true
     }
   ],
   "renderState": {

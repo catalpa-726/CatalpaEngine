@@ -1,3 +1,4 @@
+#include "Assets/BuiltinAssetIds.h"
 #include "Properties/PropertyEditorRegistry.h"
 
 #include "Commands/SceneCommands.h"
@@ -10,8 +11,8 @@ namespace Catalpa::Editor {
 		/* 每个数值字段在 Enter 确认后生成一条命令；草稿未确认时不改 World。 */
 		constexpr auto CommitOnEnter = ImGuiInputTextFlags_EnterReturnsTrue;
 
-		bool BeginProperties(const PanelText& text, const char* key, const char* title, const char* id) {
-			if (!ImGui::CollapsingHeader(text(key, title, id).c_str(), ImGuiTreeNodeFlags_DefaultOpen))
+		bool BeginProperties(InspectorSection reveal, const PanelText& text, const char* key, const char* title, const char* id) {
+			if (!reveal.Header(key, text(key, title, id).c_str(), true))
 				return false;
 			const bool twoColumns = ImGui::GetContentRegionAvail().x >= ImGui::GetFontSize() * 19.f;
 			if (!ImGui::BeginTable(id, twoColumns ? 2 : 1, ImGuiTableFlags_SizingStretchProp))
@@ -69,20 +70,12 @@ namespace Catalpa::Editor {
 		 * @param[in] text 根据翻译键生成当前语言的界面文案。
 		 * @param[out] error 失败时接收原因说明。
 		 */
-		void DrawCamera(SceneDocument& doc, EntityReference ref, const PanelText& text, std::string& error) {
+		void DrawCamera(SceneDocument& doc, EntityReference ref, const PanelText& text, std::string& error, InspectorSection reveal) {
 			CameraComponent camera;
 			if (!doc.Resolve()->GetWorld().Get(ref.resolved, camera).IsSuccess())
 				return;
-			if (!BeginProperties(text, "edit.camera", "Camera", "CameraSection"))
+			if (!BeginProperties(reveal, text, "edit.camera", "Camera", "CameraSection"))
 				return;
-			ImGui::TableNextRow();
-			ImGui::TableNextColumn();
-			if (ImGui::TableGetColumnCount() > 1)
-				ImGui::TableNextColumn();
-			ImGui::TextWrapped("%s: %llu / %s: %llu", text("edit.view_id", "View ID", nullptr).c_str(),
-			    static_cast<unsigned long long>(camera.viewId),
-			    text("edit.history_revision", "History revision", nullptr).c_str(),
-			    static_cast<unsigned long long>(camera.historyRevision));
 			bool changed =
 			    ImGui::Checkbox(Field(text, "edit.enabled", "Enabled", "CameraEnabled").c_str(), &camera.enabled);
 			changed |= ImGui::InputScalar(Field(text, "edit.camera_priority", "Priority", "CameraPriority").c_str(),
@@ -127,7 +120,7 @@ namespace Catalpa::Editor {
 		 * @param[in] text 根据翻译键生成当前语言的界面文案。
 		 * @param[out] error 失败时接收原因说明。
 		 */
-		void DrawLight(SceneDocument& doc, EntityReference ref, const PanelText& text, std::string& error) {
+		void DrawLight(SceneDocument& doc, EntityReference ref, const PanelText& text, std::string& error, InspectorSection reveal) {
 			LightComponent light;
 			if (!doc.Resolve()->GetWorld().Has<LightComponent>(ref.resolved))
 				return;
@@ -137,7 +130,7 @@ namespace Catalpa::Editor {
 			const char* kinds[] = {UiText("light.directional", "Directional"), UiText("light.point", "Point"),
 			    UiText("light.spot", "Spot")};
 			int type = static_cast<int>(p.type);
-			if (!BeginProperties(text, "edit.light", "Light", "LightSection"))
+			if (!BeginProperties(reveal, text, "edit.light", "Light", "LightSection"))
 				return;
 			bool changed =
 			    ImGui::Checkbox(Field(text, "edit.enabled", "Enabled", "LightEnabled").c_str(), &light.enabled);
@@ -176,14 +169,16 @@ namespace Catalpa::Editor {
 		 * @param[in] text 根据翻译键生成当前语言的界面文案。
 		 * @param[out] error 失败时接收原因说明。
 		 */
-		void DrawEnvironment(SceneDocument& doc, EntityReference ref, const PanelText& text, std::string& error) {
+		void DrawEnvironment(SceneDocument& doc, EntityReference ref, const PanelText& text, std::string& error, InspectorSection reveal) {
 			EnvironmentComponent env;
 			if (!doc.Resolve()->GetWorld().Get(ref.resolved, env).IsSuccess())
 				return;
-			if (!BeginProperties(text, "edit.environment", "Environment", "EnvironmentSection"))
+			if (!BeginProperties(reveal, text, "edit.environment", "Environment", "EnvironmentSection"))
 				return;
 			Field(text("edit.environment_asset", "Environment asset", nullptr));
-			ImGui::TextWrapped("%s", env.environment.id.ToString().c_str());
+			ImGui::TextWrapped("%s", env.environment.id == BuiltinAssetIds::DefaultEnvironment
+			        ? UiText("component.default_sky", "Default sky")
+			        : UiText("component.assigned_asset", "Assigned asset"));
 			auto& p = env.settings;
 			bool changed = ImGui::Checkbox(Field(text, "edit.enabled", "Enabled", "EnvEnabled").c_str(), &env.enabled);
 			changed |= ImGui::InputFloat(Field(text, "edit.strength", "Intensity", "EnvIntensity").c_str(),
@@ -220,7 +215,7 @@ namespace Catalpa::Editor {
 	 * @return 成功时返回 true，失败时返回 false 并通过错误参数说明原因。
 	 */
 	bool PropertyEditorRegistry::DrawTransform(
-	    SceneDocument& doc, EntityReference reference, const PanelText& text, std::string& error) const {
+	    SceneDocument& doc, EntityReference reference, const PanelText& text, std::string& error, InspectorSection reveal) const {
 		Scene* scene = doc.Resolve();
 		if (!scene)
 			return false;
@@ -232,7 +227,7 @@ namespace Catalpa::Editor {
 		const auto* schema = registry ? registry->Find("catalpa.transform") : nullptr;
 		if (!schema)
 			return false;
-		if (!BeginProperties(text, "edit.transform", "Transform", "TransformSection"))
+		if (!BeginProperties(reveal, text, "edit.transform", "Transform", "TransformSection"))
 			return false;
 		bool changed = false;
 		for (const auto& field : schema->fields) {
@@ -269,18 +264,18 @@ namespace Catalpa::Editor {
 	}
 
 	void PropertyEditorRegistry::Draw(SceneDocument& doc, EntityReference ref, const PanelText& text,
-	    AssetVersionRef<MaterialInstance>& openMaterial, std::string& error, const MaterialSlotPicker& picker) const {
+	    MaterialSlotEdit& openMaterial, std::string& error, const MaterialSlotPicker& picker, InspectorSection reveal) const {
 		auto* scene = doc.Resolve();
 		const auto* schemas = scene ? scene->GetComponentSchemas() : nullptr;
 		if (!schemas)
 			return;
 		/* 适配器按模式中的稳定类型选择值控件。缺少模式或遇到未知组件时，只允许读取。 */
 		if (schemas->Find("catalpa.transform"))
-			DrawTransform(doc, ref, text, error);
+			DrawTransform(doc, ref, text, error, reveal);
 		if (schemas->Find("catalpa.mesh_renderer")) {
 			MeshRendererComponent mesh;
 			if (doc.Resolve()->GetWorld().Get(ref.resolved, mesh).IsSuccess() &&
-			    BeginProperties(text, "edit.mesh", "Mesh renderer", "MeshSection")) {
+			    BeginProperties(reveal, text, "edit.mesh", "Mesh renderer", "MeshSection")) {
 				bool changed = ImGui::InputFloat4(Field(text, "edit.color", "Linear color", "MeshColor").c_str(),
 				    &mesh.color.x, "%.4g", CommitOnEnter);
 				changed |=
@@ -301,9 +296,7 @@ namespace Catalpa::Editor {
 						if (!picker && definition)
 							ImGui::TextUnformatted(definition->family.c_str());
 						if (ImGui::Button(text("edit.open_material", "Edit material", "EditMaterial").c_str()))
-							openMaterial = material;
-						if (ImGui::IsItemHovered())
-							ImGui::SetTooltip("%s", material.GetId().ToString().c_str());
+							openMaterial = {i, material, mesh.meshVersion};
 					} else
 						ImGui::TextDisabled("%s", text("edit.unassigned", "Unassigned", nullptr).c_str());
 					ImGui::PopID();
@@ -314,10 +307,10 @@ namespace Catalpa::Editor {
 			}
 		}
 		if (schemas->Find("catalpa.camera"))
-			DrawCamera(doc, ref, text, error);
+			DrawCamera(doc, ref, text, error, reveal);
 		if (schemas->Find("catalpa.light"))
-			DrawLight(doc, ref, text, error);
+			DrawLight(doc, ref, text, error, reveal);
 		if (schemas->Find("catalpa.environment"))
-			DrawEnvironment(doc, ref, text, error);
+			DrawEnvironment(doc, ref, text, error, reveal);
 	}
 }

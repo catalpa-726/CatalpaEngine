@@ -1,7 +1,6 @@
 #include "AssetEditors/AudioUIInspector.h"
 
 #include "Commands/EditorCommand.h"
-#include "Core/Application.h"
 #include "Assets/AssetManager.h"
 #include "Scene/SceneDynamicComponents.h"
 #include "Scene/Components/AudioSourceComponent.h"
@@ -160,36 +159,6 @@ namespace Catalpa::Editor {
 			    error);
 		}
 
-		bool AssetInput(const char* label, AssetId& id, std::string& error) {
-			struct Draft {
-				AssetId original;
-				std::array<char, 64> text{};
-				bool initialized = false;
-			};
-			static std::map<ImGuiID, Draft> drafts;
-			const auto key = ImGui::GetID(label);
-			if (!drafts.contains(key) && drafts.size() >= 256)
-				drafts.clear();
-			auto& draft = drafts[key];
-			if (!draft.initialized || draft.original != id) {
-				draft = {};
-				draft.original = id;
-				draft.initialized = true;
-				const auto text = id.HasValue() ? id.ToString() : std::string{};
-				std::copy(text.begin(), text.end(), draft.text.begin());
-			}
-			if (!ImGui::InputText(label, draft.text.data(), draft.text.size(), ImGuiInputTextFlags_EnterReturnsTrue))
-				return false;
-			AssetId candidate;
-			if (!AssetId::TryParse(draft.text.data(), candidate)) {
-				error = "Enter a cooked asset UUID and press Enter";
-				return false;
-			}
-			id = candidate;
-			draft.original = id;
-			return true;
-		}
-
 		template <class T> bool Pin(AssetManager& assets, AssetId id, AssetVersionRef<T>& output, std::string& error) {
 			if (output.HasValue() && output.GetId() == id)
 				return true;
@@ -203,8 +172,8 @@ namespace Catalpa::Editor {
 		}
 	} /* 命名空间 */
 
-	void DrawAudioUIInspector(Application& app, SceneDocument& doc, EntityId entity, const PanelText& text,
-	    std::string& error, std::string_view addType) try {
+	void DrawAudioUIInspector(AssetManager& assets, SceneDocument& doc, EntityId entity, const PanelText& text,
+	    std::string& error, std::string_view addType, const ComponentAssetPicker& pick, InspectorSection reveal) try {
 		auto* scene = doc.Resolve();
 		if (!scene || doc.Playing() || !scene->GetWorld().IsAlive(entity))
 			return;
@@ -218,8 +187,8 @@ namespace Catalpa::Editor {
 			AudioSourceComponent source;
 			if (!world.Get(entity, source).IsSuccess())
 				return;
-			if (ImGui::CollapsingHeader(label("audio.source", "Audio source").c_str())) {
-				bool changed = AssetInput(label("audio.clip_id", "Clip asset UUID").c_str(), source.clip, error);
+			if (reveal.Header("audio.source", label("audio.source", "Audio source").c_str())) {
+				bool changed = pick(label("audio.clip_id", "Audio clip").c_str(), "audio_clip", source.clip);
 				changed |= ImGui::Checkbox(label("audio.enabled", "Enabled").c_str(), &source.enabled);
 				changed |= ImGui::Checkbox(label("audio.auto_play", "Auto play").c_str(), &source.autoPlay);
 				changed |= ImGui::DragFloat(label("audio.gain", "Gain").c_str(), &source.settings.gain, .01f, 0, 16);
@@ -231,18 +200,17 @@ namespace Catalpa::Editor {
 				    &source.settings.minDistance, .05f, .01f, 10000);
 				changed |= ImGui::DragFloat(label("audio.max_distance", "Maximum distance (m)").c_str(),
 				    &source.settings.maxDistance, .1f, .01f, 100000);
-				if (changed && Pin(app.GetAssets(), source.clip, source.clipVersion, error))
+				if (changed && Pin(assets, source.clip, source.clipVersion, error))
 					Edit(doc, entity, std::optional(source), error);
 				if (ImGui::Button(label("audio.remove_source", "Remove audio source").c_str()))
 					Edit<AudioSourceComponent>(doc, entity, {}, error);
 			}
 		} else if (addType == "AudioSourceComponent") {
-			static AssetId clip;
-			AssetInput(label("audio.new_clip", "Clip UUID for new audio source").c_str(), clip, error);
-			if (clip.HasValue() && ImGui::Button(label("audio.add_source", "Add audio source").c_str())) {
+			AssetId clip;
+			if (pick(label("audio.clip_id", "Audio clip").c_str(), "audio_clip", clip)) {
 				AudioSourceComponent source;
 				source.clip = clip;
-				if (Pin(app.GetAssets(), clip, source.clipVersion, error))
+				if (Pin(assets, clip, source.clipVersion, error))
 					Edit(doc, entity, std::optional(source), error);
 			}
 		}
@@ -250,37 +218,35 @@ namespace Catalpa::Editor {
 			AudioListenerComponent listener;
 			if (!world.Get(entity, listener).IsSuccess())
 				return;
+			reveal.ScrollTo("component.listener");
 			if (ImGui::Checkbox(label("audio.listener_enabled", "Audio listener enabled").c_str(), &listener.enabled))
 				Edit(doc, entity, std::optional(listener), error);
 			if (ImGui::Button(label("audio.remove_listener", "Remove audio listener").c_str()))
 				Edit<AudioListenerComponent>(doc, entity, {}, error);
-		} else if (addType == "AudioListenerComponent" &&
-		    ImGui::Button(label("audio.add_listener", "Add audio listener").c_str()))
+		} else if (addType == "AudioListenerComponent")
 			Edit(doc, entity, std::optional(AudioListenerComponent{}), error);
 
 		if (world.Has<UIComponent>(entity)) {
 			UIComponent ui;
 			if (!world.Get(entity, ui).IsSuccess())
 				return;
-			if (ImGui::CollapsingHeader(label("ui.component", "Game UI").c_str())) {
-				bool changed =
-				    AssetInput(label("ui.document_id", "UI document asset UUID").c_str(), ui.document, error);
+			if (reveal.Header("ui.component", label("ui.component", "Game UI").c_str())) {
+				bool changed = pick(label("ui.document_id", "UI document").c_str(), "ui_document", ui.document);
 				changed |= ImGui::Checkbox(label("ui.enabled", "Game UI enabled").c_str(), &ui.enabled);
 				int order = ui.order;
 				changed |= ImGui::InputInt(label("ui.order", "Draw order").c_str(), &order);
 				ui.order = order;
-				if (changed && Pin(app.GetAssets(), ui.document, ui.documentVersion, error))
+				if (changed && Pin(assets, ui.document, ui.documentVersion, error))
 					Edit(doc, entity, std::optional(ui), error);
 				if (ImGui::Button(label("ui.remove_component", "Remove Game UI").c_str()))
 					Edit<UIComponent>(doc, entity, {}, error);
 			}
 		} else if (addType == "UIComponent") {
-			static AssetId document;
-			AssetInput(label("ui.new_document", "Document UUID for new Game UI").c_str(), document, error);
-			if (document.HasValue() && ImGui::Button(label("ui.add_component", "Add Game UI").c_str())) {
+			AssetId document;
+			if (pick(label("ui.document_id", "UI document").c_str(), "ui_document", document)) {
 				UIComponent ui;
 				ui.document = document;
-				if (Pin(app.GetAssets(), document, ui.documentVersion, error))
+				if (Pin(assets, document, ui.documentVersion, error))
 					Edit(doc, entity, std::optional(ui), error);
 			}
 		}

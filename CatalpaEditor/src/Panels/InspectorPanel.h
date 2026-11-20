@@ -18,15 +18,22 @@ namespace Catalpa::Editor {
 		 *
 		 * @return 选中实体及其身份组件有效且绘制了属性时为 true。
 		 */
-		bool Draw(SceneDocument&, const EditorSelection&, const PanelText&, AssetVersionRef<MaterialInstance>&,
+		bool Draw(SceneDocument&, const EditorSelection&, const PanelText&, MaterialSlotEdit&,
 		    std::string& error, const MaterialSlotPicker& picker = {});
 		/**
 		 * @brief 取走添加组件菜单发起的脚本或行为图选择请求。
-		 * @param[in] script 为真时查询 Lua 脚本，否则查询行为图。
+		 * @param[in] script 为真时查询 C# 脚本，否则查询行为图。
 		 * @return 有对应的未消费请求时返回真。
 		 */
 		bool TakeBehaviorPicker(bool script);
-		std::string_view PendingComponentType() const { return m_PendingType; }
+		InspectorSection RevealedSection() const { return m_Revealed; }
+		/** @brief 无需选择资源的组件只派发一次，避免失败或撤销后自动再次挂载。 */
+		std::string ComponentRequest() {
+			if (m_PendingType == "RigidBodyComponent" || m_PendingType == "CharacterControllerComponent" ||
+			    m_PendingType == "ColliderComponent" || m_PendingType == "AudioListenerComponent")
+				return std::exchange(m_PendingType, {});
+			return m_PendingType;
+		}
 
 	private:
 		void DrawName(SceneDocument&, EntityReference, const IdentityComponent&, const PanelText&, std::string&);
@@ -39,6 +46,7 @@ namespace Catalpa::Editor {
 		 */
 		void DrawComponents(SceneDocument& doc, EntityReference ref, const PanelText& text, std::string& error);
 		EntityReference m_ComponentTarget;
+		InspectorSection m_Revealed, m_NextReveal;
 		std::string m_PendingType;
 		std::array<char, 160> m_ComponentFilter{};
 		bool m_ScriptPicker = false, m_GraphPicker = false;

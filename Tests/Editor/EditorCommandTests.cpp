@@ -66,6 +66,7 @@ namespace Catalpa::Tests {
 				const auto utf8 = (fixture.root / "示例 project.catalpaproj").generic_u8string();
 				edited.recentProjects = {std::string(utf8.begin(), utf8.end())};
 				edited.editorFontSize = size;
+				edited.scriptEditor = size == 12 ? "vscode" : std::string(utf8.begin(), utf8.end()) + ".exe";
 				edited.showAudioMixer = size == 12;
 				edited.showNetwork = size == 36;
 				edited.viewport = size == 12
@@ -75,6 +76,7 @@ namespace Catalpa::Tests {
 				          ViewportSettings::MaxRotationStep, ViewportSettings::MaxScaleStepPercent};
 				const bool roundtrip = SaveWorkspaceSettings(path, edited, error) &&
 				    LoadWorkspaceSettings(path, loaded, error) == WorkspaceLoadResult::Loaded;
+				t.Check(roundtrip && loaded.scriptEditor == edited.scriptEditor, "External IDE choice and custom Unicode path persist");
 				t.Check(roundtrip && loaded.editorFontSize == size, "Workspace font size endpoints persist");
 				t.Check(roundtrip && loaded.viewport == edited.viewport,
 				    "Camera speed, independent transform snap endpoints and snap state persist");
@@ -94,13 +96,22 @@ namespace Catalpa::Tests {
 			}
 			auto saved = nlohmann::json::parse(text, nullptr, false);
 			const bool currentSchema = saved.is_object() && saved.contains("schema_version") &&
-			    saved["schema_version"] == 3 && saved.contains("editor_font_size") && saved["editor_font_size"] == 36;
+			    saved["schema_version"] == 4 && saved.contains("editor_font_size") && saved["editor_font_size"] == 36;
 			t.Check(currentSchema, "Saved workspaces write a versioned font size");
 			if (!currentSchema)
 				return;
+			auto version3 = saved;
+			version3["schema_version"] = 3;
+			version3.erase("script_editor");
+			const auto previousViewport = loaded.viewport;
+			t.Check(AtomicFileWriter::Write(path, version3.dump(), error) &&
+			        LoadWorkspaceSettings(path, loaded, error) == WorkspaceLoadResult::Loaded &&
+			        loaded.scriptEditor == "auto" && loaded.viewport == previousViewport,
+			    "Version 3 retains viewport settings and acquires automatic IDE selection");
 			auto previous = saved;
 			previous["schema_version"] = 2;
 			previous.erase("viewport");
+			previous.erase("script_editor");
 			previous["panels"].erase("audio_mixer");
 			previous["panels"].erase("network");
 			previous["panels"]["history"] = false;
@@ -108,7 +119,7 @@ namespace Catalpa::Tests {
 			    LoadWorkspaceSettings(path, loaded, error) == WorkspaceLoadResult::Loaded;
 			t.Check(legacyPanels && !loaded.showHistory && !loaded.showNetwork && !loaded.showAudioMixer,
 			    "Existing nine-panel workspaces retain history visibility and default diagnostics");
-			t.Check(legacyPanels && loaded.viewport == ViewportSettings{},
+			t.Check(legacyPanels && loaded.scriptEditor == "auto" && loaded.viewport == ViewportSettings{},
 			    "Version 2 workspace acquires default camera speed and transform snap settings");
 			/* 保存校验失败时原文件保持可读，调用方仍可恢复原有工作区。 */
 			auto invalidSpeed = loaded;

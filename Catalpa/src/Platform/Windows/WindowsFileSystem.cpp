@@ -358,7 +358,8 @@ namespace Catalpa::FileSystemDetail {
 	 *
 	 * @return 成功时返回 true，失败时返回 false 并通过错误参数说明原因。
 	 */
-	bool WriteAtomic(const std::filesystem::path& target, std::span<const std::byte> bytes, std::string& error) {
+	bool WriteAtomic(const std::filesystem::path& target, std::span<const std::byte> bytes,
+	    bool replaceExisting, std::string& error) {
 #if defined(CATALPA_PLATFORM_WINDOW)
 		if (!ValidAbsolute(target, error))
 			return false;
@@ -384,6 +385,10 @@ namespace Catalpa::FileSystemDetail {
 		const auto destination = parent / target.filename();
 		const DWORD attributes = GetFileAttributesW(destination.c_str());
 		if (attributes != INVALID_FILE_ATTRIBUTES) {
+			if (!replaceExisting) {
+				error = "A file with that name already exists";
+				return false;
+			}
 			if (attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) {
 				error = "Save target must not be a directory or reparse point";
 				return false;
@@ -468,7 +473,7 @@ namespace Catalpa::FileSystemDetail {
 		const size_t nameBytes = renamePath.size() * sizeof(wchar_t);
 		std::vector<std::byte> renameStorage(sizeof(FILE_RENAME_INFO) + nameBytes);
 		auto* rename = ::new (static_cast<void*>(renameStorage.data())) FILE_RENAME_INFO{};
-		rename->ReplaceIfExists = TRUE;
+		rename->ReplaceIfExists = replaceExisting ? TRUE : FALSE;
 		rename->RootDirectory = nullptr;
 		rename->FileNameLength = static_cast<DWORD>(nameBytes);
 		std::memcpy(rename->FileName, renamePath.c_str(), nameBytes + sizeof(wchar_t));
@@ -481,6 +486,7 @@ namespace Catalpa::FileSystemDetail {
 #else
 		(void)target;
 		(void)bytes;
+		(void)replaceExisting;
 		error = "Atomic save is unavailable on this platform";
 		return false;
 #endif

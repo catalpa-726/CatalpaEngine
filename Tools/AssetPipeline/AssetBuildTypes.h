@@ -19,6 +19,7 @@ namespace Catalpa::Tools {
 		/* HDR 单图解码上限为 512 MiB；总工作区还需容纳源字节、stb 临时像素和积分结果。 */
 		size_t maxSourceBytes = 64 * 1024 * 1024, maxWorkingBytes = 1536 * 1024 * 1024;
 		uint32_t maxVertices = 2000000, maxIndices = 6000000, maxNodes = 65536;
+		bool materialTextureViews = false; /* 按材质槽额外构建线性法线和数据视图。 */
 	};
 
 	struct AssetBuildRequest {

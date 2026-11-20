@@ -1,6 +1,7 @@
 #include "catpch.h"
 
 #include "TestRunner.h"
+#include "AssetPipeline/Importers/CSharpCompiler.h"
 #include "Scripting/Backends/Lua/LuaScriptBackend.h"
 #include "Scripting/ScriptRuntime.h"
 #include "Scripting/ScriptValueArchive.h"
@@ -52,17 +53,31 @@ namespace Catalpa::Tests {
 			        slang.find("sin(") != slang.npos && !nodes.empty(),
 			    "Pulse sample generates a time-dependent color shader and node mappings: " + error);
 			ScriptAsset move;
-			move.source = read(sources / "Move.lua");
+			std::unique_ptr<Tools::ProjectSession> project;
+			const auto script = sources / "Move.cs";
+			if (!Tools::LoadProject(root / "Projects/Sandbox/Sandbox.catalpaproj", project, error)) {
+				test.Check(false, "Load C# example project: " + error);
+				return;
+			}
+			Tools::AssetBuildContext compiler({project->config, script, executable / "Resources/Shaders"});
+			std::vector<std::byte> code;
+			if (!compiler.Initialize(error) || !compiler.Read(script, code, error) ||
+			    !Tools::CompileCSharp(compiler, code, move.assembly, error)) {
+				test.Check(false, "Compile Move.cs: " + error);
+				return;
+			}
+			move.language = ScriptLanguage::CSharp;
+			move.sourceLabel = "Content/Authoring/Move.cs";
 			BehaviorGraphAsset graph;
-			const auto lua = AssetId::FromWords(0x414343455054414eULL, 1);
+			const auto movement = AssetId::FromWords(0x414343455054414eULL, 1);
 			const auto behavior = AssetId::FromWords(0x414343455054414eULL, 2);
 			const auto second = PersistentEntityId::FromWords(0x414343455054414eULL, 3);
-			if (move.source.empty() ||
+			if (move.assembly.empty() ||
 			    !Tools::BehaviorGraphCompiler::Compile(read(sources / "WaitMove.behavior.json"), graph, error) ||
-			    !assets.PublishBuiltin<ScriptAsset>(lua, 1, std::make_shared<const ScriptAsset>(move), 8192, error) ||
+			    !assets.PublishBuiltin<ScriptAsset>(movement, 1, std::make_shared<const ScriptAsset>(move), 8192, error) ||
 			    !assets.PublishBuiltin<BehaviorGraphAsset>(
 			        behavior, 1, std::make_shared<const BehaviorGraphAsset>(graph), 8192, error)) {
-				test.Check(false, "Read, validate and install Move.lua and WaitMove.behavior.json: " + error);
+				test.Check(false, "Read, validate and install Move.cs and WaitMove.behavior.json: " + error);
 				return;
 			}
 			SceneManager scenes;
@@ -73,7 +88,7 @@ namespace Catalpa::Tests {
 			const auto setup = source.QueueCreate(Actor, "Moving actor", {}).IsSuccess() &&
 			    source.QueueCreate(second, "Second behavior instance", {}).IsSuccess() &&
 			    source.CommitPending().IsSuccess() &&
-			    source.QueueSetScript(source.Resolve(Actor), {lua, true, {}}).IsSuccess() &&
+			    source.QueueSetScript(source.Resolve(Actor), {movement, true, {}}).IsSuccess() &&
 			    source.QueueSetBehaviorGraph(source.Resolve(Actor), {behavior, true, {}}).IsSuccess() &&
 			    source.QueueSetBehaviorGraph(source.Resolve(second), {behavior, true, {}}).IsSuccess() &&
 			    source.CommitPending().IsSuccess() && scenes.SetActive(handle).IsSuccess();
@@ -93,6 +108,8 @@ namespace Catalpa::Tests {
 					scripts.Tick(play, assets, .25);
 					behaviors.Tick(play, assets, .25);
 				}
+				const auto& diagnostics = scripts.Diagnostics();
+				test.Check(diagnostics.empty(), diagnostics.empty() ? "Move.cs runs without script diagnostics" : diagnostics.front());
 				const auto debug = behaviors.Snapshot();
 				test.Check(Position(play) == Math::Vec3(2.5f, .75f, 0) && debug.size() == 2 &&
 				        std::all_of(debug.begin(), debug.end(),

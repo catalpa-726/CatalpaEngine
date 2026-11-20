@@ -1,6 +1,9 @@
 #include "catpch.h"
 
 #include "TestRunner.h"
+#include "Assets/AssetManager.h"
+#include "Documents/SceneDocument.h"
+#include "Physics/CollisionAssetLoader.h"
 #include "Physics/PhysicsService.h"
 #include "Navigation/NavigationWorld.h"
 #include "AssetPipeline/Navigation/RecastNavMeshBaker.h"
@@ -8,7 +11,70 @@
 #include "AssetPipeline/Navigation/NavigationBuildProfiles.h"
 
 namespace Catalpa::Tests {
+	namespace {
+		/** @brief 播放副本中，无碰撞体的刚体可穿过地面，挂盒形的刚体停在地面，停止播放还原作者场景。 */
+		void CheckPlayGravity(TestContext& test) {
+			JobSystem jobs;
+			AssetManager assets(jobs);
+			std::string error;
+			const auto shape = AssetId::FromWords(0x5048595349435354ULL, 1);
+			SceneManager scenes;
+			SceneHandle handle;
+			if (!scenes.CreateScene("Gravity", handle).IsSuccess() || !RegisterPhysicsAssetLoaders(assets, error) ||
+			    !assets.PublishBuiltin<CollisionShapeAsset>(shape, 1, std::make_shared<const CollisionShapeAsset>(),
+			        sizeof(CollisionShapeAsset), error)) {
+				test.Check(false, "Create gravity fixture: " + error);
+				return;
+			}
+			auto& scene = *scenes.GetScene(handle);
+			const auto free = PersistentEntityId::FromWords(1, 1), solid = PersistentEntityId::FromWords(1, 2),
+			           ground = PersistentEntityId::FromWords(1, 3);
+			Math::TransformTRS drop, floor;
+			drop.translation = {-2, 3, 0};
+			drop.scale = {.8f, 1.4f, .8f};
+			floor.translation.y = -.5f;
+			floor.scale = {12, 1, 12};
+			RigidBodyComponent dynamic;
+			dynamic.motion = PhysicsMotion::Dynamic;
+			ColliderComponent collider;
+			collider.shape.id = shape;
+			const bool created = scene.QueueCreate(free, "Free", drop).IsSuccess() &&
+			    scene.QueueCreate(ground, "Ground", floor).IsSuccess();
+			drop.translation.x = 2;
+			Editor::SceneDocument doc(StableId::FromWords(1, 4), scenes, handle);
+			if (!created || !scene.QueueCreate(solid, "Solid", drop).IsSuccess() || !scene.CommitPending().IsSuccess() ||
+			    !SetRigidBody(scene, scene.Resolve(free), dynamic).IsSuccess() ||
+			    !SetRigidBody(scene, scene.Resolve(solid), dynamic).IsSuccess() ||
+			    !SetCollider(scene, scene.Resolve(solid), collider).IsSuccess() ||
+			    !SetCollider(scene, scene.Resolve(ground), collider).IsSuccess() || !scene.CommitPending().IsSuccess() ||
+			    !doc.StartPlay(assets, error)) {
+				test.Check(false, "Start gravity play fixture: " + error);
+				return;
+			}
+			auto& play = *scenes.GetScene(doc.PlayHandle());
+			PhysicsService physics;
+			for (uint64_t tick = 1; tick <= 120; ++tick) {
+				if (!physics.Tick(play, assets, 1.0 / 60, tick, error) || !physics.Diagnostics().empty() ||
+				    !play.CommitPending().IsSuccess()) {
+					test.Check(false, "Advance gravity play fixture: " +
+					    (physics.Diagnostics().empty() ? error : physics.Diagnostics().front()));
+					return;
+				}
+			}
+			TransformComponent value;
+			test.Check(play.GetTransform(play.Resolve(free), value).IsSuccess() && value.local.translation.y < -5 &&
+			        glm::length(value.local.scale - drop.scale) < 1e-4f,
+			    "A scaled dynamic rigid body falls through a collider without a shape of its own");
+			test.Check(play.GetTransform(play.Resolve(solid), value).IsSuccess() &&
+			        std::abs(value.local.translation.y - .7f) < .05f,
+			    "The same body with a one-metre box settles on a collider-only floor");
+			test.Check(doc.StopPlay(error) && scenes.GetActive() == &scene &&
+			        scene.GetTransform(scene.Resolve(free), value).IsSuccess() && value.local.translation.y == 3,
+			    "Stop restores the original authored height");
+		}
+	}
 	void RunPhysicsNavigationTests(TestContext& test) {
+		CheckPlayGravity(test);
 		std::string error;
 		CollisionShapeAsset ground;
 		ground.dimensions = {10, 0.5f, 10};

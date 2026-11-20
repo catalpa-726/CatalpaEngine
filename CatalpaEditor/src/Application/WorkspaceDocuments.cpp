@@ -1,8 +1,11 @@
 #include "Application/WorkspaceEditing.h"
+#include "Project/ProjectCreation.h"
 #include "Core/Application.h"
 #include "Core/PlatformServices.h"
+#include "Core/IO/AtomicFileWriter.h"
 #include "Documents/DocumentRecovery.h"
 #include "Platform/AuthorFileDialogs.h"
+#include "Platform/ExternalScriptEditor.h"
 #include "Scene/SceneSerializer.h"
 #include "Scene/PrefabAsset.h"
 #include "Scripting/BehaviorGraphAsset.h"
@@ -19,10 +22,17 @@
 #include "Assets/AssetDependencyGraph.h"
 #include "Panels/EditorText.h"
 #include "Panels/FormLayout.h"
+#include "Panels/BuildPanel.h"
 #include "imgui.h"
 #include "Viewport/ToolbarButton.h"
 
 namespace Catalpa::Editor {
+	const char* WorkspaceEditing::SceneTitle(const Scene& scene) const {
+		if (m_App.GetScenes().GetScene(m_HostScene) == &scene && scene.GetName() == "Sample Scene")
+			return UiText("scene.sample_title", "Sample Scene");
+		return scene.GetName().c_str();
+	}
+
 	void WorkspaceEditing::SetProject(const Tools::ProjectConfig* config) {
 		if (!config && !m_Project)
 			return;
@@ -31,11 +41,15 @@ namespace Catalpa::Editor {
 			m_Project = *config;
 			return;
 		}
+		m_MaterialTargets.clear();
 		m_Project = config ? std::optional(*config) : std::nullopt;
 		m_Recovery.clear();
 		m_RecoveryRoot = config ? config->projectFile.parent_path() / "Recovery" : std::filesystem::path{};
-		if (!config)
+		if (!config) {
+			EnsureSessionAssets(false);
 			return;
+		}
+		m_SessionAssets.reset();
 		(void)LoadProjectCatalog();
 		std::error_code error;
 		for (std::filesystem::directory_iterator it(m_RecoveryRoot, error), end; !error && it != end;
@@ -74,6 +88,38 @@ namespace Catalpa::Editor {
 	} catch (const std::exception& exception) {
 		m_Error = exception.what();
 		return false;
+	}
+
+	const Tools::ProjectConfig* WorkspaceEditing::EnsureSessionAssets(bool create) try {
+		if (const auto* project = AssetProject())
+			return project;
+		if (m_SessionAssetFile.empty()) {
+			if (create)
+				m_Error = "Cannot locate the workspace settings directory";
+			return nullptr;
+		}
+		const auto file = std::filesystem::absolute(m_SessionAssetFile);
+		const auto directory = file.parent_path();
+		if (!std::filesystem::exists(directory)) {
+			if (!create)
+				return nullptr;
+			const auto parent = directory.parent_path();
+			std::filesystem::create_directories(parent);
+			std::filesystem::path created;
+			/* 同一工作区的两个窗口可能同时首次创建。CreateProject 完整发布后，再装载获胜的工程。 */
+			if (!Tools::CreateProject(parent, Tools::AssetPathText(directory.filename()), created, m_Error) &&
+			    !std::filesystem::is_regular_file(file))
+				return nullptr;
+		}
+		std::unique_ptr<Tools::ProjectSession> session;
+		if (!Tools::LoadProject(file, session, m_Error) ||
+		    !InstallDirectoryCatalog(m_App, session->config.cookedRoot, true, m_Error))
+			return nullptr;
+		m_SessionAssets = std::move(session->config);
+		return &*m_SessionAssets;
+	} catch (const std::exception& failure) {
+		m_Error = failure.what();
+		return nullptr;
 	}
 
 	void WorkspaceEditing::OpenGroveShowcase() try {
@@ -127,10 +173,31 @@ namespace Catalpa::Editor {
 	 *
 	 * @return 完成上述操作时为 true，操作未成功时为 false。
 	 */
-	bool WorkspaceEditing::SaveDocument(Document& doc, bool saveAs) {
-		if (!m_Project || m_PlayDocument.HasValue()) {
-			m_Error = "Saving requires an author project outside Play";
+	bool WorkspaceEditing::SaveDocument(Document& doc, bool saveAs, bool cookMaterial) {
+		if (m_PlayDocument.HasValue()) {
+			m_Error = "Stop Play before saving a document";
 			return false;
+		}
+		if (m_AssetActions.action == AuthorAssetAction::BindTexture && m_AssetActions.document == doc.Id()) {
+			m_Error = UiText("material.wait_texture", "Wait for the texture import to finish.");
+			return false;
+		}
+		auto* material = dynamic_cast<AssetDocument*>(&doc);
+		const auto binding = m_MaterialTargets.find(doc.Id());
+		const bool bound = material && material->Material() && binding != m_MaterialTargets.end();
+		if (bound) {
+			for (const auto& origin : binding->second) {
+				MeshRendererComponent mesh;
+				SceneDocument* scene{};
+				if (!ValidateMaterialTarget(origin, scene, mesh))
+					return false;
+			}
+			if (!saveAs && doc.AuthorPath().empty()) {
+				if (doc.History().Dirty() && !ApplySavedMaterial(*material, false))
+					return false;
+				RemoveRecovery(doc.Id());
+				return true;
+			}
 		}
 		auto target = doc.AuthorPath();
 		const auto type = doc.TypeKey();
@@ -147,15 +214,25 @@ namespace Catalpa::Editor {
 		}
 		if (saveAs || target.empty()) {
 			bool cancelled = false;
-			if (!SelectAuthorFile(true, m_Project->contentRoot, target, cancelled, m_Error, suffix) || cancelled)
+			const auto initial = m_Project ? m_Project->contentRoot : target.parent_path();
+			if (!SelectAuthorFile(true, initial, target, cancelled, m_Error, suffix) || cancelled)
 				return false;
 			if (target.extension().empty()) {
 				target += std::filesystem::u8path("." + suffix);
 			}
 		}
+		/* 独立文档以用户选定的目录为保存边界；项目文档仍限定在 Content 内。 */
+		const auto root = m_Project ? m_Project->contentRoot : target.parent_path();
+		const bool applyMaterial = material && material->Material() &&
+		    (bound || (m_Project && (doc.History().Dirty() || saveAs)));
 		if (!m_Documents.CanSaveTo(doc, target, m_Error) ||
-		    !DocumentRecovery::Save(doc, target, m_Project->contentRoot, m_Error))
+		    (!m_Project && !m_StandaloneTextures.Save(m_App.GetAssets(), doc, target, m_Error)) ||
+		    !DocumentRecovery::Save(doc, target, root, m_Error))
 			return false;
+		if (applyMaterial && !ApplySavedMaterial(*material, m_Project.has_value(), cookMaterial)) {
+			doc.History().MarkUnsaved();
+			return false;
+		}
 		RemoveRecovery(doc.Id());
 		m_AssetActions.indexed = false;
 		return true;
@@ -198,7 +275,9 @@ namespace Catalpa::Editor {
 	bool WorkspaceEditing::SaveAll() {
 		if (m_PlayDocument.HasValue() && !StopPlay())
 			return false;
-		for (auto* doc : m_Documents.All()) {
+		auto documents = m_Documents.All();
+		std::stable_partition(documents.begin(), documents.end(), [](auto* doc) { return doc->TypeKey() != "scene"; });
+		for (auto* doc : documents) {
 			if (doc->History().Dirty()) {
 				if (!SaveDocument(*doc))
 					return false;
@@ -246,6 +325,10 @@ namespace Catalpa::Editor {
 				return false;
 			}
 		}
+		if (type == "script" && recovery.empty() && !path.empty()) {
+			EditExternalScript(path);
+			return m_Error.empty();
+		}
 		if (DocumentRecovery::AuthorSuffix(type).empty() || source.size() > DocumentRecovery::AuthorLimit(type)) {
 			m_Error = "Unsupported author domain or source byte budget exceeded";
 			return false;
@@ -270,7 +353,10 @@ namespace Catalpa::Editor {
 			if (!SceneSerializer::ReadMigrated(source, migrations, asset, m_Error))
 				return false;
 			auto dependencies = SceneSerializer::Dependencies(asset);
+			if (!m_StandaloneTextures.Restore(m_App.GetAssets(), path, dependencies, m_Error))
+				return false;
 			if (loadGraph) {
+				std::erase_if(dependencies, BuiltinAssetIds::IsSceneBuiltin);
 				/* 只加载本场景可达的记录，着色器/纹理先于材质到达解码队列。 */
 				std::set<AssetId> needed;
 				for (size_t i = 0; i < dependencies.size(); ++i) {
@@ -333,6 +419,8 @@ namespace Catalpa::Editor {
 			for (const auto& field : material->parameters)
 				if (const auto* image = std::get_if<AssetHandle<ImageAsset>>(&field.value); image && image->HasValue())
 					textures.push_back(image->id);
+			if (!m_StandaloneTextures.Restore(m_App.GetAssets(), path, textures, m_Error))
+				return false;
 			const auto loadingTextures = waitFor(std::move(textures));
 			if (loadingTextures != 0)
 				return loadingTextures > 0;
@@ -501,6 +589,7 @@ namespace Catalpa::Editor {
 				m_OpenAsset = {};
 		}
 		RemoveRecovery(id);
+		m_MaterialTargets.erase(id);
 		m_Documents.Close(id);
 		m_Closing = {};
 	}
@@ -529,11 +618,24 @@ namespace Catalpa::Editor {
 				m_Error = "Only the standard unlit material supports copying its base color.";
 				return;
 			}
-			MaterialParameterOverride base{"base_color", *color};
+			std::vector<MaterialParameterOverride> overrides{{"base_color", *color}};
+			const auto* texture = FindMaterialParameter(*source, "baseColor_texture");
+			const auto* image = texture ? std::get_if<AssetHandle<ImageAsset>>(texture) : nullptr;
+			if (image && image->HasValue())
+				overrides.push_back({"baseColor_texture", *image});
 			MaterialStateOverrides state;
 			state.cull = source->renderState.cull;
-			if (!CreateMaterialInstance(standard.Get()->definition, std::span{&base, 1}, state, 1, instance, m_Error))
+			if (!CreateMaterialInstance(standard.Get()->definition, overrides, state, 1, instance, m_Error))
 				return;
+			if (image && image->HasValue()) {
+				if (source->textureVersions[0].GetId() != image->id) {
+					m_Error = "The base color texture is not loaded";
+					return;
+				}
+				auto resolved = std::make_shared<MaterialInstance>(*instance);
+				resolved->textureVersions[0] = source->textureVersions[0];
+				instance = std::move(resolved);
+			}
 		}
 		StableId identity;
 		if (!GenerateStableId(identity, m_Error) ||
@@ -548,27 +650,76 @@ namespace Catalpa::Editor {
 		}
 	}
 
-	void WorkspaceEditing::CreateAssetDraft(std::string_view type) {
-		if (!m_Project || m_PlayDocument.HasValue())
+	std::filesystem::path WorkspaceEditing::CreateScriptFile(const std::filesystem::path& initialDirectory) {
+		std::filesystem::path target;
+		bool cancelled = false;
+		m_Error.clear();
+		const auto root = m_Project ? m_Project->contentRoot : std::filesystem::path{};
+		const auto initial = initialDirectory.empty() || (!root.empty() && !IsPathWithinRoot(initialDirectory, root))
+		    ? root : initialDirectory;
+		if (!SelectAuthorFile(true, initial, target, cancelled, m_Error, "cs") || cancelled)
+			return {};
+		if (target.extension().empty())
+			target += L".cs";
+		if (!CreateBehaviourFile(target, root.empty() ? target.parent_path() : root, m_Error))
+			return {};
+		m_AssetActions.indexed = false;
+		m_AssetFilesChanged = true;
+		return target;
+	}
+
+	namespace {
+		bool MakeDefaultBehaviorGraph(std::string& source, std::string& error) {
+			BehaviorGraphAsset graph;
+			BehaviorNode update;
+			if (!GenerateStableId(update.id, error))
+				return false;
+			update.type = "Update";
+			graph.nodes.push_back(update);
+			return WriteBehaviorGraph(graph, source, error);
+		}
+	}
+
+	std::filesystem::path WorkspaceEditing::CreateComponentGraphFile(
+	    const std::filesystem::path& target, const std::filesystem::path& contentRoot) try {
+		if (!target.is_absolute() || !contentRoot.is_absolute() || Tools::AssetSourceExtension(target) != ".behavior" ||
+		    !IsPathWithinRoot(std::filesystem::canonical(target.parent_path()), std::filesystem::canonical(contentRoot))) {
+			m_Error = "Choose a behavior graph file inside the content folder";
+			return {};
+		}
+		if (m_Documents.FindByPath(target, m_Error)) {
+			m_Error = "A document with this name is already open";
+			return {};
+		}
+		std::string source;
+		if (!m_Error.empty() || !MakeDefaultBehaviorGraph(source, m_Error) ||
+		    !AtomicFileWriter::CreateNew(target, source, m_Error))
+			return {};
+		return target;
+	} catch (const std::exception& failure) {
+		m_Error = failure.what();
+		return {};
+	}
+
+	void WorkspaceEditing::CreateAssetDraft(std::string_view type, const std::filesystem::path& initialDirectory) {
+		if (m_PlayDocument.HasValue())
 			return;
 		if (type == "material_instance") {
 			CreatePbrDraft();
 			return;
 		}
+		if (type == "script") {
+			const auto path = CreateScriptFile(initialDirectory);
+			if (!path.empty())
+				EditExternalScript(path);
+			return;
+		}
 		std::string source;
-		if (type == "script")
-			source = "return {\n    update = function(dt)\n        scene.translate(0, dt, 0)\n    end\n}\n";
-		else if (type == "material_graph") {
+		if (type == "material_graph") {
 			if (!Tools::WriteMaterialGraph(Tools::DefaultMaterialGraph(), source, m_Error))
 				return;
 		} else if (type == "behavior_graph") {
-			BehaviorGraphAsset graph;
-			BehaviorNode node;
-			if (!GenerateStableId(node.id, m_Error))
-				return;
-			node.type = "Update";
-			graph.nodes.push_back(node);
-			if (!WriteBehaviorGraph(graph, source, m_Error))
+			if (!MakeDefaultBehaviorGraph(source, m_Error))
 				return;
 		} else
 			return;
@@ -590,15 +741,15 @@ namespace Catalpa::Editor {
 	void WorkspaceEditing::DocumentMenu() {
 		if (!ImGui::BeginMenu(UiLabel("ui.documents", "Documents").c_str()))
 			return;
-		ImGui::BeginDisabled(!m_Project || m_PlayDocument.HasValue());
+		ImGui::BeginDisabled(m_PlayDocument.HasValue());
 		if (ImGui::MenuItem(UiLabel("ui.new_scene", "New scene").c_str())) {
 			CancelPendingOpen();
 			SceneAsset scene;
-			scene.name = "Untitled scene";
+			scene.name = UiText("document.untitled_scene", "Untitled scene");
 			if (InstallAuthorScene(scene, {}))
 				m_Documents.Active()->History().MarkUnsaved();
 		}
-		if (ImGui::MenuItem(UiLabel("ui.new_lua_script", "New Lua script").c_str()))
+		if (ImGui::MenuItem(UiLabel("ui.new_csharp_script", "New C# script").c_str()))
 			CreateAssetDraft("script");
 		if (ImGui::MenuItem(UiLabel("ui.new_material", "New material").c_str()))
 			CreateAssetDraft("material_instance");
@@ -609,7 +760,8 @@ namespace Catalpa::Editor {
 		if (ImGui::MenuItem(UiLabel("ui.open_author_document", "Open author document...").c_str())) {
 			std::filesystem::path file;
 			bool cancelled = false;
-			if (SelectAuthorFile(false, m_Project->contentRoot, file, cancelled, m_Error) && !cancelled)
+			const auto initial = m_Project ? m_Project->contentRoot : std::filesystem::path{};
+			if (SelectAuthorFile(false, initial, file, cancelled, m_Error) && !cancelled)
 				OpenSourceAsset(file);
 		}
 		auto* active = m_Documents.Active();
@@ -629,8 +781,13 @@ namespace Catalpa::Editor {
 		ImGui::EndDisabled();
 		ImGui::Separator();
 		for (auto* doc : m_Documents.All()) {
-			auto label = (doc->AuthorPath().empty() ? std::string(doc->TypeKey())
-			                                        : Tools::AssetPathText(doc->AuthorPath().filename()));
+			auto label = Tools::AssetPathText(doc->AuthorPath().filename());
+			if (label.empty()) {
+				const auto* scene = dynamic_cast<const SceneDocument*>(doc);
+				label = scene && scene->Resolve()
+				    ? SceneTitle(*scene->Resolve())
+				    : UiText(("asset.type." + std::string(doc->TypeKey())).c_str(), "Document");
+			}
 			if (doc->History().Dirty())
 				label += " *";
 			label += "###" + doc->Id().ToString();
@@ -668,6 +825,13 @@ namespace Catalpa::Editor {
 				m_PendingAuthor.reset();
 				if (!OpenAuthor(value.path, std::move(value.source), std::move(value.type), value.recovery))
 					RetainRecovery(value.recovery);
+				else if (value.materialTarget) {
+					/* 定义和纹理可分两轮就绪，开窗意图随这次请求一起转交。 */
+					if (m_PendingAuthor)
+						m_PendingAuthor->materialTarget = value.materialTarget;
+					else if (auto* draft = dynamic_cast<AssetDocument*>(m_Documents.Active()); draft && draft->AuthorPath() == value.path)
+						m_MaterialTargets[draft->Id()].push_back(*value.materialTarget);
+				}
 			}
 		}
 		if (m_PendingScene && !m_PlayDocument.HasValue()) {
@@ -792,23 +956,29 @@ namespace Catalpa::Editor {
 		return true;
 	}
 
+	void WorkspaceEditing::BeginPreparedPlay(SceneDocument& doc) {
+		if (!doc.StartPlay(m_App.GetAssets(), m_Error))
+			return;
+		if (m_App.SetEditorPlayScene(doc.PlayHandle(), false, m_Error)) {
+			m_PlayDocument = doc.Id();
+			m_GameView = true;
+		} else {
+			std::string ignored;
+			doc.StopPlay(ignored);
+		}
+	}
+
 	void WorkspaceEditing::PlayToolbar(const PanelText& text) {
 		auto* doc = ActiveScene();
 		const bool playing = doc && doc->Playing();
-		ImGui::BeginDisabled(!doc || playing);
+		ImGui::BeginDisabled(!doc || playing || m_AssetActions.playAfterBuild.HasValue() ||
+		    (AssetProject() && (!m_AssetActions.build || m_AssetActions.build->Busy() ||
+		            m_AssetActions.action != AuthorAssetAction::None)));
 		if (ToolbarButton("##play", ToolIcon::Play, text("play.start", "Play", nullptr))) {
 			CancelPendingOpen();
 			m_Gizmo.Cancel(m_Error);
 			m_Picking.Cancel(m_App);
-			if (doc->StartPlay(m_App.GetAssets(), m_Error)) {
-				if (m_App.SetEditorPlayScene(doc->PlayHandle(), false, m_Error)) {
-					m_PlayDocument = doc->Id();
-					m_GameView = true;
-				} else {
-					std::string ignored;
-					doc->StopPlay(ignored);
-				}
-			}
+			PreparePlay(*doc);
 		}
 		ImGui::EndDisabled();
 		ImGui::SameLine();

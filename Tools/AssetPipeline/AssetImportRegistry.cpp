@@ -81,7 +81,7 @@ namespace Catalpa::Tools {
 			if (!r.Register(ext, font, e))
 				throw std::logic_error(e);
 		for (const auto& [extension, type] : std::initializer_list<std::pair<const char*, const char*>>{
-		         {".scene", "scene"}, {".prefab", "prefab"}, {".lua", "script"}, {".script", "script"},
+		         {".scene", "scene"}, {".prefab", "prefab"}, {".cs", "script"}, {".lua", "script"}, {".script", "script"},
 		         {".behavior", "behavior_graph"}, {".matgraph", "material_graph"}, {".material", "material"}})
 			if (!r.Register(extension, std::make_shared<AuthorImporter>(type), e))
 				throw std::logic_error(e);

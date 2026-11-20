@@ -4,13 +4,19 @@
 
 #include "Assets/AssetDependencyGraph.h"
 #include "Assets/AssetManager.h"
+#include "Assets/BuiltinAssetIds.h"
+#include "Assets/BuiltinAssets.h"
 #include "Audio/AudioClipAsset.h"
+#include "Core/PlatformServices.h"
 #include "Runtime/RuntimeRegistration.h"
+#include "Scene/PrefabAsset.h"
+#include "Scene/SceneSerializer.h"
+#include "Shaders/ShaderLibrary.h"
 
 namespace Catalpa::Tools {
 	namespace {
 		bool ReadMetadata(std::span<const std::byte> bytes, const AssetRecord& record, const AssetRegistry& catalog,
-		    AssetInspection& output, size_t limit, std::string& error) {
+		    AssetInspection& output, bool& needsSceneBuiltins, size_t limit, std::string& error) {
 			AssetContainer container;
 			AssetInspection value;
 			if (!AssetContainerReader::Read(bytes, container, error, limit) ||
@@ -33,11 +39,58 @@ namespace Catalpa::Tools {
 			}
 			value.id = container.id;
 			value.type = container.type.ToString();
+			if (!needsSceneBuiltins && (value.type == "scene" || value.type == "prefab")) {
+				const std::string_view text(
+				    reinterpret_cast<const char*>(container.payload.data()), container.payload.size());
+				SceneAsset scene;
+				if (value.type == "prefab") {
+					PrefabAsset prefab;
+					if (!ReadPrefab(text, prefab, error))
+						return false;
+					scene = std::move(prefab.scene);
+				} else if (!SceneSerializer::Read(text, scene, error))
+					return false;
+				const auto dependencies = SceneSerializer::Dependencies(scene);
+				needsSceneBuiltins =
+				    std::any_of(dependencies.begin(), dependencies.end(), BuiltinAssetIds::IsSceneBuiltin);
+			}
 			value.version = container.version;
 			value.payloadBytes = container.payload.size();
 			value.dependencies = std::move(container.dependencies);
 			output = std::move(value);
 			return true;
+		}
+		/* 与运行时一样从宿主着色器创建内置材质，包里声明的普通依赖仍使用包内路径与摘要。 */
+		bool MountSurfaceShaders(
+		    AssetManager& manager, const AssetRegistry& closure, std::array<AssetId, 2>& ids, std::string& error) {
+			std::filesystem::path executable;
+			if (!GetExecutableDirectory(executable, error) || !ShaderLibrary::BuiltinId("Pbr.slang", ids[0], error) ||
+			    !ShaderLibrary::BuiltinId("Unlit.slang", ids[1], error))
+				return false;
+			const auto directory = executable / "Resources" / "Shaders";
+			std::vector<AssetRecord> records;
+			if (!ShaderLibrary::ReadBuiltinCatalog(directory, "inspection-host-shaders", records, error))
+				return false;
+			std::vector<AssetRecord> missing;
+			for (auto id : ids) {
+				const auto host =
+				    std::find_if(records.begin(), records.end(), [&](const auto& r) { return r.id == id; });
+				if (host == records.end()) {
+					error = "Missing builtin surface shader in inspection host: " + id.ToString();
+					return false;
+				}
+				const auto* packaged = closure.Find(id);
+				if (!packaged)
+					missing.push_back(*host);
+				else if (packaged->type != host->type || packaged->version != host->version ||
+				    packaged->contentHash != host->contentHash) {
+					error = "Packaged surface shader differs from inspection host: " + id.ToString();
+					return false;
+				}
+			}
+			AssetRegistry extra;
+			return missing.empty() ||
+			    (extra.Replace(std::move(missing), error) && manager.InstallCookedCatalog(directory, extra, error));
 		}
 	} /* 命名空间 */
 
@@ -166,6 +219,7 @@ namespace Catalpa::Tools {
 			/* 逐个校验容器，记录各依赖的消费者数，为后续加载与释放安排顺序。 */
 			std::map<AssetId, size_t> reportIndex, remainingConsumers;
 			size_t totalBytes = 0;
+			bool needsSceneBuiltins = false;
 			for (auto id : graph.Order()) {
 				if (interrupted())
 					return false;
@@ -184,7 +238,7 @@ namespace Catalpa::Tools {
 					return false;
 				}
 				totalBytes += bytes.size();
-				if (!ReadMetadata(bytes, record, closure, report, limits.maxAssetBytes, error)) {
+				if (!ReadMetadata(bytes, record, closure, report, needsSceneBuiltins, limits.maxAssetBytes, error)) {
 					error = id.ToString() + ": " + error;
 					return false;
 				}
@@ -208,7 +262,7 @@ namespace Catalpa::Tools {
 			AssetManager manager(jobs, files, closure, config);
 			if (!RegisterRuntimeAssetLoaders(manager, error))
 				return false;
-			for (auto id : graph.Order()) {
+			const auto load = [&](AssetId id) {
 				if (interrupted())
 					return false;
 				if (!manager.Request(id, error)) {
@@ -222,13 +276,23 @@ namespace Catalpa::Tools {
 					const auto state = manager.GetStatus(id);
 					if (state == AssetStatus::Failed || state == AssetStatus::Cancelled ||
 					    state == AssetStatus::Unloaded) {
-						error = id.ToString() + " (" + closure.Find(id)->type.ToString() +
-						    "): " + manager.GetDiagnostic(id);
+						error = id.ToString() + ": " + manager.GetDiagnostic(id);
 						return false;
 					}
 					if (state != AssetStatus::Ready)
 						std::this_thread::sleep_for(std::chrono::milliseconds(1));
 				}
+				return true;
+			};
+			if (needsSceneBuiltins) {
+				std::array<AssetId, 2> shaders;
+				if (!MountSurfaceShaders(manager, closure, shaders, error) || !load(shaders[0]) || !load(shaders[1]) ||
+				    !RegisterBuiltinAssets(manager, error) || !RegisterBuiltinSceneAssets(manager, error))
+					return false;
+			}
+			for (auto id : graph.Order()) {
+				if (!load(id))
+					return false;
 				reports[reportIndex.at(id)].domainValidated = true;
 				/* 惰性音频的 main loader 只持 seek table；检查器还须验证每块实际长度，不能只核对块数。 */
 				if (closure.Find(id)->type.ToString() == "audio_clip") {

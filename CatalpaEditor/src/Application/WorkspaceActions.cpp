@@ -1,6 +1,7 @@
 #include "catpch.h"
 #include "Application/WorkspaceEditing.h"
 #include "Commands/SceneCommands.h"
+#include "Documents/DocumentRecovery.h"
 #include "Core/Application.h"
 #include "Runtime/Systems/TransformSystem.h"
 #include "imgui.h"
@@ -13,7 +14,7 @@ namespace Catalpa::Editor {
 		if (!doc || m_PlayDocument.HasValue())
 			return false;
 		if (action == EditAction::Save)
-			return m_Project.has_value();
+			return !DocumentRecovery::AuthorSuffix(doc->TypeKey()).empty();
 		if (ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput)
 			return false;
 		if (action == EditAction::Undo)

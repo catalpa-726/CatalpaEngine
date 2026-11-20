@@ -2,14 +2,17 @@
 #include "AssetEditors/ScriptEditor.h"
 
 #include "Commands/GraphCommands.h"
-#include "Scripting/ScriptAsset.h"
-#include "Scripting/Backends/Lua/LuaScriptBackend.h"
 #include "Scene/PrefabAsset.h"
 #include "Materials/MaterialValidation.h"
 #include "imgui.h"
 
 namespace Catalpa::Editor {
 	void ScriptEditor::Draw(Application&, AssetDocument& doc, const PanelText&, std::string& error) {
+		if (doc.TypeKey() == "script") {
+			ImGui::TextWrapped("%s", UiText("script.recovered_source",
+			    "Recovered script. Use Documents > Save As to keep this copy, then open it in your script editor."));
+			return;
+		}
 		constexpr size_t Limit = 4 * 1024 * 1024;
 		if (m_Source != doc.Source()) {
 			if (doc.Source()->size() > Limit) {
@@ -40,27 +43,12 @@ namespace Catalpa::Editor {
 			} else if (doc.TypeKey() == "material_definition") {
 				std::shared_ptr<const MaterialDefinition> value;
 				valid = ParseMaterialDefinition(*doc.Source(), value, error);
-			} else {
-				const auto first = doc.Source()->find_first_not_of(" \t\r\n");
-				if (doc.AuthorPath().extension() == L".lua" || first == std::string::npos ||
-				    (*doc.Source())[first] != '{')
-					valid = LuaScriptBackend::CheckSource(*doc.Source(), error);
-				else {
-					ScriptAsset asset;
-					valid = ReadScriptAsset(*doc.Source(), asset, error) &&
-					    LuaScriptBackend::CheckSource(asset.source, error);
-				}
 			}
 			if (valid)
 				error.clear();
 		}
 
-		if (doc.TypeKey() == "script")
-			ImGui::TextWrapped(UiFormat("script.api_help",
-			    "Return a table with start(dt), update(dt), stop(dt). "
-			    "Use scene.translate(x,y,z), scene.set_translation(x,y,z), scene.position(), self and properties. "
-			    "require(name) resolves only declared cooked script modules."));
-		else if (doc.TypeKey() == "prefab")
+		if (doc.TypeKey() == "prefab")
 			ImGui::TextWrapped(UiFormat("prefab.source_help",
 			    "Prefab author JSON contains scene entities and stable nested slots. "
 			    "Build this file before assigning or updating instances."));

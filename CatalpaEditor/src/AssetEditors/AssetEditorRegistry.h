@@ -44,7 +44,8 @@ namespace Catalpa::Editor {
 		 * @param[in] text 根据翻译键生成当前语言的界面文案。
 		 * @param[out] error 失败时接收原因说明。
 		 */
-		void Draw(Application&, AssetDocument&, const PanelText&, std::string& error);
+		void Draw(Application&, AssetDocument&, const PanelText&, std::string& error,
+		    const MaterialTexturePicker& texturePicker = {});
 		/**
 		 * @brief 关闭活动资源编辑器并释放保存的编辑状态。
 		 *

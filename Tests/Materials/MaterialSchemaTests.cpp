@@ -29,6 +29,12 @@ namespace Catalpa::Tests {
 			block.blockSize = 16;
 			block.members.push_back({"base_color", 0, 16, 16, 0, 0, false, {ShaderScalarKind::Float, 32, 1, 4, 1}, {}});
 			fragment.bindings.push_back(std::move(block));
+			ShaderBinding baseMap;
+			baseMap.name = "baseColor_texture";
+			baseMap.binding = 4;
+			baseMap.kind = ShaderResourceKind::SampledImage;
+			baseMap.imageDimension = ShaderImageDimension::Texture2D;
+			fragment.bindings.push_back(std::move(baseMap));
 			metadata.entries = {std::move(vertex), std::move(fragment)};
 			return metadata;
 		}
@@ -131,6 +137,10 @@ namespace Catalpa::Tests {
 		test.Check(ValidateMaterialShaderInterface(*definition, metadata, layout, error),
 		    "CPU interface fixture matches float4 Material at binding 3");
 		auto badMetadata = metadata;
+		badMetadata.entries[1].bindings.pop_back();
+		test.Check(!ValidateMaterialShaderInterface(*definition, badMetadata, layout, error),
+		    "Unlit authoring cannot advertise a base map without a matching sampled image binding");
+		badMetadata = metadata;
 		badMetadata.entries[1].bindings[0].members[0].type.scalar = ShaderScalarKind::UnsignedInteger;
 		test.Check(!ValidateMaterialShaderInterface(*definition, badMetadata, layout, error),
 		    "Shader scalar-kind mismatch is rejected despite equal byte size");
@@ -145,6 +155,17 @@ namespace Catalpa::Tests {
 		std::shared_ptr<const MaterialDefinition> pbr;
 		test.Check(CreateBuiltinMaterialDefinition(BuiltinMaterialKind::Pbr, shader, pbr, error),
 		    "PBR domain defaults exist independently of GPU lighting support");
+		const std::array roles{MaterialTextureSemantic::BaseColor, MaterialTextureSemantic::Normal,
+		    MaterialTextureSemantic::MetallicRoughness, MaterialTextureSemantic::Emissive,
+		    MaterialTextureSemantic::Occlusion};
+		for (const auto role : roles) {
+			const bool optionalMap = pbr && std::ranges::any_of(pbr->parameters, [&](const auto& field) {
+				return field.type == MaterialParameterType::Texture2D && field.textureSemantic == role &&
+				    field.allowOverride && field.allowTextureFallback &&
+				    !std::get<AssetHandle<ImageAsset>>(field.defaultValue).HasValue();
+			});
+			test.Check(optionalMap, "A standard PBR map is editable and can be left unassigned");
+		}
 		test.Check(pbr && !ValidateMaterialShaderInterface(*pbr, metadata, layout, error),
 		    "Unlit shader cannot falsely validate a PBR parameter block");
 		const std::string instanceJson = R"({"schemaVersion":1,"kind":"instance","definitionId":")" +

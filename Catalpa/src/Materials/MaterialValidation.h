@@ -89,6 +89,8 @@ namespace Catalpa {
 	 */
 	[[nodiscard]] CATALPA_API bool ParseMaterialDefinition(std::string_view text,
 	    std::shared_ptr<const MaterialDefinition>& output, std::string& error, const ArchiveLimits& limits = {});
+	/** @brief 按作者格式序列化实例的定义引用、参数与渲染状态。 */
+	[[nodiscard]] CATALPA_API bool WriteMaterialInstance(const MaterialInstance&, std::string&, std::string& error);
 	/**
 	 * @brief 对照调用方固定的材质定义版本解析材质实例文档。
 	 * 调用方提供已保活的确切材质定义版本。文档中的标识和版本须与其一致，解析器不会阻塞等待加载。

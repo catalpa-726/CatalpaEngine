@@ -12,15 +12,43 @@
 
 namespace Catalpa::Editor {
 	namespace {
+		/** @brief 按场景中的实体名称选择引用，持久标识仅用于区分同名行和保存引用。 */
+		bool EntityReferenceField(Scene& scene, const char* label, PersistentEntityId& value, std::string& error) {
+			IdentityComponent current;
+			const auto resolved = scene.Resolve(value);
+			const bool found = resolved.HasValue() && scene.GetIdentity(resolved, current).IsSuccess();
+			if (!ImGui::BeginCombo(label, found ? current.name.c_str() : UiText("entity.missing", "Missing entity")))
+				return false;
+			bool changed = false;
+			const auto status = scene.GetWorld().ForEach([&](EntityId entity) {
+				IdentityComponent identity;
+				const auto result = scene.GetIdentity(entity, identity);
+				if (result.IsSuccess()) {
+					ImGui::PushID(identity.persistent.ToString().c_str());
+					if (ImGui::Selectable(identity.name.c_str(), value == identity.persistent) &&
+					    value != identity.persistent) {
+						value = identity.persistent;
+						changed = true;
+					}
+					ImGui::PopID();
+				}
+				return result;
+			});
+			ImGui::EndCombo();
+			if (!status.IsSuccess())
+				error = status.message;
+			return changed;
+		}
 		/**
 		 * @brief 为脚本属性或行为变量绘制与实际值类型匹配的控件并报告修改。
 		 *
-		 * @param[in] values 本次操作使用的脚本值。
+		 * @param[in] scene 解析实体引用的所属场景。
+		 * @param[in,out] values 本次操作使用的脚本值。
 		 * @param[out] error 失败时接收原因说明。
 		 *
 		 * @return 成功时返回 true，失败时返回 false 并通过错误参数说明原因。
 		 */
-		bool Properties(ScriptValues& values, std::string& error) {
+		bool Properties(Scene& scene, ScriptValues& values, std::string& error) {
 			bool changed = false;
 			std::optional<std::string> removed;
 			for (auto& [name, value] : values) {
@@ -38,27 +66,15 @@ namespace Catalpa::Editor {
 						        name.c_str(), &v, 0, 0, "%.8g", ImGuiInputTextFlags_EnterReturnsTrue);
 					    else if constexpr (std::is_same_v<T, Math::Vec3>)
 						    return ImGui::InputFloat3(name.c_str(), &v.x, "%.6g", ImGuiInputTextFlags_EnterReturnsTrue);
+					    else if constexpr (std::is_same_v<T, PersistentEntityId>)
+						    return EntityReferenceField(scene, name.c_str(), v, error);
 					    else {
-						    std::string text;
-						    if constexpr (std::is_same_v<T, std::string>)
-							    text = v;
-						    else
-							    text = v.ToString();
-						    std::vector<char> buffer(std::max<size_t>(text.size() + 1, 65537), 0);
-						    std::copy(text.begin(), text.end(), buffer.begin());
+						    std::vector<char> buffer(std::max<size_t>(v.size() + 1, 65537), 0);
+						    std::copy(v.begin(), v.end(), buffer.begin());
 						    if (ImGui::InputText(
 						            name.c_str(), buffer.data(), buffer.size(), ImGuiInputTextFlags_EnterReturnsTrue)) {
-							    if constexpr (std::is_same_v<T, std::string>) {
-								    v = buffer.data();
-								    return true;
-							    } else {
-								    PersistentEntityId id;
-								    if (PersistentEntityId::TryParse(buffer.data(), id)) {
-									    v = id;
-									    return true;
-								    }
-								    error = "Enter a nonzero persistent entity ID";
-							    }
+							    v = buffer.data();
+							    return true;
 						    }
 						    return false;
 					    }
@@ -94,8 +110,9 @@ namespace Catalpa::Editor {
 		const bool scripted =
 		    scene->GetWorld().Has<ScriptComponent>(entity) && scene->GetWorld().Get(entity, script).IsSuccess();
 		if (scripted) {
+			m_Inspector.RevealedSection().ScrollTo("component.script");
 			bool changed = ImGui::Checkbox(UiLabel("ui.script_enabled", "Script enabled").c_str(), &script.enabled);
-			changed |= Properties(script.properties, m_Error);
+			changed |= Properties(*scene, script.properties, m_Error);
 			ImGui::InputText(UiLabel("ui.new_script_property", "New script property").c_str(), m_PropertyName.data(),
 			    m_PropertyName.size());
 			ImGui::Combo(UiLabel("ui.property_type", "Property type").c_str(), &m_PropertyType,
@@ -142,9 +159,10 @@ namespace Catalpa::Editor {
 		const bool graphed = scene->GetWorld().Has<BehaviorGraphComponent>(entity) &&
 		    scene->GetWorld().Get(entity, behavior).IsSuccess();
 		if (graphed) {
+			m_Inspector.RevealedSection().ScrollTo("component.behavior");
 			bool changed =
 			    ImGui::Checkbox(UiLabel("ui.behavior_enabled", "Behavior enabled").c_str(), &behavior.enabled);
-			changed |= Properties(behavior.variables, m_Error);
+			changed |= Properties(*scene, behavior.variables, m_Error);
 			AssetVersionRef<BehaviorGraphAsset> program;
 			bool fallback = false;
 			std::string ignored;
@@ -168,9 +186,13 @@ namespace Catalpa::Editor {
 		PrefabInstanceComponent prefab;
 		if (scene->GetWorld().Has<PrefabInstanceComponent>(entity) &&
 		    scene->GetWorld().Get(entity, prefab).IsSuccess()) {
+			m_Inspector.RevealedSection().ScrollTo("component.prefab");
 			ImGui::Separator();
-			ImGui::TextWrapped(UiFormat("ui.prefab_version", "Prefab %s / version %llu"),
-			    prefab.source.ToString().c_str(), static_cast<unsigned long long>(prefab.sourceVersion));
+			const auto& sources = m_AssetActions.sources;
+			const auto source = std::find_if(
+			    sources.begin(), sources.end(), [&](const auto& entry) { return entry.id == prefab.source; });
+			ImGui::TextWrapped(
+			    "%s", source != sources.end() ? source->label.c_str() : UiText("asset.type.prefab", "Prefab"));
 			if (ImGui::Button(
 			        UiLabel("ui.update_base_and_preserve_overrides", "Update base and preserve overrides").c_str()) &&
 			    UpdateAuthorPrefab(doc, m_App.GetAssets(), id, false, m_Error)) {

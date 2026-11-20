@@ -43,6 +43,8 @@ namespace Catalpa::Editor {
 		bool showAudioMixer = false;
 		bool showNetwork = false;
 		std::string language = "en-US";
+		/* auto、visual-studio、vscode 或自选 IDE 的绝对可执行路径。 */
+		std::string scriptEditor = "auto";
 		static constexpr size_t MaxRecentProjects = 12;
 		std::vector<std::string> recentProjects;
 		/*

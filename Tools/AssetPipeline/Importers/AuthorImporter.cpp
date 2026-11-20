@@ -1,4 +1,5 @@
 #include "AssetPipeline/Importers/AuthorImporter.h"
+#include "AssetPipeline/Importers/CSharpCompiler.h"
 
 #include "AssetPipeline/AssetImportRegistry.h"
 #include "Assets/BuiltinAssetIds.h"
@@ -37,14 +38,28 @@ namespace Catalpa::Tools {
 			if (!SceneSerializer::Read(input, scene, error) || !SceneSerializer::Write(scene, canonical, error))
 				return false;
 			dependencies = SceneSerializer::Dependencies(scene);
+			std::erase_if(dependencies, BuiltinAssetIds::IsSceneBuiltin);
 		} else if (m_Type == "prefab") {
 			PrefabAsset prefab;
 			if (!ReadPrefab(input, prefab, error) || !WritePrefab(prefab, canonical, error))
 				return false;
 			dependencies = SceneSerializer::Dependencies(prefab.scene);
+			std::erase_if(dependencies, BuiltinAssetIds::IsSceneBuiltin);
 			for (const auto& nest : prefab.nested)
 				dependencies.push_back(nest.asset);
 		} else if (m_Type == "script") {
+			if (AssetSourceExtension(context.request.source) == ".cs") {
+				ScriptAsset script;
+				script.language = ScriptLanguage::CSharp;
+				script.sourceLabel = context.SourceKey();
+				std::vector<std::byte> payload;
+				if (!CompileCSharp(context, bytes, script.assembly, error) || !ValidateCSharpAssembly(script, error) ||
+				    !EncodeManagedScript(script.sourceLabel, script.assembly, payload, error))
+					return false;
+				result.primary = append("script", "script", payload, {});
+				output = std::move(result);
+				return true;
+			}
 			ScriptAsset script;
 			if (AssetSourceExtension(context.request.source) == ".lua")
 				script.source = input;

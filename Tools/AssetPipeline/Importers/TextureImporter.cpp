@@ -3,6 +3,7 @@
 #include "AssetPipeline/Importers/TextureImporter.h"
 
 #include "Images/ImageValidation.h"
+#include "AssetPipeline/AssetImportRegistry.h"
 #include "AssetPipeline/Environment/EnvironmentPreprocessor.h"
 #define STBI_NO_STDIO
 /* Assimp随包已有自己的stb实现；本TU私有链接，避免两份实现导出同名全局符号。 */
@@ -17,6 +18,11 @@ namespace Catalpa::Tools {
 		if (channel == "normal")
 			return {ImageSemantic::Normal, "normal"};
 		return {ImageSemantic::Data, "data"};
+	}
+
+	bool TextureImporter::SupportsMaterialMap(const std::filesystem::path& file) {
+		const auto ext = AssetSourceExtension(file);
+		return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga" || ext == ".bmp";
 	}
 
 	bool TextureImporter::HdrDecodedSize(uint32_t width, uint32_t height, size_t& bytes, std::string& error) {
@@ -155,6 +161,22 @@ namespace Catalpa::Tools {
 			result.mappings.push_back({result.primary, "environment", "Environment", "environment"});
 			output = std::move(result);
 			return true;
+		}
+		if (ctx.request.settings.materialTextureViews) {
+			/* 同一原图可以同时作底色、法线和数据使用。各视图采用独立身份及对应的 mip 过滤规则。 */
+			for (const auto& [semantic, key] : {std::pair{ImageSemantic::Normal, "image/normal"},
+			         std::pair{ImageSemantic::Data, "image/data"}}) {
+				if (!ctx.ReserveWorking(image.image.pixels.size(), e))
+					return false;
+				auto variant = image;
+				variant.image.semantic = semantic;
+				variant.image.colorSpace = ImageColorSpace::Linear;
+				variant.image.format = PixelFormat::RGBA8_UNorm;
+				const auto id = ctx.Identity(key);
+				const auto name = AssetPathText(ctx.request.source.filename());
+				result.assets.push_back({id, key, name, std::move(variant)});
+				result.mappings.push_back({id, key, name, "image"});
+			}
 		}
 		result.primary = ctx.Identity("image/color");
 		result.assets.push_back(

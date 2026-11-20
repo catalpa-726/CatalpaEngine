@@ -15,4 +15,6 @@ namespace Catalpa {
 	 * @return 所需内置资产全部准备并发布成功时为 true，否则为 false。
 	 */
 	CATALPA_API bool RegisterBuiltinAssets(AssetManager&, std::string& error);
+	/** @brief 在已就绪的基础材质之上发布可在场景和导出游戏中直接使用的几何体、示例地面与盒形碰撞资源。 */
+	CATALPA_API bool RegisterBuiltinSceneAssets(AssetManager&, std::string& error);
 }

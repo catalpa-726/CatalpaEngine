@@ -1,6 +1,8 @@
 #include "Panels/HierarchyPanel.h"
 
 #include "Commands/SceneCommands.h"
+#include "Commands/PrefabCommands.h"
+#include "Assets/BuiltinAssetIds.h"
 #include "Panels/FormLayout.h"
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -36,7 +38,7 @@ namespace Catalpa::Editor {
 	}
 
 	bool HierarchyPanel::Draw(
-	    SceneDocument& doc, EditorSelection& selection, const PanelText& text, std::string& error) {
+	    SceneDocument& doc, AssetManager& assets, EditorSelection& selection, const PanelText& text, std::string& error) {
 		auto* scene = doc.Resolve();
 		if (!scene)
 			return false;
@@ -73,6 +75,22 @@ namespace Catalpa::Editor {
 		bool changed = false;
 		std::optional<std::pair<PersistentEntityId, PersistentEntityId>> reparent;
 		std::optional<PersistentEntityId> createUnder, remove;
+		AssetId primitive;
+		std::string primitiveName;
+		const auto showShapes = [&](PersistentEntityId parent) {
+			using namespace BuiltinAssetIds;
+			struct Shape { AssetId mesh; const char* key; const char* name; };
+			constexpr Shape shapes[]{{CubeMesh, "primitive.cube", "Cube"}, {SphereMesh, "primitive.sphere", "Sphere"},
+			    {CapsuleMesh, "primitive.capsule", "Capsule"}, {CylinderMesh, "primitive.cylinder", "Cylinder"},
+			    {PlaneMesh, "primitive.plane", "Plane"}, {QuadMesh, "primitive.quad", "Quad"}};
+			for (const auto& shape : shapes) {
+				if (ImGui::MenuItem(text(shape.key, shape.name, shape.name).c_str())) {
+					primitive = shape.mesh;
+					primitiveName = text(shape.key, shape.name, nullptr);
+					createUnder = parent;
+				}
+			}
+		};
 
 		struct Drag {
 			StableId document;
@@ -100,11 +118,22 @@ namespace Catalpa::Editor {
 				changed = true;
 			}
 		}
+		const auto shapeLabel = text("primitive.menu", "3D Object", "New3DObject");
+		const auto fitNextButton = [&](const std::string& label) {
+			if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x +
+			        ImGui::CalcTextSize(label.c_str(), nullptr, true).x + 2 * ImGui::GetStyle().FramePadding.x <=
+			    ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x)
+				ImGui::SameLine();
+		};
+		fitNextButton(shapeLabel);
+		if (ImGui::Button(shapeLabel.c_str()))
+			ImGui::OpenPopup("##Create3DObject");
+		if (ImGui::BeginPopup("##Create3DObject")) {
+			showShapes({});
+			ImGui::EndPopup();
+		}
 		const auto deleteLabel = text("hierarchy.delete", "Delete subtree", "DeleteEntity");
-		if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x +
-		        ImGui::CalcTextSize(deleteLabel.c_str(), nullptr, true).x + 2 * ImGui::GetStyle().FramePadding.x <=
-		    ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x)
-			ImGui::SameLine();
+		fitNextButton(deleteLabel);
 		ImGui::BeginDisabled(!chosen.HasValue());
 		if (ImGui::Button(deleteLabel.c_str()))
 			remove = chosen.persistent;
@@ -174,6 +203,10 @@ namespace Catalpa::Editor {
 			}
 			acceptParent(row.id);
 			if (ImGui::BeginPopupContextItem()) {
+				if (ImGui::BeginMenu(shapeLabel.c_str())) {
+					showShapes(row.id);
+					ImGui::EndMenu();
+				}
 				if (ImGui::MenuItem(text("hierarchy.child", "Create child", "NewChild").c_str()))
 					createUnder = row.id;
 				if (ImGui::MenuItem(text("history.rename", "Rename entity", "RenameEntity").c_str()))
@@ -197,7 +230,9 @@ namespace Catalpa::Editor {
 		/* 枚举使用的是只读场景快照；结构命令在遍历后提交，并把选择指向实际提交结果。 */
 		if (createUnder) {
 			PersistentEntityId created;
-			if (CreateAuthorEntity(doc, "Entity", *createUnder, created, error)) {
+			if (primitive.HasValue()
+			        ? CreatePrimitiveEntity(doc, assets, primitive, primitiveName, *createUnder, created, error)
+			        : CreateAuthorEntity(doc, "Entity", *createUnder, created, error)) {
 				selection.Select(doc, scene->Resolve(created));
 				m_ExpandDocument = doc.Id();
 				m_ExpandRoot = *createUnder;

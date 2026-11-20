@@ -7,6 +7,8 @@ namespace Catalpa {
 	struct MaterialInstance {
 		AssetVersionRef<MaterialDefinition> definition;
 		uint64_t revision = 1;
+		/* 场景内独立副本由所属槽保存参数与依赖，普通项目资产沿用外部引用。 */
+		bool sceneLocal = false;
 		std::vector<MaterialParameterOverride> parameters;
 		MaterialRenderState renderState;
 		/*

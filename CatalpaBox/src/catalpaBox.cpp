@@ -88,7 +88,7 @@ public:
 			return;
 		}
 		if (options.testEditorGraphs) {
-			PushOverlay(Catalpa::Tests::CreateWorkspaceGraphTest());
+			PushOverlay(Catalpa::Tests::CreateWorkspaceGraphTest(!options.testSessionDocuments));
 			return;
 		}
 		if (options.testEditorObjDrop) {

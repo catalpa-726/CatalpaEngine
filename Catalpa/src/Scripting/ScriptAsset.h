@@ -3,6 +3,7 @@
 #include "Assets/AssetHandle.h"
 
 namespace Catalpa {
+	enum class ScriptLanguage { Lua, CSharp };
 	struct ScriptAsset {
 		uint32_t schemaVersion = 1;
 		std::string source;
@@ -11,7 +12,14 @@ namespace Catalpa {
 		std::map<std::string, AssetVersionRef<ScriptAsset>, std::less<>> moduleVersions;
 		/* 烹饪时记录相对项目源根的路径，用于运行时错误定位。 */
 		std::string sourceLabel;
+		ScriptLanguage language = ScriptLanguage::Lua;
+		std::vector<std::byte> assembly;
 	};
+	/** @brief 仅读取程序集元数据，确认其中有唯一可实例化的公开行为类型。 */
+	CATALPA_API bool ValidateCSharpAssembly(const ScriptAsset& asset, std::string& error);
+	/** @brief 将已编译的 C# 程序集与来源名编码为可随游戏包加载的脚本。 */
+	CATALPA_API bool EncodeManagedScript(std::string_view sourceLabel, std::span<const std::byte> assembly,
+	    std::vector<std::byte>& output, std::string& error);
 	/**
 	 * @brief 读取脚本资产。
 	 *

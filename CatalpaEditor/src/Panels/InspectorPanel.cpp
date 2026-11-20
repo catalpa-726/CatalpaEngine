@@ -1,6 +1,9 @@
 #include "Panels/InspectorPanel.h"
 
 #include "Commands/SceneCommands.h"
+#include "Assets/AssetManager.h"
+#include "Assets/BuiltinAssetIds.h"
+#include "Core/Application.h"
 #include "Panels/FormLayout.h"
 
 #include "imgui.h"
@@ -16,7 +19,7 @@ namespace Catalpa::Editor {
 
 		constexpr ComponentOption Options[]{{"CameraComponent", "edit.camera", "Camera"},
 		    {"LightComponent", "edit.light", "Light"}, {"EnvironmentComponent", "edit.environment", "Environment"},
-		    {"MeshRendererComponent", "edit.mesh", "Mesh renderer"}, {"ScriptComponent", "component.lua", "Lua script"},
+		    {"MeshRendererComponent", "edit.mesh", "Mesh renderer"}, {"ScriptComponent", "component.script", "Script"},
 		    {"BehaviorGraphComponent", "component.behavior", "Behavior graph"},
 		    {"RigidBodyComponent", "physics.body", "Rigid body"},
 		    {"CharacterControllerComponent", "physics.character", "Character controller"},
@@ -41,6 +44,20 @@ namespace Catalpa::Editor {
 		}
 	}
 
+	bool InspectorSection::ScrollTo(std::string_view target) const {
+		if (key != target)
+			return false;
+		// 使用视口内坐标，即使属性区当前在窗口裁剪区之外也可定位。
+		ImGui::SetScrollFromPosY(ImGui::GetCursorScreenPos().y - ImGui::GetWindowPos().y, 0.f);
+		return true;
+	}
+
+	bool InspectorSection::Header(std::string_view target, const char* label, bool defaultOpen) const {
+		if (ScrollTo(target))
+			ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+		return ImGui::CollapsingHeader(label, defaultOpen ? ImGuiTreeNodeFlags_DefaultOpen : 0);
+	}
+
 	bool InspectorPanel::TakeBehaviorPicker(bool script) {
 		return std::exchange(script ? m_ScriptPicker : m_GraphPicker, false);
 	}
@@ -62,10 +79,15 @@ namespace Catalpa::Editor {
 		const auto attached = [&](std::string_view type) {
 			return std::any_of(types.begin(), types.end(), [&](const auto& name) { return DisplayType(name) == type; });
 		};
-		if (attached(m_PendingType))
+		if (!m_PendingType.empty() && attached(m_PendingType)) {
+			const auto* option = std::find_if(std::begin(Options), std::end(Options),
+			    [&](const auto& entry) { return entry.type == m_PendingType; });
+			if (option != std::end(Options))
+				m_Revealed.key = option->key;
 			m_PendingType.clear();
+		}
 
-		/* 列表直接取自 World。缺少属性适配器的组件也显示完整名称，不遗漏自定义组件。 */
+		/* 列表直接取自 World；作者界面使用本地化的组件名称。 */
 		if (ImGui::CollapsingHeader(text("component.attached", "Attached components", "AttachedComponents").c_str(),
 		        ImGuiTreeNodeFlags_DefaultOpen)) {
 			for (const auto& name : types) {
@@ -74,7 +96,8 @@ namespace Catalpa::Editor {
 				    std::find_if(std::begin(Options), std::end(Options), [&](const auto& o) { return type == o.type; });
 				ImGui::PushID(name.c_str());
 				if (option != std::end(Options)) {
-					ImGui::TextWrapped("%s", text(option->key, option->name, nullptr).c_str());
+					if (ImGui::Selectable(text(option->key, option->name, nullptr).c_str()))
+						m_NextReveal.key = option->key;
 					const bool removable = type == "CameraComponent" || type == "LightComponent" ||
 					    type == "EnvironmentComponent" || type == "MeshRendererComponent";
 					if (removable && ImGui::BeginPopupContextItem("Actions")) {
@@ -84,18 +107,34 @@ namespace Catalpa::Editor {
 					}
 				} else if (type == "IdentityComponent" || type == "TransformComponent" ||
 				    type == "RelationshipComponent" || type == "PrefabInstanceComponent") {
-					ImGui::TextWrapped("%.*s", int(type.size()), type.data());
+					const auto title = type == "IdentityComponent" ? text("component.identity", "Name", nullptr)
+					    : type == "TransformComponent"             ? text("edit.transform", "Transform", nullptr)
+					    : type == "PrefabInstanceComponent" ? text("component.prefab", "Prefab instance", nullptr)
+					                                        : text("component.relationship", "Hierarchy", nullptr);
 					if (type == "RelationshipComponent") {
-						RelationshipComponent relation;
-						IdentityComponent parent;
-						if (scene.GetRelationship(ref.resolved, relation).IsSuccess() &&
-						    scene.GetIdentity(relation.parent, parent).IsSuccess())
-							ImGui::TextWrapped(
-							    "%s: %s", text("component.parent", "Parent", nullptr).c_str(), parent.name.c_str());
+						if (ImGui::TreeNodeEx("##Hierarchy", ImGuiTreeNodeFlags_SpanAvailWidth, "%s", title.c_str())) {
+							RelationshipComponent relation;
+							IdentityComponent parent;
+							if (scene.GetRelationship(ref.resolved, relation).IsSuccess()) {
+								const auto value = scene.GetIdentity(relation.parent, parent).IsSuccess()
+								    ? parent.name : text("component.none", "None", nullptr);
+								ImGui::TextWrapped("%s: %s", text("component.parent", "Parent", nullptr).c_str(), value.c_str());
+							}
+							ImGui::TreePop();
+						}
+					} else if (ImGui::Selectable(title.c_str())) {
+						m_NextReveal.key = type == "IdentityComponent" ? "component.identity"
+						    : type == "TransformComponent" ? "edit.transform" : "component.prefab";
 					}
 				} else {
+					auto display = std::string(type.substr(type.rfind(':') == type.npos ? 0 : type.rfind(':') + 1));
+					if (display.ends_with("Component"))
+						display.resize(display.size() - 9);
+					for (size_t i = 1; i < display.size(); ++i)
+						if (display[i] >= 'A' && display[i] <= 'Z' && display[i - 1] >= 'a' && display[i - 1] <= 'z')
+							display.insert(i++, 1, ' ');
 					ImGui::TextWrapped(
-					    "%s (%s)", name.c_str(), text("component.readonly", "Read-only", nullptr).c_str());
+					    "%s (%s)", display.c_str(), text("component.readonly", "Read-only", nullptr).c_str());
 				}
 				ImGui::PopID();
 			}
@@ -122,6 +161,7 @@ namespace Catalpa::Editor {
 					continue;
 				if (ImGui::Selectable((title + "###" + option.type).c_str())) {
 					m_PendingType = option.type;
+					m_NextReveal.key = option.key;
 					if (type == "CameraComponent")
 						AddAuthorCamera(doc, ref.persistent, error);
 					else if (type == "LightComponent")
@@ -140,9 +180,28 @@ namespace Catalpa::Editor {
 			return;
 		const bool mesh = m_PendingType == "MeshRendererComponent";
 		ImGui::TextWrapped(
-		    "%s", text("component.choose_binding", "Choose a source entity with a resource binding:", nullptr).c_str());
+		    "%s", text("component.choose_binding", "Choose a built-in resource or a source entity:", nullptr).c_str());
+		if (ImGui::Selectable(mesh ? text("component.default_mesh", "Built-in cube", "DefaultMesh").c_str()
+		                           : text("component.default_sky", "Default sky", "DefaultSky").c_str())) {
+			if (mesh) {
+				auto& assets = Application::Get().GetAssets();
+				MeshRendererComponent renderer;
+				AssetVersionRef<MaterialInstance> material;
+				bool fallback = false;
+				if (assets.Acquire(BuiltinAssetIds::CubeMesh, renderer.meshVersion, fallback, error) && !fallback &&
+				    assets.Acquire(BuiltinAssetIds::DefaultPbrInstance, material, fallback, error) && !fallback) {
+					renderer.mesh = renderer.meshVersion.Get()->mesh;
+					renderer.materials = {material};
+					SetAuthorMesh(doc, ref.persistent, renderer, error);
+				}
+			} else {
+				EnvironmentComponent environment;
+				environment.environment.id = BuiltinAssetIds::DefaultEnvironment;
+				EditEnvironment(doc, ref.persistent, environment, error);
+			}
+			return;
+		}
 		EntityId source;
-		size_t count = 0;
 		const auto status = world.ForEach([&](EntityId other) {
 			if (!(mesh ? world.Has<MeshRendererComponent>(other) : world.Has<EnvironmentComponent>(other)))
 				return WorldStatus{};
@@ -150,16 +209,12 @@ namespace Catalpa::Editor {
 			const auto result = scene.GetIdentity(other, identity);
 			if (!result.IsSuccess())
 				return result;
-			++count;
 			if (ImGui::Selectable((identity.name + "###" + identity.persistent.ToString()).c_str()))
 				source = other;
 			return WorldStatus{};
 		});
 		if (!status.IsSuccess())
 			error = status.message;
-		else if (!count)
-			ImGui::TextWrapped(
-			    "%s", text("component.no_binding", "No compatible binding exists in this scene.", nullptr).c_str());
 		else if (source.HasValue()) {
 			if (mesh) {
 				MeshRendererComponent value;
@@ -187,6 +242,8 @@ namespace Catalpa::Editor {
 		std::copy(identity.name.begin(), identity.name.end(), m_NameBuffer.begin());
 		m_NameBuffer[identity.name.size()] = '\0';
 		PlaceFormLabel(text("edit.entity_name", "Name", nullptr));
+		if (m_Revealed.ScrollTo("component.identity"))
+			ImGui::SetKeyboardFocusHere();
 		const bool submit = ImGui::InputText(
 		    "##EntityName", m_NameBuffer.data(), m_NameBuffer.size(), ImGuiInputTextFlags_EnterReturnsTrue);
 		if (ImGui::IsItemActivated() || m_NameTarget != ref) {
@@ -200,7 +257,7 @@ namespace Catalpa::Editor {
 	}
 
 	bool InspectorPanel::Draw(SceneDocument& doc, const EditorSelection& selection, const PanelText& text,
-	    AssetVersionRef<MaterialInstance>& openMaterial, std::string& error, const MaterialSlotPicker& picker) {
+	    MaterialSlotEdit& openMaterial, std::string& error, const MaterialSlotPicker& picker) {
 		auto* scene = doc.Resolve();
 		if (!scene)
 			return false;
@@ -210,11 +267,12 @@ namespace Catalpa::Editor {
 		IdentityComponent id;
 		if (!scene->GetIdentity(ref.resolved, id).IsSuccess())
 			return false;
+		m_Revealed = m_ComponentTarget == ref ? m_NextReveal : InspectorSection{};
+		m_NextReveal = {};
 		ImGui::PushID(id.persistent.ToString().c_str());
 		DrawName(doc, ref, id, text, error);
-		ImGui::TextWrapped("%s", id.persistent.ToString().c_str());
 		DrawComponents(doc, ref, text, error);
-		m_Properties.Draw(doc, ref, text, openMaterial, error, picker);
+		m_Properties.Draw(doc, ref, text, openMaterial, error, picker, m_Revealed);
 		ImGui::PopID();
 		return true;
 	}

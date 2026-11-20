@@ -184,6 +184,9 @@ namespace Catalpa {
 		 * @return 子树及其所有组件都可捕获时返回成功，否则返回世界或组件错误。
 		 */
 		[[nodiscard]] WorldStatus CaptureForUndo(EntityId root, SceneSubtreeSnapshot& output) const;
+		/** @brief 准备带网格渲染器的新实体，以便将创建和挂载作为一次可撤销操作提交。 */
+		[[nodiscard]] WorldStatus PrepareMeshEntity(std::string name, PersistentEntityId parent,
+		    MeshRendererComponent mesh, SceneSubtreeSnapshot& output) const;
 		/**
 		 * @brief 为同一作者场景中的粘贴生成重新编号的完整子树候选。
 		 * @param[in] source 复制时捕获的子树快照，必须来自本场景。

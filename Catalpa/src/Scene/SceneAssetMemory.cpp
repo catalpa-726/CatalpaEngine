@@ -1,6 +1,7 @@
 #include "catpch.h"
 
 #include "Scene/SceneAsset.h"
+#include "Materials/MaterialAssetLoader.h"
 
 namespace Catalpa {
 	namespace {
@@ -60,6 +61,12 @@ namespace Catalpa {
 			const auto& mesh = *node.mesh;
 			result += mesh.materials.capacity() * sizeof(AssetId) + mesh.lods.capacity() * sizeof(AssetId) +
 			    mesh.lodErrors.capacity() * sizeof(float);
+			for (const auto& [slot, local] : mesh.localMaterials) {
+				result += sizeof(decltype(mesh.localMaterials)::value_type) + MapNodeOverhead +
+				    local.textures.capacity() * sizeof(AssetId) + local.document.capacity() + 1;
+				if (mesh.pinned && slot < mesh.pinned->materials.size() && mesh.pinned->materials[slot].HasValue())
+					result += MaterialInstanceBytes(*mesh.pinned->materials[slot].Get());
+			}
 			if (mesh.pinned)
 				result += mesh.pinned->materials.capacity() * sizeof(AssetVersionRef<MaterialInstance>) +
 				    mesh.pinned->lods.capacity() * sizeof(AssetVersionRef<MeshAsset>) +

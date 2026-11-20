@@ -16,6 +16,8 @@ namespace Catalpa::Editor {
 		 */
 		void Reset();
 		void Update() { m_Browser.Update(); }
+		/** @brief 清除目录快照，以便显示从编辑器创建的新源文件。 */
+		void RefreshFiles() { m_Browser.Reset(); }
 		/**
 		 * @brief 绘制只读源文件浏览和导入选项，并将构建操作交给构建面板。
 		 *
@@ -44,6 +46,8 @@ namespace Catalpa::Editor {
 		    BuildPanel& build, const PanelText& text);
 		/** @return 本次双击且具有作者编辑器的源文件，取走后清空。 */
 		std::filesystem::path TakeOpened() { return std::exchange(m_Opened, {}); }
+		/** @return 当前项目浏览目录，供新建脚本选择保存位置。 */
+		const std::filesystem::path& Directory() const noexcept { return m_Directory; }
 		/** @return 取走项目资源菜单选择的新建文档类型。 */
 		std::string TakeCreate() { return std::exchange(m_CreateType, {}); }
 		/**

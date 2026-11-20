@@ -504,6 +504,52 @@ namespace Catalpa::Editor {
 		    doc, id, mesh, &Scene::QueueSetMeshRenderer, &Scene::QueueRemoveMeshRenderer, error);
 	}
 
+	bool SetAuthorMaterialSlots(SceneDocument& doc, std::vector<AuthorMaterialSlot> slots,
+	    const AssetVersionRef<MaterialInstance>& material, std::string& error) {
+		auto changes = std::make_shared<const std::vector<AuthorMaterialSlot>>(std::move(slots));
+		std::vector<PersistentEntityId> targets;
+		for (const auto& slot : *changes)
+			targets.push_back(slot.entity);
+		auto update = [changes, material](bool forward) {
+			return [changes, material, forward](Scene& scene) -> WorldStatus {
+				struct RendererChange {
+					MeshRendererComponent before, after;
+				};
+				std::map<PersistentEntityId, RendererChange> renderers;
+				for (const auto& slot : *changes) {
+					auto [it, first] = renderers.try_emplace(slot.entity);
+					auto& [before, after] = it->second;
+					if (first) {
+						if (auto s = scene.GetWorld().Get(scene.Resolve(slot.entity), before); !s.IsSuccess())
+							return s;
+						after = before;
+					}
+					const auto& expected = forward ? slot.before : material;
+					if (before.meshVersion.Get() != slot.mesh.Get() || slot.slot >= before.materials.size() ||
+					    before.materials[slot.slot].Get() != expected.Get() ||
+					    before.materials[slot.slot].GetId() != expected.GetId())
+						return {WorldError::Busy, "Material slot changed since it was edited"};
+					after.materials[slot.slot] = forward ? material : slot.before;
+				}
+				for (auto it = renderers.begin(); it != renderers.end(); ++it) {
+					auto status = Commit(scene, scene.QueueSetMeshRenderer(scene.Resolve(it->first), it->second.after));
+					if (!status.IsSuccess()) {
+						while (it != renderers.begin()) {
+							--it;
+							auto restored = Commit(scene, scene.QueueSetMeshRenderer(scene.Resolve(it->first), it->second.before));
+							if (!restored.IsSuccess())
+								return restored;
+						}
+						return status;
+					}
+				}
+				return {};
+			};
+		};
+		return doc.History().Execute(doc, std::make_unique<SceneCommand>(
+		    doc.Id(), "history.mesh", update(true), update(false), std::move(targets)), error);
+	}
+
 	bool RemoveAuthorComponent(SceneDocument& doc, PersistentEntityId id, std::string_view type, std::string& error) {
 		if (type == "CameraComponent")
 			return EditOptional<CameraComponent>(doc, id, {}, &Scene::QueueSetCamera, &Scene::QueueRemoveCamera, error);

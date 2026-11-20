@@ -206,7 +206,9 @@ project "Catalpa"
 
     filter "system:windows"
         -- 系统随机源、Unicode 命令行、输入法与 UI COM apartment；均为系统库。
-        links { "bcrypt", "shell32", "imm32", "ole32" }
+        links { "bcrypt", "shell32", "imm32", "ole32", "oleaut32", "mscoree" }
+        includedirs { "$(NETFXKitsDir)Include/um" }
+        libdirs { "$(NETFXKitsDir)Lib/um/x64" }
         defines {
             "CATALPA_BUILD_DLL",
             "CATALPA_PLATFORM_WINDOW",
@@ -232,6 +234,7 @@ if buildBox then
             "CatalpaBox/src/**.cpp",
             -- 以公共头作为部署构建项，DLL 是额外输入，不编译此头。
             "Catalpa/src/Catalpa.h",
+            "Catalpa/Managed/ScriptHost.cs",
             "Catalpa/Resources/Localization/*.json",
             "Catalpa/Resources/Config/*.json",
             "Config/InputProfiles.json",
@@ -275,6 +278,22 @@ if buildBox then
             defines {
                 "CATALPA_PLATFORM_WINDOW"
             }
+
+        -- 编辑器与游戏导出模板都携带同一套行为 API 和 CLR 桥接。
+        filter { "system:windows", "files:**/ScriptHost.cs" }
+            buildmessage "Building C# behaviour host"
+            buildinputs { path.join(_MAIN_SCRIPT_DIR, "Catalpa/Managed/Catalpa.Scripting.cs") }
+            buildcommands {
+                '{MKDIR} "%{cfg.targetdir}/Resources/Managed"',
+                'if errorlevel 1 exit /b 1',
+                '"%SystemRoot%\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe" /nologo /target:library /optimize+ /reference:System.Web.Extensions.dll /out:"$(TargetDir)Resources\\Managed\\Catalpa.Scripting.dll" ' ..
+                    '"' .. path.translate(path.join(_MAIN_SCRIPT_DIR, "Catalpa/Managed/ScriptHost.cs"), "\\") .. '" ' ..
+                    '"' .. path.translate(path.join(_MAIN_SCRIPT_DIR, "Catalpa/Managed/Catalpa.Scripting.cs"), "\\") .. '"',
+                'if errorlevel 1 exit /b 1'
+            }
+            buildoutputs { "%{cfg.targetdir}/Resources/Managed/Catalpa.Scripting.dll" }
+            compilebuildoutputs(false)
+            linkbuildoutputs(false)
 
         -- 消费方部署引擎 DLL；输入/输出跟踪覆盖只改 DLL 的增量构建。
         filter { "system:windows", "files:**/Catalpa.h" }
@@ -512,6 +531,19 @@ if buildBox then
             }
             buildoutputs { "%{cfg.targetdir}/Resources/Environment/%{file.name}" }
         filter {}
+        if not runtimeOnly then
+            files { "Catalpa/Resources/Textures/*.png" }
+            filter { "system:windows", "files:**/Textures/*.png", "configurations:not Dist" }
+                buildmessage "Deploying editor texture"
+                buildcommands {
+                    '{MKDIR} "%{cfg.targetdir}/Resources/Textures"',
+                    'if errorlevel 1 exit /b 1',
+                    '{COPYFILE} "%{file.abspath}" "%{cfg.targetdir}/Resources/Textures/%{file.name}"',
+                    'if errorlevel 1 exit /b 1'
+                }
+                buildoutputs { "%{cfg.targetdir}/Resources/Textures/%{file.name}" }
+            filter {}
+        end
         -- 每个字体和许可文件有独立输出；两个字族可分别更新且不会覆盖同名许可证。
         for _, family in ipairs { "Inter", "NotoSansSC" } do
             local destination = "%{cfg.targetdir}/Resources/Fonts/" .. family

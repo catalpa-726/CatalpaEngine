@@ -412,7 +412,7 @@ namespace Catalpa {
 			    !m_Assets->SetFallback<ShaderAsset>(fallbackShader, error))
 				return false;
 			/* 内置材质在着色器就绪后发布。依赖版本只绑定一次，已发布的定义保留原有依赖。 */
-			if (!RegisterBuiltinAssets(*m_Assets, error))
+			if (!RegisterBuiltinAssets(*m_Assets, error) || !RegisterBuiltinSceneAssets(*m_Assets, error))
 				return false;
 			if (const auto status = m_Scenes.SetComponentSchemas(schemas); !status.IsSuccess()) {
 				error = status.message;
@@ -987,7 +987,7 @@ namespace Catalpa {
 							diagnostics += diagnostic;
 						}
 						if (!diagnostics.empty() && diagnostics != m_LastScriptDiagnostic)
-							CAT_CORE_ERROR("Lua instances: {0}", diagnostics);
+							CAT_CORE_ERROR("Script instances: {0}", diagnostics);
 						if (diagnostics.find("requires controlled shutdown") != std::string::npos)
 							return {WorldError::CommandFailed,
 							    "Script transaction could not roll back; controlled shutdown required"};

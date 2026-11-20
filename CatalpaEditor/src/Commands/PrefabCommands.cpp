@@ -1,4 +1,5 @@
 #include "Commands/PrefabCommands.h"
+#include "Assets/BuiltinAssetIds.h"
 
 #include "Scene/PrefabReconciler.h"
 
@@ -89,6 +90,41 @@ namespace Catalpa::Editor {
 			SceneSubtreeSnapshot m_Before, m_After;
 			bool m_Replacing = false, m_HasBefore = false;
 		};
+	}
+
+	bool CreatePrimitiveEntity(SceneDocument& doc, AssetManager& assets, AssetId mesh, std::string name,
+	    PersistentEntityId parent, PersistentEntityId& created, std::string& error) {
+		auto* scene = doc.Resolve();
+		if (!scene || doc.Playing()) {
+			error = "Creating a 3D object requires an editable scene";
+			return false;
+		}
+		MeshRendererComponent renderer;
+		AssetVersionRef<MaterialInstance> material;
+		const auto defaultMaterial = mesh == BuiltinAssetIds::PlaneMesh ? BuiltinAssetIds::CheckerGround
+		                                                              : BuiltinAssetIds::DefaultPbrInstance;
+		bool fallback = false;
+		if (!assets.Acquire(mesh, renderer.meshVersion, fallback, error) || fallback ||
+		    !assets.Acquire(defaultMaterial, material, fallback, error) || fallback) {
+			if (error.empty())
+				error = "Builtin geometry or its material is unavailable";
+			return false;
+		}
+		renderer.mesh = renderer.meshVersion.Get()->mesh;
+		renderer.materials = {material};
+		SceneSubtreeSnapshot candidate;
+		if (auto status = scene->PrepareMeshEntity(std::move(name), parent, std::move(renderer), candidate);
+		    !status.IsSuccess()) {
+			error = status.message;
+			return false;
+		}
+		const auto id = candidate.Root();
+		doc.ReserveIdentity(id);
+		if (!doc.History().Execute(doc, std::make_unique<PrefabEdit>(doc.Id(), id, std::move(candidate), false,
+		        "history.create"), error))
+			return false;
+		created = id;
+		return true;
 	}
 
 	bool PlaceAuthorModel(

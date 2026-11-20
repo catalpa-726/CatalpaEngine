@@ -3,6 +3,9 @@
 #include "Assets/AssetManager.h"
 
 namespace Catalpa::Editor {
+	/** @brief 创建具有内置几何和标准材质的实体，一次撤销会移除整个对象。 */
+	bool CreatePrimitiveEntity(SceneDocument&, AssetManager&, AssetId mesh, std::string name,
+	    PersistentEntityId parent, PersistentEntityId& created, std::string& error);
 	/**
 	 * @brief 通过文档历史提交准备好的完整模型子树。
 	 * @param[in,out] doc 拥有撤销记录的目标场景文档。

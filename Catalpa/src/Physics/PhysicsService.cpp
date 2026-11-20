@@ -160,7 +160,8 @@ namespace Catalpa {
 		std::vector<Input> inputs;
 		const auto snapshot = scene.GetWorld().ForEach([&](EntityId id) {
 			const auto& w = scene.GetWorld();
-			if (!w.Has<RigidBodyComponent>(id) && !w.Has<CharacterControllerComponent>(id))
+			if (!w.Has<RigidBodyComponent>(id) && !w.Has<CharacterControllerComponent>(id) &&
+			    !w.Has<ColliderComponent>(id))
 				return WorldStatus{};
 			Input input;
 			input.entity = id;
@@ -192,6 +193,9 @@ namespace Catalpa {
 					return status;
 				input.character = value;
 			}
+			/* 单独挂载的碰撞体充当静态场景几何，显式禁用的刚体仍由其开关控制。 */
+			if (input.collider && !input.body && !input.character)
+				input.body.emplace();
 			if (inputs.size() == 4096)
 				return WorldStatus{WorldError::CapacityExceeded, "Physics component snapshot exceeds 4096"};
 			inputs.push_back(std::move(input));
@@ -254,25 +258,27 @@ namespace Catalpa {
 			}
 			const PhysicsPose pose{worldPose.translation, worldPose.rotation};
 			if (i.body && i.body->enabled) {
-				if (!i.collider || !i.collider->shape.HasValue()) {
-					diagnostic(i, "Rigid body requires collider");
-					continue;
-				}
 				if (m_Impl->bodies.contains(i.ref))
 					alive.insert(i.ref);
 				AssetVersionRef<CollisionShapeAsset> shape;
 				AssetVersionRef<PhysicsMaterialAsset> material;
 				bool fallback = false;
-				if (i.collider->shapeVersion.HasValue() && i.collider->shapeVersion.GetId() == i.collider->shape.id)
-					shape = i.collider->shapeVersion;
-				else if ((assets.GetStatus(i.collider->shape.id) == AssetStatus::Unloaded &&
-				             !assets.Request(i.collider->shape.id, error)) ||
-				    !assets.Acquire(i.collider->shape.id, shape, fallback, error) || fallback) {
-					diagnostic(i, "Waiting for exact collision shape: " + error);
-					continue;
+				if (i.collider) {
+					if (!i.collider->shape.HasValue()) {
+						diagnostic(i, "Collider requires a collision shape");
+						continue;
+					}
+					if (i.collider->shapeVersion.HasValue() && i.collider->shapeVersion.GetId() == i.collider->shape.id)
+						shape = i.collider->shapeVersion;
+					else if ((assets.GetStatus(i.collider->shape.id) == AssetStatus::Unloaded &&
+					             !assets.Request(i.collider->shape.id, error)) ||
+					    !assets.Acquire(i.collider->shape.id, shape, fallback, error) || fallback) {
+						diagnostic(i, "Waiting for exact collision shape: " + error);
+						continue;
+					}
 				}
 				PhysicsMaterialAsset parameters;
-				if (i.collider->material.HasValue()) {
+				if (i.collider && i.collider->material.HasValue()) {
 					if (i.collider->materialVersion.HasValue() &&
 					    i.collider->materialVersion.GetId() == i.collider->material.id)
 						material = i.collider->materialVersion;
@@ -285,7 +291,7 @@ namespace Catalpa {
 					parameters = *material.Get();
 				}
 				PhysicsBodyDesc desc{i.ref, i.body->motion, pose, worldPose.scale, i.body->initialVelocity,
-				    i.body->massKg, i.body->gravityFactor, i.body->collisionGroup, i.collider->sensor};
+				    i.body->massKg, i.body->gravityFactor, i.body->collisionGroup, i.collider && i.collider->sensor};
 				auto found = m_Impl->bodies.find(i.ref);
 				const auto materialVersion = material.HasValue() ? material.GetVersion() : 0;
 				const bool rebuild = found == m_Impl->bodies.end() || found->second.shapeId != shape.GetId() ||
@@ -302,7 +308,7 @@ namespace Catalpa {
 						if (m_Impl->world->ReadBody(found->second.handle, previous, error))
 							desc.linearVelocity = previous.linearVelocity;
 					}
-					if (!m_Impl->world->CreateBody(desc, *shape.Get(), parameters, body, error)) {
+					if (!m_Impl->world->CreateBody(desc, shape.Get(), parameters, body, error)) {
 						diagnostic(i, error);
 						if (found != m_Impl->bodies.end())
 							alive.insert(i.ref);
@@ -316,12 +322,12 @@ namespace Catalpa {
 					found = m_Impl->bodies.find(i.ref);
 				}
 				alive.insert(i.ref);
-				if (!i.collider->shapeVersion.HasValue() || i.collider->shapeVersion.GetId() != shape.GetId() ||
+				if (i.collider && (!i.collider->shapeVersion.HasValue() || i.collider->shapeVersion.GetId() != shape.GetId() ||
 				    i.collider->shapeVersion.GetVersion() != shape.GetVersion() ||
 				    (material.HasValue() &&
 				        (!i.collider->materialVersion.HasValue() ||
 				            i.collider->materialVersion.GetId() != material.GetId() ||
-				            i.collider->materialVersion.GetVersion() != material.GetVersion()))) {
+				            i.collider->materialVersion.GetVersion() != material.GetVersion())))) {
 					auto pinned = *i.collider;
 					pinned.shapeVersion = shape;
 					pinned.materialVersion = material;

@@ -186,6 +186,48 @@ namespace Catalpa {
 			return c;
 		}
 
+		/** @brief 通过作者资源管理器或已固定的 Cook 依赖重建槽位的独立材质。 */
+		template <class Resolve>
+		bool ResolveSlot(const SceneMeshAsset& mesh, size_t index, const Resolve& resolve,
+		    AssetVersionRef<MaterialInstance>& output, std::string& error) {
+			const auto id = mesh.materials[index];
+			const auto local = mesh.localMaterials.find(index);
+			if (local == mesh.localMaterials.end())
+				return resolve(id, output);
+			const auto& source = local->second;
+			AssetVersionRef<MaterialDefinition> definition;
+			std::shared_ptr<const MaterialInstance> parsed;
+			if (!resolve(source.definition, definition) ||
+			    !ParseMaterialInstance(source.document, definition, parsed, error))
+				return false;
+			auto material = std::make_shared<MaterialInstance>(*parsed);
+			material->sceneLocal = true;
+			std::set<AssetId> required;
+			constexpr std::array<std::string_view, 5> names{"baseColor_texture", "normal_texture",
+			    "metallicRoughness_texture", "emissive_texture", "occlusion_texture"};
+			for (const auto& field : material->parameters) {
+				const auto* image = std::get_if<AssetHandle<ImageAsset>>(&field.value);
+				if (!image || !image->HasValue())
+					continue;
+				required.insert(image->id);
+				AssetVersionRef<ImageAsset> version;
+				const auto& schema = definition.Get()->parameters;
+				const auto param = std::find_if(
+				    schema.begin(), schema.end(), [&](const auto& item) { return item.id == field.parameterId; });
+				if (param == schema.end() || !resolve(image->id, version) ||
+				    !ValidateMaterialTexture(*param, *version.Get(), error))
+					return false;
+				const auto slot = std::find(names.begin(), names.end(), field.parameterId);
+				if (slot != names.end())
+					material->textureVersions[size_t(slot - names.begin())] = std::move(version);
+			}
+			if (!std::ranges::equal(required, source.textures)) {
+				error = "Scene material texture dependencies do not match its parameters";
+				return false;
+			}
+			return AssetVersionRef<MaterialInstance>::TryCreate(id, material->revision, material, output, error);
+		}
+
 		bool InlineMesh(const SceneMeshAsset& source, AssetVersionRef<MeshAsset>& output, std::string& error) {
 			auto mesh = std::make_shared<MeshAsset>();
 			mesh->mesh = source.procedural;
@@ -312,8 +354,22 @@ namespace Catalpa {
 				mesh.pinned = renderer;
 				mesh.color = renderer.color;
 				mesh.visible = renderer.visible;
-				for (const auto& material : renderer.materials)
+				for (const auto& material : renderer.materials) {
+					const auto index = mesh.materials.size();
 					mesh.materials.push_back(material.GetId());
+					if (material.HasValue() && material.Get()->sceneLocal) {
+						auto& source = mesh.localMaterials[index];
+						source.definition = material.Get()->definition.GetId();
+						if (!WriteMaterialInstance(*material.Get(), source.document, error))
+							return {WorldError::InvalidArgument, "Cannot capture local material"};
+						std::set<AssetId> textures;
+						for (const auto& p : material.Get()->parameters)
+							if (const auto* image = std::get_if<AssetHandle<ImageAsset>>(&p.value);
+							    image && image->HasValue())
+								textures.insert(image->id);
+						source.textures.assign(textures.begin(), textures.end());
+					}
+				}
 				for (const auto& lod : renderer.lods)
 					mesh.lods.push_back(lod.GetId());
 				mesh.lodErrors = renderer.lodErrors;
@@ -364,8 +420,19 @@ namespace Catalpa {
 			if (n.mesh) {
 				const auto& m = *n.mesh;
 				Json materialIds = Json::array();
-				for (auto id : m.materials)
-					materialIds.push_back(id.ToString());
+				for (size_t i = 0; i < m.materials.size(); ++i) {
+					const auto id = m.materials[i].ToString();
+					const auto it = m.localMaterials.find(i);
+					if (it == m.localMaterials.end()) {
+						materialIds.push_back(id);
+						continue;
+					}
+					Json textures = Json::array();
+					for (auto texture : it->second.textures)
+						textures.push_back(texture.ToString());
+					materialIds.push_back({{"id", id}, {"instance", Json::parse(it->second.document)},
+					    {"textures", std::move(textures)}});
+				}
 				node["mesh"] = {{"asset", m.mesh.HasValue() ? Json(m.mesh.ToString()) : Json(nullptr)},
 				    {"materials", materialIds}, {"visible", m.visible},
 				    {"color", Json::array({m.color.x, m.color.y, m.color.z, m.color.w})}};
@@ -469,8 +536,23 @@ namespace Catalpa {
 					mesh.mesh = Identity<AssetId>(m.at("asset"));
 				if (!m.at("materials").is_array() || m.at("materials").empty())
 					throw std::invalid_argument("Mesh requires material references");
-				for (const auto& id : m.at("materials"))
-					mesh.materials.push_back(Identity<AssetId>(id));
+				for (const auto& entry : m.at("materials")) {
+					if (!entry.is_object()) {
+						mesh.materials.push_back(Identity<AssetId>(entry));
+						continue;
+					}
+					Fields(entry, {"id", "instance", "textures"});
+					auto& local = mesh.localMaterials[mesh.materials.size()];
+					mesh.materials.push_back(Identity<AssetId>(entry.at("id")));
+					const auto& instance = entry.at("instance");
+					local.definition = Identity<AssetId>(instance.at("definitionId"));
+					local.document = instance.dump();
+					const auto& textures = entry.at("textures");
+					if (!textures.is_array())
+						throw std::invalid_argument("Expected scene material texture array");
+					for (const auto& texture : textures)
+						local.textures.push_back(Identity<AssetId>(texture));
+				}
 				if (m.contains("lods")) {
 					const auto& levels = m.at("lods");
 					if (!levels.is_array() || levels.size() > 8)
@@ -571,7 +653,15 @@ namespace Catalpa {
 			if (n.mesh) {
 				if (n.mesh->mesh.HasValue())
 					ids.insert(n.mesh->mesh);
-				ids.insert(n.mesh->materials.begin(), n.mesh->materials.end());
+				for (size_t slot = 0; slot < n.mesh->materials.size(); ++slot) {
+					const auto local = n.mesh->localMaterials.find(slot);
+					if (local == n.mesh->localMaterials.end())
+						ids.insert(n.mesh->materials[slot]);
+					else {
+						ids.insert(local->second.definition);
+						ids.insert(local->second.textures.begin(), local->second.textures.end());
+					}
+				}
 				ids.insert(n.mesh->lods.begin(), n.mesh->lods.end());
 			}
 			if (n.environment)
@@ -769,9 +859,12 @@ namespace Catalpa {
 				return false;
 			}
 			renderer.mesh = renderer.meshVersion.Get()->mesh;
-			for (auto id : source.materials) {
+			const auto resolve = [&](AssetId id, auto& ref) {
+				return assets && assets->Acquire(id, ref, fallback, error) && !fallback;
+			};
+			for (size_t slot = 0; slot < source.materials.size(); ++slot) {
 				AssetVersionRef<MaterialInstance> material;
-				if (!assets || !assets->Acquire(id, material, fallback, error) || fallback)
+				if (!ResolveSlot(source, slot, resolve, material, error))
 					return false;
 				renderer.materials.push_back(std::move(material));
 			}
@@ -856,9 +949,9 @@ namespace Catalpa {
 				} else if (!InlineMesh(*node.mesh, renderer.meshVersion, error))
 					return false;
 				renderer.mesh = renderer.meshVersion.Get()->mesh;
-				for (auto id : node.mesh->materials) {
+				for (size_t slot = 0; slot < node.mesh->materials.size(); ++slot) {
 					AssetVersionRef<MaterialInstance> material;
-					if (!fixed(id, material))
+					if (!ResolveSlot(*node.mesh, slot, fixed, material, error))
 						return false;
 					renderer.materials.push_back(std::move(material));
 				}

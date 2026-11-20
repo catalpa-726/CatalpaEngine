@@ -88,6 +88,13 @@ namespace Catalpa::Tools {
 				parameters.push_back({{"id", semantic + "_texture"}, {"type", "texture2d"}, {"default", id.ToString()},
 				    {"textureSemantic", known ? semantic : std::string("data")}, {"allowTextureFallback", false}});
 			}
+			/* 源材质缺少的通道保留为可选贴图，编辑器可在模型导入后补齐。 */
+			for (const std::string role : {"baseColor", "normal", "metallicRoughness", "emissive", "occlusion"}) {
+				if (m.textures.contains(role) || (m.unlit && role != "baseColor"))
+					continue;
+				parameters.push_back({{"id", role + "_texture"}, {"type", "texture2d"}, {"default", nullptr},
+				    {"textureSemantic", role}, {"allowTextureFallback", true}});
+			}
 		}
 		J document{{"schemaVersion", 1}, {"kind", "definition"},
 		    {"family",

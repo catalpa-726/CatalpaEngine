@@ -35,5 +35,8 @@ namespace Catalpa {
 		 */
 		[[nodiscard]] static bool Write(
 		    const std::filesystem::path& absoluteTarget, std::string_view text, std::string& error);
+		/** @brief 原子发布新建文本；目标已存在或被并发创建时失败，并保留已有文件。 */
+		[[nodiscard]] static bool CreateNew(
+		    const std::filesystem::path& absoluteTarget, std::string_view text, std::string& error);
 	};
 }

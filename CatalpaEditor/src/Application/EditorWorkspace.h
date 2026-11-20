@@ -70,6 +70,11 @@ namespace Catalpa::Editor {
 		void DrawScene();
 		void DrawHistory();
 		void DrawStatusBar();
+		/**
+		 * @brief 切换资源来源时清除上一个目录的选择、筛选和缩略图。
+		 * @param[in] engineAssets 打开项目期间是否显式浏览引擎自带资源。
+		 */
+		void ResetAssetBrowser(bool engineAssets);
 		void DrawAssets();
 		void DrawInspector();
 		void DrawSettings();
@@ -109,6 +114,7 @@ namespace Catalpa::Editor {
 		std::string m_ProjectDialogError;
 		std::filesystem::path m_ExecutableDirectory;
 		std::filesystem::path m_SettingsPath;
+		bool m_BrowseEngineAssets = false;
 		std::filesystem::path m_BrowseDirectory;
 		std::filesystem::path m_SelectedFile;
 		LocalizationCatalog m_Catalog;

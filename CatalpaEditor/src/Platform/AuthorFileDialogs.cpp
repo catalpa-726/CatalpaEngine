@@ -75,7 +75,7 @@ namespace Catalpa::Editor {
 		nfdu8char_t* result = nullptr;
 		const auto extensions = !defaultExtension.empty()
 		    ? std::string(defaultExtension)
-		    : std::string("scene,prefab,material,matgraph,behavior,lua,script,skeleton,animclip,animation,skin,"
+		    : std::string("scene,prefab,material,matgraph,behavior,cs,lua,script,skeleton,animclip,animation,skin,"
 		                  "blendtree,particle,collision,physics-material,navmesh,terrain,ui,json");
 		const nfdu8filteritem_t filters[]{{"Author documents", extensions.c_str()}};
 		const auto parent = DialogParentWindow();

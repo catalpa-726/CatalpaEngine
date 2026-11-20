@@ -1,7 +1,10 @@
 #include "Application/EditorWorkspace.h"
+#include "Application/WorkspaceEditing.h"
 #include "Assets/AssetTestFixture.h"
 #include "Core/Application.h"
 #include "Project/ProjectCreation.h"
+#include "Platform/ExternalScriptEditor.h"
+#include "Documents/DocumentRecovery.h"
 #include "TestRunner.h"
 #include "imgui_internal.h"
 
@@ -12,17 +15,22 @@ namespace Catalpa::Tests {
 		/** @brief 驱动真实工作区菜单，在两种图编辑器之间切换并观察节点连续绘制。 */
 		class WorkspaceGraphTest final : public Layer {
 		public:
-			WorkspaceGraphTest() : Layer("WorkspaceGraphTest") {}
+			explicit WorkspaceGraphTest(bool project) : Layer("WorkspaceGraphTest"), m_WithProject(project) {}
 
 			void OnAttach() override {
 				std::string error;
 				std::filesystem::path project;
-				if (!m_Fixture.Create(error) || !Tools::CreateProject(m_Fixture.root, "Graphs", project, error)) {
+				if (!m_Fixture.Create(error) ||
+				    (m_WithProject && !Tools::CreateProject(m_Fixture.root, "Graphs", project, error))) {
 					Finish(false, error);
 					return;
 				}
 				const auto settings = m_Fixture.root / "Workspace.json";
 				m_Fixture.files = {settings, m_Fixture.root / "Workspace.json.bak"};
+				if (!m_WithProject && !VerifyStandaloneSave()) {
+					Finish(false, "Could not create or protect a standalone C# behaviour");
+					return;
+				}
 				m_Workspace = std::make_unique<Editor::EditorWorkspace>(project, settings);
 				m_Workspace->OnAttach();
 				m_Deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
@@ -34,7 +42,7 @@ namespace Catalpa::Tests {
 					m_Workspace.reset();
 				}
 				/* 文件夹由本用例独占创建，含自动恢复等按文档身份命名的派生文件。 */
-				if (!m_Fixture.root.empty()) {
+				if (m_WithProject && !m_Fixture.root.empty()) {
 					std::error_code ignored;
 					std::filesystem::remove_all(m_Fixture.root / "Graphs", ignored);
 				}
@@ -68,15 +76,24 @@ namespace Catalpa::Tests {
 				++m_Frame;
 				if (m_Frame < 6)
 					return;
+				if (!m_WithProject && m_SessionIndex < 2) {
+					static constexpr const char* commands[]{"###ui.new_scene", "###ui.new_material"};
+					static constexpr const char* markers[]{"Untitled scene", "Surface properties"};
+					if (m_SessionPending) {
+						const bool ready = drawn.find(markers[m_SessionIndex]) != drawn.npos;
+						if (ready) {
+							++m_SessionIndex;
+							m_SessionPending = false;
+						}
+					} else
+						m_SessionPending = ActivateDocumentCommand(commands[m_SessionIndex], drawn);
+					return;
+				}
 				if (m_Stage == Stage::NewBehavior || m_Stage == Stage::NewMaterial) {
 					const bool behavior = m_Stage == Stage::NewBehavior;
-					auto* menu = ImGui::FindWindowByName("###Menu_00");
-					if (menu && menu->Active && !menu->SkipItems && drawn.find("New behavior graph") != drawn.npos) {
-						ImGui::ActivateItemByID(
-						    menu->GetID(behavior ? "###ui.new_behavior_graph" : "###ui.new_material_graph"));
+					if (ActivateDocumentCommand(
+					        behavior ? "###ui.new_behavior_graph" : "###ui.new_material_graph", drawn))
 						m_Stage = behavior ? Stage::Behavior : Stage::Material;
-					} else if (auto* bar = ImGui::FindWindowByName("##MainMenuBar"); bar && m_Frame % 8 == 0)
-						ImGui::ActivateItemByID(ImHashStr("###ui.documents", 0, bar->GetID("##MenuBar")));
 					return;
 				}
 				auto* editor = ImGui::FindWindowByName("###Catalpa.AssetEditor");
@@ -136,6 +153,30 @@ namespace Catalpa::Tests {
 		private:
 			enum class Stage { NewBehavior, Behavior, NewMaterial, Material, ChooseBehavior, Switching, Restored };
 
+			/** @brief 核对新 C# 文件可直接交给 IDE，重复创建也不会覆盖用户代码。 */
+			bool VerifyStandaloneSave() {
+				const auto path = m_Fixture.root / std::filesystem::u8path("玩家 Move.cs");
+				m_Fixture.files.push_back(path);
+				std::string error, original, reread;
+				return Editor::CreateBehaviourFile(path, m_Fixture.root, error) &&
+				    Editor::DocumentRecovery::Read(path, original, error) &&
+				    original.find("class @玩家_Move : global::Catalpa.Behaviour") != original.npos &&
+				    !Editor::CreateBehaviourFile(path, m_Fixture.root, error) &&
+				    Editor::DocumentRecovery::Read(path, reread, error) && reread == original;
+			}
+
+			/** @brief 从当前实际打开的文档菜单触发动作，菜单关闭时先激活菜单栏。 */
+			bool ActivateDocumentCommand(const char* id, const std::string& drawn) {
+				auto* menu = ImGui::FindWindowByName("###Menu_00");
+				if (menu && menu->Active && !menu->SkipItems && drawn.find("New behavior graph") != drawn.npos) {
+					ImGui::ActivateItemByID(menu->GetID(id));
+					return true;
+				}
+				if (auto* bar = ImGui::FindWindowByName("##MainMenuBar"); bar && m_Frame % 8 == 0)
+					ImGui::ActivateItemByID(ImHashStr("###ui.documents", 0, bar->GetID("##MenuBar")));
+				return false;
+			}
+
 			/** @brief 读取标签后方组合框实际显示的草稿名，复核切换后的类型与未保存标记。 */
 			static std::string DrawnDraft(const std::string& drawn) {
 				const auto label = drawn.find("Open drafts");
@@ -161,6 +202,9 @@ namespace Catalpa::Tests {
 			}
 
 			AssetTest::Fixture m_Fixture;
+			bool m_WithProject;
+			int m_SessionIndex = 0;
+			bool m_SessionPending = false;
 			std::unique_ptr<Editor::EditorWorkspace> m_Workspace;
 			std::chrono::steady_clock::time_point m_Deadline{};
 			std::string m_BehaviorTitle;
@@ -170,7 +214,7 @@ namespace Catalpa::Tests {
 		};
 	}
 
-	std::unique_ptr<Layer> CreateWorkspaceGraphTest() {
-		return std::make_unique<WorkspaceGraphTest>();
+	std::unique_ptr<Layer> CreateWorkspaceGraphTest(bool project) {
+		return std::make_unique<WorkspaceGraphTest>(project);
 	}
 }

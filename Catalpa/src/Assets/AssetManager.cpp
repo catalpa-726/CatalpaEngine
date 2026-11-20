@@ -1,6 +1,7 @@
 #include "catpch.h"
 
 #include "Assets/AssetManager.h"
+#include "Assets/BuiltinAssetIds.h"
 
 #include "Assets/AssetContainerReader.h"
 #include "Assets/AssetDependencyGraph.h"
@@ -330,6 +331,16 @@ namespace Catalpa {
 				context.dependencies.push_back(
 				    {dependency, loaded.current.version, loaded.current.asset.value, loaded.current.asset.cppType});
 				expectedDependencies.push_back({dependency, loaded.current.version, loaded.contentHash});
+			}
+			/* 场景及预制体可引用宿主内置物体。只向工作线程传递已发布的只读版本，磁盘依赖仍逐个验证摘要。 */
+			if (record->type.ToString() == "scene" || record->type.ToString() == "prefab") {
+				for (auto builtin : BuiltinAssetIds::SceneBuiltins) {
+					const auto it = entries.find(builtin);
+					if (it == entries.end() || !it->second.builtin || !it->second.current.asset.value)
+						continue;
+					const auto& current = it->second.current;
+					context.dependencies.push_back({builtin, current.version, current.asset.value, current.asset.cppType});
+				}
 			}
 			if (loaders.at(record->type.ToString()).deferredDependencies) {
 				std::map<AssetId, AssetRecord> fixedRecords;

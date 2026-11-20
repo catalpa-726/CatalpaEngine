@@ -210,7 +210,7 @@ namespace Catalpa::Editor {
 				if (ImGui::Button(UiText("assetwork.create", "Create")))
 					ImGui::OpenPopup("##CreateSource");
 				if (ImGui::BeginPopup("##CreateSource")) {
-					if (ImGui::MenuItem(UiText("ui.new_lua_script", "New Lua script")))
+					if (ImGui::MenuItem(UiText("ui.new_csharp_script", "New C# script")))
 						m_CreateType = "script";
 					if (ImGui::MenuItem(UiText("ui.new_behavior_graph", "New behavior graph")))
 						m_CreateType = "behavior_graph";
@@ -267,7 +267,7 @@ namespace Catalpa::Editor {
 					m_SelectedEvent = std::move(clicked);
 				if (auto opened = m_Browser.TakeOpened(); !opened.empty()) {
 					const auto ext = Tools::AssetSourceExtension(opened);
-					if (ext == ".lua" || ext == ".script" || ext == ".behavior" || ext == ".matgraph" ||
+					if (ext == ".cs" || ext == ".lua" || ext == ".script" || ext == ".behavior" || ext == ".matgraph" ||
 					    ext == ".prefab" || ext == ".scene" || ext == ".material")
 						m_Opened = std::move(opened);
 				}
@@ -304,7 +304,6 @@ namespace Catalpa::Editor {
 	    const std::filesystem::path& shaderRoot, BuildPanel& build, const PanelText& text) {
 		if (!session || m_Selected.empty())
 			return false;
-		ImGui::TextWrapped("%s", Tools::AssetPathText(m_Selected).c_str());
 		static const auto importers = Tools::AssetImportRegistry::Defaults();
 		std::error_code fileError;
 		if (!importers.Find(m_Selected) || !std::filesystem::is_regular_file(m_Selected, fileError))

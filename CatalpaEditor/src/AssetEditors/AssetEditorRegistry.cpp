@@ -97,7 +97,8 @@ namespace Catalpa::Editor {
 		m_ActiveType = {};
 	}
 
-	void AssetEditorRegistry::Draw(Application& app, AssetDocument& doc, const PanelText& text, std::string& error) {
+	void AssetEditorRegistry::Draw(Application& app, AssetDocument& doc, const PanelText& text, std::string& error,
+	    const MaterialTexturePicker& texturePicker) {
 		const auto key = doc.TypeKey();
 		if (!m_Active || m_ActiveType != key) {
 			const auto found = m_Entries.find(key);
@@ -124,6 +125,9 @@ namespace Catalpa::Editor {
 		struct Scope {
 			~Scope() { ImGui::PopID(); }
 		} scope;
-		m_Active->Draw(app, doc, text, error);
+		if (auto* material = dynamic_cast<MaterialEditor*>(m_Active.get()))
+			material->Draw(app, doc, text, error, texturePicker);
+		else
+			m_Active->Draw(app, doc, text, error);
 	}
 }

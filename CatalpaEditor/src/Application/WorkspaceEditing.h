@@ -10,6 +10,7 @@
 #include "Scene/SceneAsset.h"
 #include "Scene/SceneSubtree.h"
 #include "Application/WorkspaceAssetActions.h"
+#include "Platform/StandaloneTextures.h"
 #include "Application/WorkspaceSettings.h"
 
 namespace Catalpa {
@@ -23,6 +24,11 @@ namespace Catalpa::Editor {
 	public:
 		explicit WorkspaceEditing(Application& app);
 
+		/** @brief 应用当前工作区的外部脚本编辑器偏好。 */
+		void SetScriptEditor(const std::string& editor) { m_ScriptEditor = editor; }
+
+		/** @brief 取走资源创建或导入后的目录刷新请求。 */
+		bool TakeAssetFilesChanged() noexcept { return std::exchange(m_AssetFilesChanged, false); }
 		/** @brief 供工作区恢复及保存独立于场景文档的导航和吸附偏好。 */
 		ViewportSettings& ViewportPreferences() noexcept { return m_ViewportSettings; }
 
@@ -60,8 +66,9 @@ namespace Catalpa::Editor {
 		 * @param[in] text 根据翻译键生成当前语言的界面文案。
 		 * @param[in] build 提供最近一次构建结果和产物目录的面板。
 		 * @param[in] centerDockId 主窗口中央停靠节点的标识。
+		 * @param[in] selectedFile 资源或项目面板当前选中的文件，用于贴图槽赋值。
 		 */
-		void Draw(const PanelText&, BuildPanel*, uint32_t centerDockId);
+		void Draw(const PanelText&, BuildPanel*, uint32_t centerDockId, const std::filesystem::path& selectedFile = {});
 		/**
 		 * @brief 打开资产。
 		 *
@@ -105,6 +112,20 @@ namespace Catalpa::Editor {
 		 * @param[in] config 当前作者项目的目录和构建设置，传入空指针表示关闭项目。
 		 */
 		void SetProject(const Tools::ProjectConfig*);
+		/** @brief 指定启动场景的资源工程位置；在首次创建资源前无需建立目录。 */
+		void SetSessionAssetFile(std::filesystem::path file) { m_SessionAssetFile = std::move(file); }
+		/** @brief 当前资源的构建及检索根，正式项目优先。 */
+		const Tools::ProjectConfig* AssetProject() const noexcept {
+			if (m_Project)
+				return &*m_Project;
+			return m_SessionAssets ? &*m_SessionAssets : nullptr;
+		}
+		/**
+		 * @brief 加载启动场景的资源工程，保持当前场景和项目面板状态。
+		 * @param[in] create 目录尚不存在时是否为本次资源操作创建工程。
+		 * @return 可供资源操作使用的配置；工程缺失或装载失败时返回空指针。
+		 */
+		const Tools::ProjectConfig* EnsureSessionAssets(bool create);
 		/**
 		 * @brief 保存全部。
 		 *
@@ -124,6 +145,8 @@ namespace Catalpa::Editor {
 		/** @brief 在所有作者窗口绘制后处理未被文本输入和运行模式占用的快捷键。 */
 		void HandleShortcuts();
 		bool TakeHierarchyRequest() noexcept { return std::exchange(m_RevealHierarchy, false); }
+		/** @brief 取出一次由材质贴图槽发起的资源面板定位请求。 */
+		bool TakeTextureBrowserRequest() noexcept { return std::exchange(m_RevealTextureBrowser, false); }
 		/**
 		 * @brief 处理本项目的异步源资产动作并提交到发起编辑的文档。
 		 * @param[in,out] build 当前构建服务，空值表示尚未绑定。
@@ -152,13 +175,15 @@ namespace Catalpa::Editor {
 		 * @brief 按作者类型创建未保存的文档并打开对应编辑器。
 		 * @param[in] type 受支持的脚本、行为图或材质图类型。
 		 */
-		void CreateAssetDraft(std::string_view type);
+		void CreateAssetDraft(std::string_view type, const std::filesystem::path& initialDirectory = {});
 		/** @brief 保存当前活动文档，供发布面板与快捷键复用同一保存路径。 */
 		bool SaveActive() {
 			auto* doc = m_Documents.Active();
 			return doc && SaveDocument(*doc);
 		}
 		SceneDocument* CurrentScene() { return ActiveScene(); }
+		/** @brief 用本地化标题显示启动示例，作者场景沿用作者命名。 */
+		const char* SceneTitle(const Scene& scene) const;
 		/**
 		 * @brief 保存当前作者场景；未命名场景即使尚无编辑记录也使用另存为。
 		 * @return 作者场景写入成功时为 true；取消、Play 或写入失败时为 false。
@@ -169,6 +194,17 @@ namespace Catalpa::Editor {
 		}
 
 	private:
+		/** @brief 在原生保存对话框选择新脚本路径并写入 C# 模板。 */
+		std::filesystem::path CreateScriptFile(const std::filesystem::path& initialDirectory);
+		/** @brief 为选中实体在内容目录中新建行为图，同名文件保持原样。 */
+		std::filesystem::path CreateComponentGraphFile(
+		    const std::filesystem::path& target, const std::filesystem::path& contentRoot);
+		/** @brief 打开脚本的磁盘版本以及对应的 IDE 项目。 */
+		void EditExternalScript(const std::filesystem::path& file);
+		/** @brief 从构建的脚本引用解析原始源文件，再交给用户所选 IDE。 */
+		void EditBuiltScript(AssetId id, const BuildPanel& build);
+		std::string m_ScriptEditor = "auto";
+		bool m_AssetFilesChanged = false;
 		/**
 		 * @brief 检查实例是否使用作者或 Cook 后的标准单色无光照定义。
 		 * @param[in] source 当前打开的材质实例。
@@ -186,7 +222,7 @@ namespace Catalpa::Editor {
 		EditorCameraInput ViewportInput(bool hovered, bool gizmoBusy, bool canAdjustSpeed);
 		bool RoutePlayUIInput(float x, float y, float width, float height, Extent2D extent, bool hovered, bool focused);
 		void BlurPlayUI();
-		bool SaveDocument(Document&, bool saveAs = false);
+		bool SaveDocument(Document&, bool saveAs = false, bool cookMaterial = true);
 		bool LoadProjectCatalog();
 		bool OpenAuthor(const std::filesystem::path&, std::string text = {}, std::string type = {},
 		    const std::filesystem::path& recovery = {}, const AssetDependencyGraph* loadGraph = nullptr);
@@ -198,6 +234,12 @@ namespace Catalpa::Editor {
 		void DocumentMenu();
 		void UpdateDocuments();
 		void CloseDocument(StableId);
+		/** @brief 开始模拟前逐个验证场景挂载的 C# 源文件，编译失败时保留作者场景。 */
+		void PreparePlay(SceneDocument& doc);
+		/** @brief 核对上一个构建的代次及结果，再继续构建或启动仍处于前台的场景。 */
+		void ContinuePlayBuild(SceneDocument* doc);
+		/** @brief 创建编辑器运行副本并切换到游戏视图。 */
+		void BeginPreparedPlay(SceneDocument& doc);
 		bool StopPlay();
 		void AuthorComponentControls(SceneDocument&);
 		void PrefabMenu();
@@ -219,15 +261,28 @@ namespace Catalpa::Editor {
 		 * @brief 绘制实体的脚本或行为图选择器并接收兼容的拖放。
 		 * @param[in,out] doc 所选实体所属的作者场景。
 		 * @param[in] id 目标实体的持久身份。
-		 * @param[in] script 为 true 时仅筛选 Lua 源文件。
+		 * @param[in] script 为 true 时仅筛选 C# 源文件。
 		 * @param[in] bound 当前引用的稳定资产 ID。
 		 */
 		void DrawBehaviorPicker(SceneDocument& doc, PersistentEntityId id, bool script, AssetId bound);
+		/** @brief 按用户输入的文件名在所属 Content 新建源文件，构建成功后挂到指定实体。 */
+		bool CreateComponentSource(SceneDocument& doc, PersistentEntityId id, bool script, std::string_view name);
+		/** @brief 选择与组件字段兼容的源文件，待构建完成后交付固定的资产身份。 */
+		bool DrawComponentAssetPicker(SceneDocument&, PersistentEntityId, const char*, std::string_view, AssetId&);
 		/** @brief 在网格的指定材质槽选择项目材质，异步构建期间固定实体、网格与原材质。 */
 		void DrawMaterialPicker(
 		    SceneDocument& doc, PersistentEntityId id, size_t slot, const MeshRendererComponent& mesh);
 		/** @brief 优先打开绑定材质的项目源文件；内置或导入子材质使用独立草稿。 */
-		void OpenBoundMaterial(const AssetVersionRef<MaterialInstance>& material);
+		void OpenBoundMaterial(SceneDocument&, EntityReference, const MaterialSlotEdit&);
+		struct MaterialTarget {
+			StableId document;
+			EntityReference entity;
+			MaterialSlotEdit original;
+		};
+		/* 以草稿身份保存打开时的场景、实体代次和槽，不依赖稍后选中的实体。 */
+		std::map<StableId, std::vector<MaterialTarget>> m_MaterialTargets;
+		bool ValidateMaterialTarget(const MaterialTarget&, SceneDocument*&, MeshRendererComponent&);
+		bool ApplySavedMaterial(AssetDocument&, bool external, bool cookMaterial = true);
 		/**
 		 * @brief 提交构建请求并固定后续实例化或组件编辑的目标。
 		 * @param[in] source 需要构建的源文件。
@@ -240,18 +295,27 @@ namespace Catalpa::Editor {
 		bool StartSourceAction(const std::filesystem::path& source, AuthorAssetAction action,
 		    SceneDocument* doc = nullptr, PersistentEntityId entity = {}, Math::Vec3 position = {});
 		WorkspaceAssetActions m_AssetActions;
+		StandaloneTextures m_StandaloneTextures;
+		/** @brief 给材质槽选择或移除图像；需要构建时按文档及槽区分异步结果。 */
+		bool DrawTexturePicker(AssetDocument&, const MaterialParameter&, AssetHandle<ImageAsset>&,
+		    const std::filesystem::path& selectedFile);
 		Math::Vec4 m_DropRect{};
 		StableId m_DropDocument;
 		uint64_t m_DropEpoch = 0;
 		std::optional<SceneSubtreeSnapshot> m_Clipboard;
 		StableId m_ClipboardDocument;
 		bool m_RevealHierarchy = false, m_GameView = false;
-		std::array<char, 64> m_ScriptAsset{}, m_BehaviorAsset{};
+		bool m_RevealTextureBrowser = false;
+		std::array<char, 256> m_NewComponentName{};
+		std::string m_NewComponentError;
+		EntityReference m_NewComponentOwner;
 		std::array<char, 129> m_PropertyName{};
 		int m_PropertyType = 2;
 		PersistentEntityId m_OverrideRoot;
 		std::vector<std::string> m_OverridePaths;
 		std::optional<Tools::ProjectConfig> m_Project;
+		std::optional<Tools::ProjectConfig> m_SessionAssets;
+		std::filesystem::path m_SessionAssetFile;
 		std::filesystem::path m_RecoveryRoot;
 		std::vector<std::filesystem::path> m_Recovery;
 		std::map<StableId, std::filesystem::path> m_RestoredRecovery;
@@ -269,6 +333,7 @@ namespace Catalpa::Editor {
 			std::filesystem::path path, recovery;
 			std::string source, type;
 			std::vector<AssetId> dependencies;
+			std::optional<MaterialTarget> materialTarget;
 		};
 		std::optional<PendingAuthor> m_PendingAuthor;
 		SceneHandle m_HostScene;

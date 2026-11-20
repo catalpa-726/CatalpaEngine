@@ -40,51 +40,32 @@ namespace Catalpa {
 		}
 
 		/**
-		 * @brief 加载 24 px 西文字体，并尝试合并 Noto Sans SC 的中文字形。
-		 *
-		 * @param[in] atlas 装载主字体和合并字形的 ImGui 图集。
-		 * @param[in] ranges 由工作区持有的字符范围，图集会引用其中的数据。
-		 *
-		 * @return 图集所持的主字体指针。西文字体不可用时尝试内置字体；合并中文字形失败仍可返回主字体。主字体也无法建立时返回 nullptr。
+		 * @brief 统一加载菜单、列表和文本框使用的中西文字体。
+		 * @param[in,out] atlas 工作区共享的字形图集。
+		 * @param[out] ranges 保留在图集使用期间的字符范围。
+		 * @return 图集拥有的默认字体。
 		 */
 		ImFont* LoadWorkspaceFont(ImFontAtlas& atlas, ImVector<ImWchar>& ranges) {
-			/* 图集始终以 24 px 烘焙，工作区字号设置只改变显示比例。 */
 			ImFontConfig config;
 			config.SizePixels = 24.0f;
-			config.OversampleH = 3;
-			config.OversampleV = 2;
-			config.PixelSnapH = false;
+			config.OversampleH = config.OversampleV = 1;
 			config.Flags |= ImFontFlags_NoLoadError;
-
-			std::filesystem::path executableDirectory;
+			std::filesystem::path directory;
 			std::string error;
-			if (!GetExecutableDirectory(executableDirectory, error)) {
-				CAT_CORE_WARN("Cannot locate workspace fonts; using the embedded font: {0}", error);
-				return atlas.AddFontDefaultVector(&config);
+			if (GetExecutableDirectory(directory, error)) {
+				const auto resources = directory / "Resources";
+				const auto font = (resources / "Fonts/NotoSansSC/NotoSansSC-Regular.otf").u8string();
+				BuildWorkspaceGlyphRanges(atlas, resources, ranges);
+				/* Noto SC 的 hhea 行高为 1.48 em。在 24 px 行内放大字面，仍为标点、上下延伸部留白。 */
+				config.ExtraSizeScale = 1.2f;
+				if (auto* face = atlas.AddFontFromFileTTF(reinterpret_cast<const char*>(font.c_str()),
+				        config.SizePixels, &config, ranges.Data))
+					return face;
+				error = "Noto Sans SC is unavailable";
 			}
-
-			const auto resources = executableDirectory / "Resources";
-			const auto latinPath = (resources / "Fonts/Inter/Inter-Regular.ttf").u8string();
-			const auto* latinFile = reinterpret_cast<const char*>(latinPath.c_str());
-			ImFont* primary = atlas.AddFontFromFileTTF(latinFile, config.SizePixels, &config);
-			if (!primary) {
-				CAT_CORE_WARN("Cannot load {0}; using the embedded Latin font", latinFile);
-				primary = atlas.AddFontDefaultVector(&config);
-			}
-			if (!primary)
-				return nullptr;
-
-			BuildWorkspaceGlyphRanges(atlas, resources, ranges);
-			ImFontConfig chinese = config;
-			chinese.MergeMode = true;
-			chinese.DstFont = primary;
-			/* 中文笔画按目标像素烘焙，避免整套常用字沿用西文字形的 3×2 过采样。 */
-			chinese.OversampleH = chinese.OversampleV = 1;
-			const auto chinesePath = (resources / "Fonts/NotoSansSC/NotoSansSC-Regular.otf").u8string();
-			const auto* chineseFile = reinterpret_cast<const char*>(chinesePath.c_str());
-			if (!atlas.AddFontFromFileTTF(chineseFile, chinese.SizePixels, &chinese, ranges.Data))
-				CAT_CORE_WARN("Cannot load Chinese workspace font: {0}", chineseFile);
-			return primary;
+			CAT_CORE_WARN("Cannot load workspace font: {0}", error);
+			config.ExtraSizeScale = 1.0f;
+			return atlas.AddFontDefaultVector(&config);
 		}
 	}
 

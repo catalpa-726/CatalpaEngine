@@ -972,6 +972,42 @@ Connections: {
 				if (!success)
 					return;
 			}
+			/* 从只读资源面板多次绑定同图，复用项目副本和法线视图；同名异图不得改写首份图片。 */
+			auto texture = request;
+			const auto image = external / "pixels.png";
+			texture.source = image;
+			texture.settings.materialTextureViews = true;
+			if (!CheckOperation(test, ImportProjectSource(texture, content, error), error))
+				return;
+			const auto first = texture.source;
+			const auto cooked = AssetCooker::Build(texture);
+			if (!CheckOperation(test, cooked.success, cooked.error))
+				return;
+			texture.source = image;
+			texture.settings.materialTextureViews = false;
+			test.Check(ImportProjectSource(texture, content, error) && texture.source == first &&
+			        texture.settings.materialTextureViews && AssetCooker::Build(texture).cacheHit,
+			    "A repeated resource image drop reuses the same project copy and its cooked texture channels");
+			const auto other = external / "alternate" / image.filename();
+			std::filesystem::create_directory(other.parent_path());
+			std::vector<std::byte> bytes;
+			if (!Read(image, bytes, error)) {
+				test.Check(false, error);
+				return;
+			}
+			bytes.push_back(std::byte{0}); /* PNG 解码忽略 IEND 后的字节，源码哈希应区别两份图片。 */
+			if (!CheckOperation(test, AtomicFileWriter::Write(other, bytes, error), error))
+				return;
+			texture.source = other;
+			if (!CheckOperation(test, ImportProjectSource(texture, content, error), error))
+				return;
+			const auto second = texture.source;
+			texture.source = other;
+			std::vector<std::byte> original, copy;
+			test.Check(second != first && ImportProjectSource(texture, content, error) && texture.source == second &&
+			        Read(image, original, error) && Read(first, copy, error) && original == copy &&
+			        Read(second, copy, error) && copy == bytes,
+			    "Distinct image files with identical names remain independently reusable without overwriting either");
 			test.Check(std::filesystem::is_regular_file(content / "model/buffer.bin") &&
 			        std::filesystem::is_regular_file(content / "model/pixels.png") &&
 			        std::filesystem::is_regular_file(content / "triangle/triangle.mtl") &&
@@ -1239,6 +1275,43 @@ Connections: {
 		        std::string(reinterpret_cast<const char*>(preservedSource.data()), preservedSource.size()) ==
 		            "{bad author JSON",
 		    "Failed author Cook never repairs or overwrites source data");
+
+		/* 相同源码须得到相同程序集内容版本。编译错误须保留最后一次成功发布的清单。 */
+		const auto cs = fixture.Request("Mover.cs", shaders);
+		const auto behaviour =
+		    "using Catalpa; public sealed class Mover : Behaviour { "
+		    "public Mover() { throw new System.Exception(\"Cook must never execute constructors\"); } "
+		    "public override void OnUpdate(double seconds) { Translate(seconds, 0, 0); } }";
+		if (!CheckOperation(context, fixture.Store("Raw/Mover.cs", behaviour, error), error))
+			return;
+		const auto compiled = AssetCooker::Build(cs);
+		if (!CheckOperation(context, compiled.success, compiled.error))
+			return;
+		const auto repeated = AssetCooker::Build(cs);
+		context.Check(repeated.success && repeated.key == compiled.key,
+		    "Identical C# source compiles to identical cooked bytes");
+		AssetVersionRef<ScriptAsset> managed;
+		context.Check(install(compiled) && manager.Acquire(compiled.primary, managed, fallback, error) && !fallback &&
+		        managed.Get()->language == ScriptLanguage::CSharp && !managed.Get()->assembly.empty() &&
+		        managed.Get()->sourceLabel.ends_with("/Mover.cs"),
+		    "Managed script loader reads the compiled assembly and project-relative file name: " + error);
+		if (!CheckOperation(context, Read(compiled.manifest, before, error) &&
+		        fixture.Store("Raw/Mover.cs", "public class Broken {", error), error))
+			return;
+		const auto broken = AssetCooker::Build(cs);
+		context.Check(!broken.success && broken.error.find("CS1513") != std::string::npos &&
+		        Read(compiled.manifest, after, error) && before == after,
+		    "A C# compiler diagnostic preserves the last good version");
+		for (const auto* invalid : {"public class NotABehaviour {}",
+		         "using Catalpa; public class A : Behaviour {} public class B : Behaviour {}",
+		         "using Catalpa; public class A : Behaviour { private A() {} }"}) {
+			if (!CheckOperation(context, fixture.Store("Raw/Mover.cs", invalid, error), error))
+				return;
+			const auto rejected = AssetCooker::Build(cs);
+			context.Check(!rejected.success && rejected.error.find("Behaviour") != std::string::npos &&
+			        Read(compiled.manifest, after, error) && before == after,
+			    "Cook rejects a script without a single constructible Behaviour and retains the last good version");
+		}
 		manager.Shutdown();
 		jobs.Shutdown();
 	}

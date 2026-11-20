@@ -55,11 +55,13 @@ namespace Catalpa::Tools {
 	}
 
 	std::string AssetImportSettingsKey(const AssetImportSettings& s) {
-		return nlohmann::json{{"schema", 1}, {"unitScale", s.unitScale}, {"up", s.sourceUp},
+		nlohmann::json value{{"schema", 1}, {"unitScale", s.unitScale}, {"up", s.sourceUp},
 		    {"normals", s.generateNormals}, {"tangents", s.generateTangents}, {"dependencyRemaps", s.dependencyRemaps},
 		    {"maxSourceBytes", s.maxSourceBytes}, {"maxWorkingBytes", s.maxWorkingBytes},
-		    {"maxVertices", s.maxVertices}, {"maxIndices", s.maxIndices}, {"maxNodes", s.maxNodes}}
-		    .dump();
+		    {"maxVertices", s.maxVertices}, {"maxIndices", s.maxIndices}, {"maxNodes", s.maxNodes}};
+		if (s.materialTextureViews)
+			value["materialTextureViews"] = true;
+		return value.dump();
 	}
 
 	bool AssetBuildContext::CheckCancelled(std::string& e) const {

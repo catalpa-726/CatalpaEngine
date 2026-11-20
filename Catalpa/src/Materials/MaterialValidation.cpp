@@ -835,6 +835,63 @@ namespace Catalpa {
 		}
 	}
 
+	/** @brief 保存确切定义引用及实例覆盖值，供独立材质与内嵌场景材质共用。 */
+	bool WriteMaterialInstance(const MaterialInstance& material, std::string& output, std::string& error) try {
+		if (!ValidateMaterialInstance(material, error))
+			return false;
+		using AuthorJson::Json;
+		Json parameters = Json::object();
+		for (const auto& p : material.parameters) {
+			const auto schema =
+			    std::find_if(material.definition.Get()->parameters.begin(), material.definition.Get()->parameters.end(),
+			        [&](const auto& field) { return field.id == p.parameterId; });
+			if (schema == material.definition.Get()->parameters.end()) {
+				error = "Material author parameter is undeclared";
+				return false;
+			}
+			/* 磁盘只记录覆盖值；只读 sampler 默认值不能被误编码成禁止的用户覆盖。 */
+			if (schema->defaultValue == p.value)
+				continue;
+			std::visit(
+			    [&](const auto& value) {
+				    using T = std::decay_t<decltype(value)>;
+				    if constexpr (std::is_same_v<T, AssetHandle<ImageAsset>>)
+					    parameters[p.parameterId] = value.id.ToString();
+				    else
+					    parameters[p.parameterId] = value;
+			    },
+			    p.value);
+		}
+		Json states = Json::object();
+		const auto& base = material.definition.Get()->renderState;
+		const auto& current = material.renderState;
+		if (base.cull != current.cull) {
+			const char* names[]{"none", "back", "front"};
+			states["cull"] = names[uint32_t(current.cull)];
+		}
+		if (base.blend != current.blend) {
+			const char* names[]{"opaque", "alpha", "additive"};
+			states["blend"] = names[uint32_t(current.blend)];
+		}
+		if (base.depthTest != current.depthTest)
+			states["depthTest"] = current.depthTest;
+		if (base.depthWrite != current.depthWrite)
+			states["depthWrite"] = current.depthWrite;
+		const Json document{{"schemaVersion", 1}, {"kind", "instance"},
+		    {"definitionId", material.definition.GetId().ToString()},
+		    {"definitionVersion", material.definition.GetVersion()}, {"revision", material.revision},
+		    {"parameters", parameters}, {"renderState", states}};
+		std::shared_ptr<const MaterialInstance> checked;
+		const auto text = document.dump(2);
+		if (!ParseMaterialInstance(text, material.definition, checked, error))
+			return false;
+		output = text;
+		return true;
+	} catch (const std::exception& exception) {
+		error = exception.what();
+		return false;
+	}
+
 	bool ParseMaterialInstance(std::string_view text, const AssetVersionRef<MaterialDefinition>& definition,
 	    std::shared_ptr<const MaterialInstance>& output, std::string& error, const ArchiveLimits& limits) {
 		if (!definition.HasValue()) {
@@ -914,6 +971,16 @@ namespace Catalpa {
 			parameters.push_back({{"id", "emissive"}, {"displayName", "Emissive"}, {"type", "float3"},
 			    {"default", Json::array({0, 0, 0})}, {"min", 0}});
 		}
+		/* 空槽只使用材质因子。采样、颜色空间和纹理版本在实际指定图像后才参与绑定。 */
+		const auto addMap = [&](std::string_view role) {
+			parameters.push_back({{"id", std::string(role) + "_texture"}, {"type", "texture2d"}, {"default", nullptr},
+			    {"textureSemantic", role}, {"allowTextureFallback", true}});
+		};
+		if (!diagnostic)
+			addMap("baseColor");
+		if (pbr)
+			for (const auto role : {"normal", "metallicRoughness", "emissive", "occlusion"})
+				addMap(role);
 		const Json definition{{"schemaVersion", 1}, {"kind", "definition"},
 		    {"family", pbr ? "catalpa.pbr" : (diagnostic ? "catalpa.error" : "catalpa.unlit")},
 		    {"shadingModel", pbr ? "pbr" : "unlit"}, {"domain", "surface"}, {"alphaMode", "opaque"},

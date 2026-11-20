@@ -7,6 +7,8 @@ namespace Catalpa {
 }
 
 namespace Catalpa::Editor {
+	/** @brief 为当前材质参数选取或清除图像，返回值表示用户完成了修改。 */
+	using MaterialTexturePicker = std::function<bool(const MaterialParameter&, AssetHandle<ImageAsset>&)>;
 	/* 类型编辑器只管理展示副本和离屏视图；撤销历史由资产文档拥有。 */
 	class IAssetEditor {
 	public:

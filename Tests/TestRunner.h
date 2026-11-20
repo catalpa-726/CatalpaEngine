@@ -21,7 +21,7 @@ namespace Catalpa::Tests {
 	 */
 	std::unique_ptr<Layer> CreateWorkspaceModalTest();
 	/** @brief 创建通过正式文档菜单和资产编辑器验证图节点与端口绘制的测试层。 */
-	std::unique_ptr<Layer> CreateWorkspaceGraphTest();
+	std::unique_ptr<Layer> CreateWorkspaceGraphTest(bool project);
 	std::unique_ptr<Layer> CreateWorkspaceModelDropTest();
 	std::unique_ptr<Layer> CreatePlatformWindowGpuTest();
 

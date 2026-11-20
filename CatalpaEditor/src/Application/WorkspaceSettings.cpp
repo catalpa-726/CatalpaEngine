@@ -150,6 +150,10 @@ namespace Catalpa::Editor {
 			}
 			if (settings.language != "en-US" && settings.language != "zh-CN")
 				error = "Unsupported workspace language.";
+			else if (settings.scriptEditor != "auto" && settings.scriptEditor != "visual-studio" &&
+			    settings.scriptEditor != "vscode" && (settings.scriptEditor.find('\0') != std::string::npos ||
+			    !IsValidUtf8(settings.scriptEditor) || !std::filesystem::u8path(settings.scriptEditor).is_absolute()))
+				error = "Invalid external script editor path.";
 			else if (settings.editorFontSize < WorkspaceSettings::MinFontSize ||
 			    settings.editorFontSize > WorkspaceSettings::MaxFontSize)
 				error = "Workspace editor_font_size must be between 12 and 36 pixels.";
@@ -210,15 +214,16 @@ namespace Catalpa::Editor {
 		}
 		const auto version = document.find("schema_version");
 		if (version == document.end() || !version->is_number_integer() ||
-		    (*version != 1 && *version != 2 && *version != 3)) {
-			error = "Unsupported workspace schema_version; expected integer 1, 2 or 3.";
+		    (*version != 1 && *version != 2 && *version != 3 && *version != 4)) {
+			error = "Unsupported workspace schema_version; expected integer from 1 to 4.";
 			return WorkspaceLoadResult::Failed;
 		}
 		/* v2 起保存字号，v3 起保存完整的视口偏好；旧配置沿用相应字段的默认值。 */
 		const bool hasFontSize = *version != 1;
-		const bool hasViewport = *version == 3;
+		const bool hasViewport = *version >= 3;
+		const bool hasScriptEditor = *version >= 4;
 		const auto recent = document.find("recent_projects");
-		if (document.size() != 6u + hasFontSize + hasViewport + (recent != document.end())) {
+		if (document.size() != 6u + hasFontSize + hasViewport + hasScriptEditor + (recent != document.end())) {
 			error = "Workspace field count does not match its schema_version.";
 			return WorkspaceLoadResult::Failed;
 		}
@@ -237,6 +242,14 @@ namespace Catalpa::Editor {
 		}
 
 		WorkspaceSettings parsed;
+		if (hasScriptEditor) {
+			const auto editor = document.find("script_editor");
+			if (editor == document.end() || !editor->is_string()) {
+				error = "Workspace script_editor must be a string.";
+				return WorkspaceLoadResult::Failed;
+			}
+			parsed.scriptEditor = editor->get<std::string>();
+		}
 		if (hasViewport) {
 			const auto viewport = document.find("viewport");
 			if (viewport == document.end() || !viewport->is_object() ||
@@ -334,7 +347,8 @@ namespace Catalpa::Editor {
 		nlohmann::json viewport{{"snap_enabled", settings.viewport.snapEnabled}};
 		for (const auto& field : ViewportNumbers)
 			viewport[field.key] = settings.viewport.*field.member;
-		const nlohmann::json document{{"schema_version", 3}, {"language", settings.language},
+		const nlohmann::json document{{"schema_version", 4}, {"language", settings.language},
+		    {"script_editor", settings.scriptEditor},
 		    {"editor_font_size", settings.editorFontSize}, {"viewport", std::move(viewport)}, {"vsync", settings.vsync},
 		    {"recent_projects", settings.recentProjects},
 		    {"panels",

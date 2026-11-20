@@ -272,6 +272,28 @@ namespace Catalpa {
 		return {WorldError::AllocationFailed, "Cannot validate clipboard references"};
 	}
 
+	WorldStatus Scene::PrepareMeshEntity(std::string name, PersistentEntityId parent, MeshRendererComponent mesh,
+	    SceneSubtreeSnapshot& output) const try {
+		if (!CanEditNow())
+			return {WorldError::Busy, "Scene is not at an edit boundary"};
+		SceneSubtreeSnapshot candidate;
+		candidate.m_World = m_World.GetIdentity();
+		candidate.m_ParentGeneration = Resolve(parent);
+		if (parent.HasValue() && !candidate.m_ParentGeneration.HasValue())
+			return {WorldError::InvalidEntity, "Primitive parent no longer exists"};
+		auto& node = candidate.m_Nodes.emplace_back();
+		std::string error;
+		if (!GeneratePersistentEntityId(node.identity.persistent, error))
+			return {WorldError::CommandFailed, "Cannot generate mesh entity identity"};
+		node.identity.name = std::move(name);
+		node.parent = parent;
+		node.mesh = std::move(mesh);
+		output = std::move(candidate);
+		return {};
+	} catch (const std::bad_alloc&) {
+		return {WorldError::AllocationFailed, "Cannot allocate mesh entity snapshot"};
+	}
+
 	WorldStatus Scene::PrepareSubtreeCopy(const SceneSubtreeSnapshot& source, SceneSubtreeSnapshot& output) const try {
 		if (!CanEditNow() || source.m_World != m_World.GetIdentity() || source.m_Nodes.empty())
 			return {WorldError::ForeignWorld, "Clipboard belongs to another scene or scene is busy"};

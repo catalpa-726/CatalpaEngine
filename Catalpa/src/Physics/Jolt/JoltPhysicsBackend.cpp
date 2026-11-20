@@ -13,6 +13,7 @@
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
 #include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
+#include <Jolt/Physics/Collision/Shape/EmptyShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
@@ -555,6 +556,11 @@ namespace Catalpa {
 	}
 
 	bool PhysicsWorld::CreateBody(const PhysicsBodyDesc& desc, const CollisionShapeAsset& shape,
+	    const PhysicsMaterialAsset& material, PhysicsBodyHandle& out, std::string& error) {
+		return CreateBody(desc, &shape, material, out, error);
+	}
+
+	bool PhysicsWorld::CreateBody(const PhysicsBodyDesc& desc, const CollisionShapeAsset* shape,
 	    const PhysicsMaterialAsset& material, PhysicsBodyHandle& out, std::string& error) try {
 		if (!m_Impl || !m_Impl->Owner(error))
 			return false;
@@ -569,7 +575,7 @@ namespace Catalpa {
 			error = "Invalid physics body descriptor";
 			return false;
 		}
-		if (shape.kind == CollisionShapeKind::TriangleMesh && desc.motion != PhysicsMotion::Static) {
+		if (shape && shape->kind == CollisionShapeKind::TriangleMesh && desc.motion != PhysicsMotion::Static) {
 			error = "Triangle-mesh colliders are static; use a convex hull for moving bodies";
 			return false;
 		}
@@ -579,9 +585,11 @@ namespace Catalpa {
 			return false;
 		}
 		JPH::RefConst<JPH::Shape> native;
-		if (!Shape(shape, native, error))
+		if (!shape)
+			native = new JPH::EmptyShape();
+		else if (!Shape(*shape, native, error))
 			return false;
-		if (desc.scale != Math::Vec3{1}) {
+		if (shape && desc.scale != Math::Vec3{1}) {
 			const auto scaled = JPH::ScaledShapeSettings(native.GetPtr(), V(desc.scale)).Create();
 			if (scaled.HasError()) {
 				error.assign(scaled.GetError().data(), scaled.GetError().size());

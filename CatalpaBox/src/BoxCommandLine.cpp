@@ -97,8 +97,9 @@ namespace Catalpa {
 				options.testEditorModals = true;
 				return {};
 			}
-			if (args[0] == "--test-editor-graphs") {
+			if (args[0] == "--test-editor-graphs" || args[0] == "--test-editor-session-documents") {
 				options.testEditorGraphs = true;
+				options.testSessionDocuments = args[0] == "--test-editor-session-documents";
 				return {};
 			}
 			if (args[0] == "--test-editor-obj-drop") {
@@ -150,7 +151,8 @@ namespace Catalpa {
 		CAT_INFO(
 		    "Usage: CatalpaBox [--project <absolute-file> | --run-package <absolute-file> | "
 		    "--inspect <absolute-file> | --export-game <tool arguments> | --package <tool arguments> | --test-s14-s17 | --test-s14-foundation "
-		    "| --test-editor-docking | --test-editor-modals | --test-editor-graphs | --test-editor-obj-drop | --test-editor-platform-windows | --test-editor-thumbnails | --test-editor-grove | --test-s10-s13 | --test-s07-s09 | --test-s05-s06 | --test-s04 | --sample-reversed-z | "
+		    "| --test-editor-docking | --test-editor-modals | --test-editor-graphs | --test-editor-session-documents "
+		    "| --test-editor-obj-drop | --test-editor-platform-windows | --test-editor-thumbnails | --test-editor-grove | --test-s10-s13 | --test-s07-s09 | --test-s05-s06 | --test-s04 | --sample-reversed-z | "
 		    "--test-editor-language <absolute-directory> | --sample-error-material | --cook-shaders <tool arguments> | --build-assets <tool arguments> | "
 		    "--cook-assets <tool arguments> | --help]. No arguments opens the workspace.");
 #endif

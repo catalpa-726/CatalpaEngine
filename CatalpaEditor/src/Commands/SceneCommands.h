@@ -60,6 +60,15 @@ namespace Catalpa::Editor {
 	 * @return 完整组件提交成功时为 true。
 	 */
 	bool SetAuthorMesh(SceneDocument&, PersistentEntityId, const MeshRendererComponent&, std::string& error);
+	struct AuthorMaterialSlot {
+		PersistentEntityId entity;
+		size_t slot;
+		AssetVersionRef<MeshAsset> mesh;
+		AssetVersionRef<MaterialInstance> before;
+	};
+	/** @brief 将同一份编辑后的材质应用到场景中的对应槽，整组共享一次撤销。 */
+	bool SetAuthorMaterialSlots(SceneDocument&, std::vector<AuthorMaterialSlot>,
+	    const AssetVersionRef<MaterialInstance>& material, std::string& error);
 	/**
 	 * @brief 移除指定的可选渲染组件，撤销时恢复完整作者值和资产引用。
 	 * @param[in,out] doc 持有作者场景与命令历史的文档。

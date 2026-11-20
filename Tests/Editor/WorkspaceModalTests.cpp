@@ -89,10 +89,10 @@ DockSpace ID=0xC27326DF Window=0x1BBC0F80 Pos=0,68 Size=960,720 Split=X
 				m_Dialog = nullptr;
 				const bool enabled = IsWindowEnabled(owner) != FALSE;
 				const bool passed = !m_TimedOut && m_SawFolder && m_Visible && m_CorrectOwner && enabled &&
-				    SUCCEEDED(m_CloseResult) && shown == HRESULT_FROM_WIN32(ERROR_CANCELLED);
+				    m_CancelPosted && shown == HRESULT_FROM_WIN32(ERROR_CANCELLED);
 				CAT_INFO(
-				    "[Shell folder dialog] seen={} visible={} owned={} timeout={} ownerEnabled={} Close=0x{:08X} Show=0x{:08X}",
-				    m_SawFolder, m_Visible, m_CorrectOwner, m_TimedOut, enabled, static_cast<unsigned>(m_CloseResult),
+				    "[Shell folder dialog] seen={} visible={} owned={} timeout={} ownerEnabled={} cancelPosted={} Show=0x{:08X}",
+				    m_SawFolder, m_Visible, m_CorrectOwner, m_TimedOut, enabled, m_CancelPosted,
 				    static_cast<unsigned>(shown));
 				return passed;
 			}
@@ -129,6 +129,7 @@ DockSpace ID=0xC27326DF Window=0x1BBC0F80 Pos=0,68 Size=960,720 Split=X
 				if (SUCCEEDED(m_Dialog->QueryInterface(IID_PPV_ARGS(&window))) &&
 				    SUCCEEDED(window->GetWindow(&handle)) && handle && IsWindowVisible(handle)) {
 					m_Visible = true;
+					m_Window = handle;
 					m_CorrectOwner = GetWindow(handle, GW_OWNER) == m_Owner;
 				}
 			}
@@ -136,26 +137,32 @@ DockSpace ID=0xC27326DF Window=0x1BBC0F80 Pos=0,68 Size=960,720 Split=X
 			/** @brief 在调用 Show 的同一线程中取消选择器；超时即使关闭成功也记为失败。 */
 			static void CALLBACK OnTimer(HWND, UINT, UINT_PTR timer, DWORD) {
 				auto* probe = s_Active;
-				if (!probe || probe->m_Timer != timer || probe->m_Closing)
+				if (!probe || probe->m_Timer != timer)
 					return;
 				if (probe->m_SawFolder)
 					probe->ObserveWindow();
-				if (std::chrono::steady_clock::now() >= probe->m_Deadline)
+				if (std::chrono::steady_clock::now() >= probe->m_Deadline) {
 					probe->m_TimedOut = true;
-				if (probe->m_Visible || probe->m_TimedOut) {
-					probe->m_Closing = true;
-					probe->m_CloseResult = probe->m_Dialog->Close(HRESULT_FROM_WIN32(ERROR_CANCELLED));
-					probe->m_Closing = SUCCEEDED(probe->m_CloseResult);
+					if (IsWindow(probe->m_Window))
+						PostMessageW(probe->m_Window, WM_CLOSE, 0, 0);
+					else
+						probe->m_Dialog->Close(HRESULT_FROM_WIN32(ERROR_CANCELLED));
+					return;
+				}
+				/* Shell 初始化期间 Close 可返回 S_OK 而 Show 仍进入消息循环。让可用的取消按钮处理点击。 */
+				if (!probe->m_CancelPosted && probe->m_Visible && probe->m_CorrectOwner) {
+					const HWND cancel = GetDlgItem(probe->m_Window, IDCANCEL);
+					if (IsWindowVisible(cancel) && IsWindowEnabled(cancel))
+						probe->m_CancelPosted = PostMessageW(cancel, BM_CLICK, 0, 0) != FALSE;
 				}
 			}
 
 			inline static thread_local FolderDialogProbe* s_Active{};
 			IFileDialog* m_Dialog{};
-			HWND m_Owner{};
+			HWND m_Owner{}, m_Window{};
 			UINT_PTR m_Timer{};
 			std::chrono::steady_clock::time_point m_Deadline{};
-			HRESULT m_CloseResult = E_PENDING;
-			bool m_SawFolder = false, m_Visible = false, m_CorrectOwner = false, m_TimedOut = false, m_Closing = false;
+			bool m_SawFolder = false, m_Visible = false, m_CorrectOwner = false, m_TimedOut = false, m_CancelPosted = false;
 		};
 
 		/** @brief 用鼠标逐帧检查正式工作区的两个新建项目入口和模态关闭行为。 */

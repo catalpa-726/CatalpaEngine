@@ -5,7 +5,15 @@
 #include "Scene/PersistentEntityId.h"
 #include "Scene/Components/MeshRendererComponent.h"
 
+namespace Catalpa {
+	class AssetManager;
+}
+
 namespace Catalpa::Editor {
+	/** @brief 将已经加载的图像绑定到材质草稿，保留颜色语义校验、预览版本和撤销历史。 */
+	bool SetMaterialTexture(AssetDocument& doc, AssetManager& assets, const MaterialParameter& parameter,
+	    AssetHandle<ImageAsset> image, std::string& error);
+
 	class MaterialEditor final : public IAssetEditor {
 	public:
 		bool Accepts(const AssetDocument& d) const override { return bool(d.Material()); }
@@ -18,7 +26,11 @@ namespace Catalpa::Editor {
 		 * @param[in] text 根据翻译键生成当前语言的界面文案。
 		 * @param[out] error 失败时写入诊断原因。
 		 */
-		void Draw(Application&, AssetDocument&, const PanelText&, std::string& error) override;
+		void Draw(Application& app, AssetDocument& doc, const PanelText& text, std::string& error) override {
+			Draw(app, doc, text, error, {});
+		}
+		/** @brief 使用当前工作区的图像选择器绘制材质编辑器。 */
+		void Draw(Application&, AssetDocument&, const PanelText&, std::string& error, const MaterialTexturePicker&);
 		/**
 		 * @brief 绘制预览。
 		 * @param[in] maxSize 该视图允许的最大逻辑边长。
@@ -58,7 +70,7 @@ namespace Catalpa::Editor {
 		 */
 		bool EditUnitScalar(AssetDocument& doc, const MaterialParameter& parameter, float& value, std::string& error);
 		/** @brief 绘制当前材质定义允许的参数及渲染状态，并将修改提交至草稿历史。 */
-		void DrawProperties(Application&, AssetDocument&, std::string& error);
+		void DrawProperties(Application&, AssetDocument&, std::string& error, const MaterialTexturePicker&);
 		bool UpdateScene(Application&, AssetDocument&, std::string&);
 		/* 水平角、仰角以度计；相机沿自身 +Z 轴离开预览模型的原点。 */
 		struct Orbit {

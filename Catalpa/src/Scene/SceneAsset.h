@@ -1,5 +1,6 @@
 #pragma once
 #include "Core/Serialization/Archive.h"
+#include <map>
 #include "Assets/AssetLoadResult.h"
 #include "Scene/Components/IdentityComponent.h"
 #include "Scene/Components/TransformComponent.h"
@@ -12,6 +13,13 @@
 #include "Scene/Components/PrefabInstanceComponent.h"
 
 namespace Catalpa {
+	/** @brief 槽位专用材质的作者参数与加载前可枚举的外部依赖。 */
+	struct SceneMaterialSource {
+		AssetId definition;
+		std::vector<AssetId> textures;
+		std::string document;
+	};
+
 	struct SceneMeshAsset {
 		AssetId mesh;
 		std::vector<AssetId> materials;
@@ -22,6 +30,7 @@ namespace Catalpa {
 		bool visible = true;
 		/* 内存内克隆保活已经显示的版本；写文件时只保存稳定身份。 */
 		std::optional<MeshRendererComponent> pinned;
+		std::map<size_t, SceneMaterialSource> localMaterials;
 	};
 
 	struct SceneEntityAsset {

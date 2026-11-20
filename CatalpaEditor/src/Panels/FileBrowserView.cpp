@@ -279,8 +279,11 @@ namespace Catalpa::Editor {
 		    ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x)
 			ImGui::SameLine();
 		ImGui::SetNextItemWidth(-1.f);
+		/* 每个目录使用独立的输入状态，避免切换后焦点中的旧筛选词写回。 */
+		ImGui::PushID(Tools::AssetPathText(directory).c_str());
 		ImGui::InputTextWithHint("##Filter", text("browser.filter_hint", "Name or type:model", nullptr).c_str(),
 		    m_Filter.data(), m_Filter.size());
+		ImGui::PopID();
 
 		const float width = ImGui::GetContentRegionAvail().x;
 		ImGui::BeginChild("Folders", {std::clamp(width * .26f, 65.f, 240.f), height}, ImGuiChildFlags_Borders);

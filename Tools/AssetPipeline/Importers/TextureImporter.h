@@ -27,6 +27,8 @@ namespace Catalpa::Tools {
 		 * @return 图像语义及对应的派生标识后缀；未归为颜色或法线的通道使用数据语义。
 		 */
 		static std::pair<ImageSemantic, std::string> MaterialChannel(std::string_view channel);
+		/** @brief 判断文件后缀能否作为普通二维材质贴图。 */
+		static bool SupportsMaterialMap(const std::filesystem::path& file);
 		/**
 		 * @brief 检查 HDR 解码尺寸及 512 MiB 预算并计算 RGBA32F 所需字节数。
 		 * HDR 源解码为 RGBA32F，单张最多 512 MiB；只检查尺寸，不分配像素或修改原件。

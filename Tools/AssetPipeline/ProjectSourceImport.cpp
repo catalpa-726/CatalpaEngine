@@ -1,10 +1,45 @@
 #include "AssetPipeline/ProjectSourceImport.h"
+#include "AssetPipeline/AssetBuildCache.h"
 #include "AssetPipeline/AssetImportRegistry.h"
+#include "AssetPipeline/Importers/TextureImporter.h"
 #include "Core/PlatformServices.h"
 #include "Core/Id/StableIdGenerator.h"
 
 namespace Catalpa::Tools {
 	namespace fs = std::filesystem;
+
+	/**
+	 * @brief 校验已有的项目内图片，命中时恢复其导入路径及已烘焙的材质通道。
+	 * @param[in,out] request 复用成功后改为指向项目副本的构建请求。
+	 * @param[in] directory 已占用的导入目录。
+	 * @param[in] original 本次导入器实际读到的源图片、长度和哈希。
+	 * @param[out] reused 已有副本与原件内容一致并可复用时为 true。
+	 * @param[out] error 已有副本或构建配方读取失败的原因。
+	 * @return 完成检查时为 true，即使内容不同、需要另选目录也是如此。
+	 */
+	static bool ReuseTexture(AssetBuildRequest& request, const fs::path& directory,
+	    const AssetSourceDependency& original, bool& reused, std::string& error) {
+		reused = false;
+		const auto copy = directory / original.path.filename();
+		if (!fs::is_directory(directory) || !fs::is_regular_file(copy) || fs::canonical(copy) != copy ||
+		    fs::file_size(copy) != original.bytes)
+			return true;
+		auto candidate = request;
+		candidate.source = copy;
+		AssetBuildContext existing(std::move(candidate));
+		std::vector<std::byte> bytes;
+		if (!existing.Initialize(error) || !existing.Read(copy, bytes, error))
+			return false;
+		if (existing.Dependencies().front().sha256 != original.sha256)
+			return true;
+		AssetImportSettings saved;
+		if (!AssetBuildCache::ReadSettings(request.project, existing.Identity("request"), saved, error))
+			return false;
+		request.settings.materialTextureViews |= saved.materialTextureViews;
+		request.source = copy;
+		reused = true;
+		return true;
+	}
 
 	/** @brief 用同一路径解析、依赖跟踪和目标校验完成审阅或提交。 */
 	static bool ProcessSource(AssetBuildRequest& request, const fs::path& directory, ProjectImportReview* review,
@@ -63,7 +98,24 @@ namespace Catalpa::Tools {
 				}
 			}
 		}
-		const auto target = dest / source.stem();
+		auto target = dest / source.stem();
+		/* 直接从资源面板引用单张图片。同名异图各自保存，项目已有素材不被覆盖。 */
+		if (!mounted && !review && !approved && TextureImporter::SupportsMaterialMap(source) &&
+		    context.Dependencies().size() == 1 && fs::exists(target)) {
+			const auto& original = context.Dependencies().front();
+			auto alternate = target;
+			alternate += "-" + original.sha256.substr(0, 16);
+			for (const auto& candidate : {target, alternate}) {
+				target = candidate;
+				if (!fs::exists(target))
+					break;
+				bool reused;
+				if (!ReuseTexture(request, target, original, reused, error))
+					return false;
+				if (reused)
+					return context.InputsUnchanged(error);
+			}
+		}
 		if (!mounted && fs::exists(target)) {
 			error = "Import destination already exists: " + AssetPathText(target);
 			return false;

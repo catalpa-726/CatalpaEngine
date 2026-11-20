@@ -10,7 +10,7 @@ namespace Catalpa::Editor {
 			    (doc.TypeKey() == "script" || doc.TypeKey() == "prefab" || doc.TypeKey() == "material_definition");
 		}
 		/**
-		 * @brief 从当前文档读取 Lua 脚本数据，绘制对应的属性和操作控件。
+		 * @brief 编辑预制体及材质定义源文本，为旧脚本恢复副本提供保存指引。
 		 * @details 第 1 个参数（Application&）为输入。提供宿主服务的应用实例。
 		 * @details 第 3 个参数（const PanelText&）为输入。按语言键、回退文本和稳定标识生成界面标签的回调。
 		 *
@@ -19,7 +19,7 @@ namespace Catalpa::Editor {
 		 */
 		void Draw(Application&, AssetDocument&, const PanelText&, std::string&) override;
 		/**
-		 * @brief 结束 Lua 脚本文档的编辑会话并释放编辑器持有的临时状态。
+		 * @brief 结束源文档会话并释放编辑器持有的临时状态。
 		 * @details 第 1 个参数（Application&）为输入。提供宿主服务的应用实例。
 		 */
 		void Close(Application&) override {

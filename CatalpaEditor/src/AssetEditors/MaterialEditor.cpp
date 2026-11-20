@@ -119,25 +119,20 @@ namespace Catalpa::Editor {
 					    return ImGui::InputScalar(label, ImGuiDataType_S32, &v, nullptr, nullptr, nullptr, flags);
 				    else if constexpr (std::is_same_v<T, uint32_t>)
 					    return ImGui::InputScalar(label, ImGuiDataType_U32, &v, nullptr, nullptr, nullptr, flags);
-				    else if constexpr (std::is_same_v<T, AssetHandle<ImageAsset>>) {
-					    std::array<char, 48> buffer{};
-					    const std::string current = v.HasValue() ? v.id.ToString() : std::string{};
-					    std::copy(current.begin(), current.end(), buffer.begin());
-					    if (!ImGui::InputText(label, buffer.data(), buffer.size(), flags))
-						    return false;
-					    if (buffer[0] == 0) {
-						    v = {};
-						    return true;
-					    }
-					    if (!AssetId::TryParse(buffer.data(), v.id))
-						    throw std::invalid_argument("Invalid texture asset ID");
-					    return true;
-				    } else
+				    else if constexpr (std::is_same_v<T, AssetHandle<ImageAsset>>)
+					    return false;
+				    else
 					    return ImGui::InputScalarN(
 					        label, ImGuiDataType_Float, v.data(), int(v.size()), nullptr, nullptr, "%.6g", flags);
 			    },
 			    value);
 		}
+	}
+
+	bool SetMaterialTexture(AssetDocument& doc, AssetManager& assets, const MaterialParameter& parameter,
+	    AssetHandle<ImageAsset> image, std::string& error) {
+		const MaterialParameterOverride edit{parameter.id, image};
+		return ChangeMaterial(doc, std::span{&edit, 1}, {}, error, &assets);
 	}
 
 	void MaterialEditor::Close(Application& app) {
@@ -270,23 +265,29 @@ namespace Catalpa::Editor {
 		return true;
 	}
 
-	void MaterialEditor::DrawProperties(Application& app, AssetDocument& doc, std::string& error) {
+	void MaterialEditor::DrawProperties(Application& app, AssetDocument& doc, std::string& error,
+	    const MaterialTexturePicker& texturePicker) {
 		const auto draft = doc.Material();
 		ImGui::SeparatorText(UiText("material.properties", "Surface properties"));
 		const bool pbr = draft->definition.Get()->shadingModel == MaterialShadingModel::Pbr;
 		PlaceFormLabel(UiText("material.shading_model", "Shading model"));
 		ImGui::TextWrapped(
 		    "%s", pbr ? UiText("material.pbr", "Physically based (PBR)") : UiText("material.unlit", "Unlit"));
-		for (const auto& parameter : draft->definition.Get()->parameters) {
-			const auto* old = FindMaterialParameter(*draft, parameter.id);
-			if (!old)
-				continue;
+		const auto parameterLabel = [](const MaterialParameter& parameter) {
 			std::string key = "material.parameter." + parameter.id;
 			for (char& c : key)
 				if (c >= 'A' && c <= 'Z')
 					c = char(c - 'A' + 'a');
 			const auto& fallback = parameter.displayName.empty() ? parameter.id : parameter.displayName;
-			PlaceFormLabel(UiText(key.c_str(), fallback.c_str()));
+			return UiText(key.c_str(), fallback.c_str());
+		};
+		for (const auto& parameter : draft->definition.Get()->parameters) {
+			if (parameter.type == MaterialParameterType::Texture2D)
+				continue;
+			const auto* old = FindMaterialParameter(*draft, parameter.id);
+			if (!old)
+				continue;
+			PlaceFormLabel(parameterLabel(parameter));
 			/* 源采样状态不可由材质草稿覆盖；显示其含义，不把内部 bit 协议当作数值控件。 */
 			if (const auto* source = std::get_if<uint32_t>(old); parameter.id.ends_with("_sampler") && source) {
 				const char* address[]{UiText("sampler.repeat", "Repeat"), UiText("sampler.clamp", "Clamp"),
@@ -349,6 +350,32 @@ namespace Catalpa::Editor {
 				ImGui::EndDisabled();
 			ImGui::PopID();
 		}
+		bool firstMap = true;
+		for (const auto& parameter : draft->definition.Get()->parameters) {
+			if (parameter.type != MaterialParameterType::Texture2D)
+				continue;
+			const auto* value = FindMaterialParameter(*draft, parameter.id);
+			const auto* image = value ? std::get_if<AssetHandle<ImageAsset>>(value) : nullptr;
+			if (!image)
+				continue;
+			if (firstMap) {
+				ImGui::SeparatorText(UiText("material.texture_maps", "Texture maps"));
+				firstMap = false;
+			}
+			ImGui::PushID(parameter.id.c_str());
+			PlaceFormLabel(parameterLabel(parameter));
+			ImGui::BeginDisabled(!parameter.allowOverride);
+			auto chosen = *image;
+			if (texturePicker) {
+				if (texturePicker(parameter, chosen) && chosen.id != image->id)
+					SetMaterialTexture(doc, app.GetAssets(), parameter, chosen, error);
+			} else {
+				ImGui::TextUnformatted(image->HasValue() ? UiText("material.texture_assigned", "Assigned")
+				                                         : UiText("material.texture_empty", "None"));
+			}
+			ImGui::EndDisabled();
+			ImGui::PopID();
+		}
 		const auto allowed = draft->definition.Get()->allowedStateOverrides;
 		auto permits = [allowed](MaterialStateOverride key) { return (allowed & static_cast<uint32_t>(key)) != 0; };
 		MaterialStateOverrides states;
@@ -384,7 +411,8 @@ namespace Catalpa::Editor {
 			ChangeMaterial(doc, {}, states, error);
 	}
 
-	void MaterialEditor::Draw(Application& app, AssetDocument& doc, const PanelText& text, std::string& error) {
+	void MaterialEditor::Draw(Application& app, AssetDocument& doc, const PanelText& text, std::string& error,
+	    const MaterialTexturePicker& texturePicker) {
 		/* 按当前字号为两个区域预留可操作的宽度；窄窗口沿用同一组控件纵向排列。 */
 		const bool columns = ImGui::GetContentRegionAvail().x >= ImGui::GetFontSize() * 42.f &&
 		    ImGui::BeginTable("##MaterialLayout", 2,
@@ -395,7 +423,7 @@ namespace Catalpa::Editor {
 			ImGui::TableNextRow();
 			ImGui::TableNextColumn();
 		}
-		DrawProperties(app, doc, error);
+		DrawProperties(app, doc, error, texturePicker);
 		if (columns)
 			ImGui::TableNextColumn();
 		ImGui::SeparatorText(text("material.preview", "Preview", nullptr).c_str());

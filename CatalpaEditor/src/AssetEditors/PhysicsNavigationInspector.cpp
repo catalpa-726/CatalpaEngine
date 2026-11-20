@@ -2,6 +2,8 @@
 #include "AssetEditors/PhysicsNavigationInspector.h"
 
 #include "Documents/SceneDocument.h"
+#include "Assets/BuiltinAssetIds.h"
+#include "Assets/AssetManager.h"
 #include "Commands/EditorCommand.h"
 #include "Physics/PhysicsService.h"
 #include "Physics/PhysicsNavigationTerrainVersions.h"
@@ -41,13 +43,18 @@ namespace Catalpa::Editor {
 		public:
 			ComponentCommand(StableId owner, PersistentEntityId entity, std::string key,
 			    std::optional<ArchiveValue> before, std::optional<ArchiveValue> next,
-			    std::vector<AssetDependencyValue> versions)
+			    std::vector<AssetDependencyValue> beforeVersions, std::vector<AssetDependencyValue> afterVersions)
 			    : EditorCommand(owner), m_Entity(entity), m_Key(std::move(key)), m_Before(std::move(before)),
-			      m_Next(std::move(next)), m_Versions(std::move(versions)) {}
+			      m_Next(std::move(next)), m_BeforeVersions(std::move(beforeVersions)),
+			      m_AfterVersions(std::move(afterVersions)) {}
 
-			bool Apply(Document& doc, std::string& error) override { return Run(doc, m_Before, m_Next, error); }
+			bool Apply(Document& doc, std::string& error) override {
+				return Run(doc, m_Before, m_Next, m_AfterVersions, error);
+			}
 
-			bool Revert(Document& doc, std::string& error) override { return Run(doc, m_Next, m_Before, error); }
+			bool Revert(Document& doc, std::string& error) override {
+				return Run(doc, m_Next, m_Before, m_BeforeVersions, error);
+			}
 
 		private:
 			/**
@@ -61,7 +68,8 @@ namespace Catalpa::Editor {
 			 * @return 成功时返回 true，失败时返回 false 并通过错误参数说明原因。
 			 */
 			bool Run(Document& document, const std::optional<ArchiveValue>& expected,
-			    const std::optional<ArchiveValue>& next, std::string& error) try {
+			    const std::optional<ArchiveValue>& next, const std::vector<AssetDependencyValue>& versions,
+			    std::string& error) try {
 				auto* doc = dynamic_cast<SceneDocument*>(&document);
 				auto* scene = doc ? doc->Resolve() : nullptr;
 				if (!doc || doc->Id() != Owner() || !scene || doc->Playing() || !scene->CanEditNow() ||
@@ -89,7 +97,6 @@ namespace Catalpa::Editor {
 						return false;
 					const DynamicComponentMap one{{m_Key, *next}};
 					const auto key = m_Key;
-					const auto versions = m_Versions;
 					const auto queued = QueueDynamicComponent(
 					    *scene, entity, [entity, key, one, versions](World& world) -> WorldStatus {
 						    const auto transaction = [&]<class T>() -> WorldStatus {
@@ -166,11 +173,11 @@ namespace Catalpa::Editor {
 			PersistentEntityId m_Entity;
 			std::string m_Key;
 			std::optional<ArchiveValue> m_Before, m_Next;
-			std::vector<AssetDependencyValue> m_Versions;
+			std::vector<AssetDependencyValue> m_BeforeVersions, m_AfterVersions;
 		};
 
 		bool Edit(SceneDocument& doc, EntityId entity, std::string key, std::optional<ArchiveValue> next,
-		    std::string& error) {
+		    std::string& error, const AssetManager* assets = nullptr, AssetId picked = {}) {
 			auto* scene = doc.Resolve();
 			if (!scene)
 				return false;
@@ -183,58 +190,35 @@ namespace Catalpa::Editor {
 			std::vector<AssetDependencyValue> versions;
 			if (!CollectPhysicsNavigationTerrainVersions(scene->GetWorld(), entity, versions, error))
 				return false;
+			auto after = versions;
+			if (picked.HasValue()) {
+				/* 替换引用时分别固定前后版本，以便撤销恢复原地形及其材质。 */
+				AssetDependencyValue version;
+				if (!assets || !assets->GetDependencySnapshot(picked, version, error))
+					return false;
+				const auto keep = [&](const AssetDependencyValue& pin) {
+					std::erase_if(after, [&](const auto& old) { return old.id == pin.id; });
+					after.push_back(pin);
+				};
+				keep(version);
+				if (version.cppType == typeid(TerrainAsset)) {
+					const auto material = std::static_pointer_cast<const TerrainAsset>(version.value)->material.id;
+					if (material.HasValue()) {
+						if (!assets->GetDependencySnapshot(material, version, error))
+							return false;
+						keep(version);
+					}
+				}
+			}
 			return doc.History().Execute(doc,
 			    std::make_unique<ComponentCommand>(doc.Id(), scene->MakeReference(entity).persistent, std::move(key),
-			        std::move(before), std::move(next), std::move(versions)),
+			        std::move(before), std::move(next), std::move(versions), std::move(after)),
 			    error);
 		}
 
-		/**
-		 * @brief 从属性输入框读取引用的资源标识。
-		 *
-		 * @param[in] label 资源标识输入框使用的 ImGui 标签。
-		 * @param[in] id 用于定位目标的资产标识。
-		 * @param[out] error 失败时接收原因说明。
-		 *
-		 * @return 成功时返回 true，失败时返回 false 并通过错误参数说明原因。
-		 */
-		bool AssetInput(const char* label, AssetId& id, std::string& error) {
-			struct Draft {
-				AssetId original;
-				std::array<char, 64> text{};
-				bool initialized = false;
-			};
-			static std::map<ImGuiID, Draft> drafts;
-			const auto key = ImGui::GetID(label);
-			if (!drafts.contains(key) && drafts.size() >= 256)
-				drafts.clear();
-			auto& draft = drafts[key];
-			if (!draft.initialized || draft.original != id) {
-				draft = {};
-				draft.original = id;
-				draft.initialized = true;
-				const auto text = id.HasValue() ? id.ToString() : std::string{};
-				std::copy(text.begin(), text.end(), draft.text.begin());
-			}
-			if (!ImGui::InputText(label, draft.text.data(), draft.text.size(), ImGuiInputTextFlags_EnterReturnsTrue))
-				return false;
-			if (!draft.text[0]) {
-				id = {};
-				draft.original = id;
-				return true;
-			}
-			AssetId next;
-			if (!AssetId::TryParse(draft.text.data(), next)) {
-				error = "Expected a stable asset UUID";
-				return false;
-			}
-			id = next;
-			draft.original = id;
-			return true;
-		}
 	} /* 命名空间 */
-	void DrawPhysicsNavigationInspector(
-	    SceneDocument& doc, EntityId entity, std::string& error, const PanelText& text, std::string_view addType) try {
+	void DrawPhysicsNavigationInspector(SceneDocument& doc, EntityId entity, std::string& error, const PanelText& text,
+	    std::string_view addType, const ComponentAssetPicker& pick, AssetManager& assets, InspectorSection reveal) try {
 		const auto T = [&](const char* key, const char* fallback) {
 			return text ? text(key, fallback, key) : std::string(fallback);
 		};
@@ -252,7 +236,7 @@ namespace Catalpa::Editor {
 			if (!w.Get(entity, v).IsSuccess()) {
 				return;
 			}
-			if (ImGui::CollapsingHeader(T("physics.body", "Rigid body").c_str())) {
+			if (reveal.Header("physics.body", T("physics.body", "Rigid body").c_str())) {
 				int motion = int(v.motion);
 				bool changed = ImGui::Combo(T("physics.motion", "Motion").c_str(), &motion,
 				    UiChoices({UiText("choice.static", "Static"), UiText("choice.kinematic", "Kinematic"),
@@ -278,43 +262,47 @@ namespace Catalpa::Editor {
 				if (ImGui::Button(T("physics.remove_body", "Remove rigid body").c_str()))
 					Edit(doc, entity, "rigid_body", {}, error);
 			}
-		} else if (addType == "RigidBodyComponent" && !w.Has<CharacterControllerComponent>(entity) &&
-		    ImGui::Button(T("physics.add_body", "Add rigid body").c_str()))
+		} else if (addType == "RigidBodyComponent" && !w.Has<CharacterControllerComponent>(entity))
 			Edit(doc, entity, "rigid_body",
-			    Archive(AuthorJson::Json{{"motion", 0}, {"massKg", 1}, {"gravityFactor", 1},
-			        {"initialVelocity", {0, 0, 0}}, {"collisionGroup", 0}, {"teleportRevision", 0}, {"enabled", true}}),
+			    Archive(AuthorJson::Json{{"motion", int(PhysicsMotion::Dynamic)}, {"massKg", 1.f}, {"gravityFactor", 1.f},
+			        {"initialVelocity", AuthorJson::Array(glm::vec3(0))}, {"collisionGroup", 0},
+			        {"teleportRevision", 0}, {"enabled", true}}),
 			    error);
 		if (w.Has<ColliderComponent>(entity)) {
 			ColliderComponent v;
 			if (!w.Get(entity, v).IsSuccess()) {
 				return;
 			}
-			if (ImGui::CollapsingHeader(T("physics.collider", "Collider").c_str())) {
-				bool changed = AssetInput(T("physics.shape_asset", "Collision shape asset").c_str(), v.shape.id, error);
-				changed |= AssetInput(
-				    T("physics.material_asset", "Physics material asset (optional)").c_str(), v.material.id, error);
+			if (reveal.Header("physics.collider", T("physics.collider", "Collider").c_str())) {
+				const bool shapeChanged =
+				    pick(T("physics.shape_asset", "Collision shape").c_str(), "collision_shape", v.shape.id);
+				const bool materialChanged = pick(T("physics.material_asset", "Physics material (optional)").c_str(),
+				    "physics_material", v.material.id);
+				bool changed = shapeChanged || materialChanged;
 				changed |= ImGui::Checkbox(T("physics.sensor", "Sensor / trigger").c_str(), &v.sensor);
 				if (changed)
 					Edit(doc, entity, "collider",
 					    Archive(AuthorJson::Json{{"shape", v.shape.id.ToString()},
 					        {"material", v.material.HasValue() ? v.material.id.ToString() : ""}, {"sensor", v.sensor}}),
-					    error);
+					    error, &assets,
+					    shapeChanged          ? v.shape.id
+					        : materialChanged ? v.material.id
+					                          : AssetId{});
 				if (ImGui::Button(T("physics.remove_collider", "Remove collider").c_str()))
 					Edit(doc, entity, "collider", {}, error);
 			}
 		} else if (addType == "ColliderComponent") {
-			static AssetId shape;
-			AssetInput(T("physics.new_shape", "Shape UUID for new collider").c_str(), shape, error);
-			if (shape.HasValue() && ImGui::Button(T("physics.add_collider", "Add collider").c_str()))
-				Edit(doc, entity, "collider",
-				    Archive(AuthorJson::Json{{"shape", shape.ToString()}, {"material", ""}, {"sensor", false}}), error);
+			const auto shape = BuiltinAssetIds::BoxCollisionShape;
+			Edit(doc, entity, "collider",
+			    Archive(AuthorJson::Json{{"shape", shape.ToString()}, {"material", ""}, {"sensor", false}}), error,
+			    &assets, shape);
 		}
 		if (w.Has<CharacterControllerComponent>(entity)) {
 			CharacterControllerComponent v;
 			if (!w.Get(entity, v).IsSuccess()) {
 				return;
 			}
-			if (ImGui::CollapsingHeader(T("physics.character", "Character controller").c_str())) {
+			if (reveal.Header("physics.character", T("physics.character", "Character controller").c_str())) {
 				auto& s = v.settings;
 				bool changed = ImGui::Checkbox(T("physics.character_enabled", "Character enabled").c_str(), &v.enabled);
 				changed |=
@@ -345,20 +333,20 @@ namespace Catalpa::Editor {
 				if (ImGui::Button(T("physics.remove_character", "Remove character controller").c_str()))
 					Edit(doc, entity, "character_controller", {}, error);
 			}
-		} else if (addType == "CharacterControllerComponent" && !w.Has<RigidBodyComponent>(entity) &&
-		    ImGui::Button(T("physics.add_character", "Add character controller").c_str()))
+		} else if (addType == "CharacterControllerComponent" && !w.Has<RigidBodyComponent>(entity))
 			Edit(doc, entity, "character_controller",
-			    Archive(AuthorJson::Json{{"radius", 0.3}, {"halfHeight", 0.6}, {"slopeRadians", 0.78539816},
-			        {"stepHeight", 0.3}, {"snapDistance", 0.3}, {"massKg", 70}, {"collisionGroup", 0},
-			        {"desiredVelocity", {0, 0, 0}}, {"teleportRevision", 0}, {"enabled", true}}),
+			    Archive(AuthorJson::Json{{"radius", 0.3f}, {"halfHeight", 0.6f}, {"slopeRadians", 0.78539816f},
+			        {"stepHeight", 0.3f}, {"snapDistance", 0.3f}, {"massKg", 70.f}, {"collisionGroup", 0},
+			        {"desiredVelocity", AuthorJson::Array(glm::vec3(0))}, {"teleportRevision", 0}, {"enabled", true}}),
 			    error);
 		if (w.Has<NavigationAgentComponent>(entity)) {
 			NavigationAgentComponent v;
 			if (!w.Get(entity, v).IsSuccess()) {
 				return;
 			}
-			if (ImGui::CollapsingHeader(T("navigation.agent", "Navigation agent").c_str())) {
-				bool changed = AssetInput(T("navigation.mesh", "Navigation mesh UUID").c_str(), v.mesh.id, error);
+			if (reveal.Header("navigation.agent", T("navigation.agent", "Navigation agent").c_str())) {
+				const bool meshChanged = pick(T("navigation.mesh", "Navigation mesh").c_str(), "navmesh", v.mesh.id);
+				bool changed = meshChanged;
 				changed |= ImGui::InputFloat3(T("navigation.destination", "Destination (m)").c_str(), &v.destination.x);
 				changed |= ImGui::DragFloat(T("navigation.speed", "Agent speed (m/s)").c_str(), &v.speed, 0.1f, 0, 100);
 				changed |= ImGui::DragFloat(
@@ -371,26 +359,28 @@ namespace Catalpa::Editor {
 					        {"destination", AuthorJson::Array(v.destination)}, {"speed", v.speed},
 					        {"stoppingDistance", v.stoppingDistance}, {"requestRevision", v.requestRevision},
 					        {"enabled", v.enabled}}),
-					    error);
+					    error, &assets, meshChanged ? v.mesh.id : AssetId{});
 				}
 				if (ImGui::Button(T("navigation.remove_agent", "Remove navigation agent").c_str()))
 					Edit(doc, entity, "navigation_agent", {}, error);
 			}
 		} else if (addType == "NavigationAgentComponent") {
-			static AssetId mesh;
-			AssetInput(T("navigation.new_mesh", "Mesh UUID for new navigation agent").c_str(), mesh, error);
-			if (mesh.HasValue() && ImGui::Button(T("navigation.add_agent", "Add navigation agent").c_str()))
+			AssetId mesh;
+			if (pick(T("navigation.mesh", "Navigation mesh").c_str(), "navmesh", mesh))
 				Edit(doc, entity, "navigation_agent",
-				    Archive(AuthorJson::Json{{"mesh", mesh.ToString()}, {"destination", {0, 0, 0}}, {"speed", 2},
-				        {"stoppingDistance", 0.1}, {"requestRevision", 1}, {"enabled", true}}),
-				    error);
+				    Archive(
+				        AuthorJson::Json{{"mesh", mesh.ToString()}, {"destination", AuthorJson::Array(glm::vec3(0))},
+				            {"speed", 2.f}, {"stoppingDistance", 0.1f}, {"requestRevision", 1}, {"enabled", true}}),
+				    error, &assets, mesh);
 		}
 		if (w.Has<TerrainComponent>(entity)) {
 			TerrainComponent value;
 			if (!w.Get(entity, value).IsSuccess())
 				return;
-			if (ImGui::CollapsingHeader(T("terrain.component", "Terrain").c_str())) {
-				bool changed = AssetInput(T("terrain.asset", "Terrain asset UUID").c_str(), value.asset.id, error);
+			if (reveal.Header("terrain.component", T("terrain.component", "Terrain").c_str())) {
+				const bool terrainChanged =
+				    pick(T("terrain.asset", "Terrain asset").c_str(), "terrain", value.asset.id);
+				bool changed = terrainChanged;
 				changed |= ImGui::Checkbox(T("terrain.enabled", "Terrain enabled").c_str(), &value.enabled);
 				changed |=
 				    ImGui::Checkbox(T("terrain.collision", "Terrain collision").c_str(), &value.collisionEnabled);
@@ -403,18 +393,17 @@ namespace Catalpa::Editor {
 					    Archive(AuthorJson::Json{{"asset", value.asset.id.ToString()},
 					        {"viewDistance", value.viewDistance}, {"lodDistance", value.lodDistance},
 					        {"enabled", value.enabled}, {"collisionEnabled", value.collisionEnabled}}),
-					    error);
+					    error, &assets, terrainChanged ? value.asset.id : AssetId{});
 				if (ImGui::Button(T("terrain.remove", "Remove terrain").c_str()))
 					Edit(doc, entity, "terrain", {}, error);
 			}
 		} else if (addType == "TerrainComponent") {
-			static AssetId terrain;
-			AssetInput(T("terrain.new_asset", "UUID for new terrain").c_str(), terrain, error);
-			if (terrain.HasValue() && ImGui::Button(T("terrain.add", "Add terrain").c_str()))
+			AssetId terrain;
+			if (pick(T("terrain.asset", "Terrain asset").c_str(), "terrain", terrain))
 				Edit(doc, entity, "terrain",
-				    Archive(AuthorJson::Json{{"asset", terrain.ToString()}, {"viewDistance", 250}, {"lodDistance", 50},
-				        {"enabled", true}, {"collisionEnabled", true}}),
-				    error);
+				    Archive(AuthorJson::Json{{"asset", terrain.ToString()}, {"viewDistance", 250.f},
+				        {"lodDistance", 50.f}, {"enabled", true}, {"collisionEnabled", true}}),
+				    error, &assets, terrain);
 		}
 	} catch (const std::exception& e) {
 		error = e.what();

@@ -287,8 +287,10 @@ namespace Catalpa::Editor {
 		m_Result = std::move(next);
 		m_Recipe = std::move(recipe);
 		/* 自动重导入沿用已提交配方，完成后保留作者在属性中尚未提交的选项。 */
-		m_ImportSettings.try_emplace(
-		    std::pair{m_Recipe->project.projectFile, m_Recipe->source.lexically_normal()}, m_Recipe->settings);
+		auto entry = m_ImportSettings.try_emplace(
+		    std::pair{m_Recipe->project.projectFile, m_Recipe->source.lexically_normal()}, m_Recipe->settings).first;
+		/* 从资源面板拖入和从项目内选择可以指向同一副本，保留已使用的法线和数据视图。 */
+		entry->second.materialTextureViews |= m_Recipe->settings.materialTextureViews;
 		if (!m_Watcher.SetPaths(m_Result.watchInputs, m_Result.missingTextureInputs, m_WatchError)) {
 			m_WatchEnabled = false;
 			m_Watcher.Clear();

@@ -23,6 +23,38 @@ namespace Catalpa::Editor {
 	namespace {
 		constexpr uint64_t SceneSurface = 0x43415453434e4501ULL;
 
+		/**
+		 * @brief 在条件显示的文档面板重新出现时，选择有实际宿主的停靠位置。
+		 * 旧布局的独立分栏可能仍有 DockId，但窗口系统已回收该分栏共用的原生视口。
+		 */
+		void PrepareDocumentPanel(const char* title, ImGuiID centerDockId) {
+			if (!centerDockId)
+				return;
+			const auto* window = ImGui::FindWindowByName(title);
+			if (window && window->LastFrameActive >= ImGui::GetFrameCount() - 1)
+				return;
+			const auto* settings = ImGui::FindWindowSettingsByID(ImHashStr(title));
+			const auto dock = window ? window->DockId : settings ? settings->DockId : 0;
+			const auto viewport = window ? window->ViewportId : settings ? settings->ViewportId : 0;
+			const auto* node = window && window->DockNode ? window->DockNode : ImGui::DockBuilderGetNode(dock);
+			bool restoreInCenter = (!window && !settings) || (dock && !node);
+			if (node) {
+				const auto* root = node;
+				while (root->ParentNode)
+					root = root->ParentNode;
+				/* 独立单面板可以重新建立自己的视口。分栏或共享标签须由同一活动宿主托管。 */
+				const bool shared = root->IsFloatingNode() &&
+				    (root->IsSplitNode() || (viewport && viewport != ImHashStr(title)));
+				restoreInCenter = shared && (!node->HostWindow || !node->HostWindow->Viewport || !root->HostWindow ||
+				    !root->HostWindow->Viewport || (viewport && !ImGui::FindViewportByID(viewport)));
+			}
+			if (restoreInCenter) {
+				ImGui::SetNextWindowDockID(centerDockId, ImGuiCond_Always);
+				ImGui::SetNextWindowViewport(ImGui::GetMainViewport()->ID);
+			}
+			ImGui::SetNextWindowFocus();
+		}
+
 		/** @brief 优先使用作者文件、导入子资源和内置材质的名称，未保存的草稿显示本地化类型。 */
 		std::string DraftTitle(const AssetDocument& doc) {
 			std::string name;
@@ -47,14 +79,11 @@ namespace Catalpa::Editor {
 			return name;
 		}
 
-		/** @brief 将完整路径和版本信息保留在悬停提示内。 */
+		/** @brief 显示已保存文档的完整路径，便于区分同名文件。 */
 		void DraftTooltip(const AssetDocument& doc) {
-			if (!ImGui::BeginItemTooltip())
+			if (doc.AuthorPath().empty() || !ImGui::BeginItemTooltip())
 				return;
-			if (!doc.AuthorPath().empty())
-				ImGui::TextWrapped("%s", Tools::AssetPathText(doc.AuthorPath()).c_str());
-			ImGui::Text(
-			    "%s / v%llu", doc.Asset().ToString().c_str(), static_cast<unsigned long long>(doc.SourceVersion()));
+			ImGui::TextWrapped("%s", Tools::AssetPathText(doc.AuthorPath()).c_str());
 			ImGui::EndTooltip();
 		}
 
@@ -289,6 +318,7 @@ namespace Catalpa::Editor {
 		if (m_App.GetScenes().GetScene(m_HostScene))
 			(void)m_App.GetScenes().SetActive(m_HostScene);
 		m_Documents.Clear();
+		m_MaterialTargets.clear();
 		m_Clipboard.reset();
 		m_ClipboardDocument = {};
 		m_AssetActions = {};
@@ -346,7 +376,7 @@ namespace Catalpa::Editor {
 	void WorkspaceEditing::SceneTree(const PanelText& text) {
 		if (auto* doc = ActiveScene()) {
 			ImGui::BeginDisabled(doc->Playing());
-			const bool edited = m_Hierarchy.Draw(*doc, m_Selection, text, m_Error);
+			const bool edited = m_Hierarchy.Draw(*doc, m_App.GetAssets(), m_Selection, text, m_Error);
 			if (m_Hierarchy.TakeFrameRequest())
 				FrameSelection();
 			/* 层级中的点击/创建/删除比上一帧的像素读回更新，迟到结果不可覆盖它。 */
@@ -368,19 +398,23 @@ namespace Catalpa::Editor {
 			}
 			if (ImGui::IsWindowFocused())
 				m_Documents.Activate(doc->Id());
-			AssetVersionRef<MaterialInstance> material;
+			MaterialSlotEdit material;
 			const bool inspected = m_Inspector.Draw(
 			    *doc, m_Selection, text, material, m_Error, [&](size_t slot, const MeshRendererComponent& mesh) {
 				    DrawMaterialPicker(
 				        *doc, doc->Resolve()->MakeReference(m_Selection.Resolve(*doc)).persistent, slot, mesh);
 			    });
 			AuthorComponentControls(*doc);
-			(void)DrawPhysicsNavigationInspector(
-			    *doc, m_Selection.Resolve(*doc), m_Error, text, m_Inspector.PendingComponentType());
-			DrawAudioUIInspector(
-			    m_App, *doc, m_Selection.Resolve(*doc), text, m_Error, m_Inspector.PendingComponentType());
-			if (material.HasValue())
-				OpenBoundMaterial(material);
+			const auto entity = m_Selection.Resolve(*doc);
+			const auto component = m_Inspector.ComponentRequest();
+			const ComponentAssetPicker picker = [&](const char* label, std::string_view type, AssetId& asset) {
+				return DrawComponentAssetPicker(*doc, doc->Resolve()->MakeReference(entity).persistent, label, type, asset);
+			};
+			const auto reveal = m_Inspector.RevealedSection();
+			DrawPhysicsNavigationInspector(*doc, entity, m_Error, text, component, picker, m_App.GetAssets(), reveal);
+			DrawAudioUIInspector(m_App.GetAssets(), *doc, entity, text, m_Error, component, picker, reveal);
+			if (material.material.HasValue())
+				OpenBoundMaterial(*doc, doc->Resolve()->MakeReference(entity), material);
 			return inspected;
 		}
 		return false;
@@ -419,6 +453,10 @@ namespace Catalpa::Editor {
 			return;
 		}
 		const auto type = found->type.ToString();
+		if (type == "script") {
+			EditBuiltScript(id, build);
+			return;
+		}
 		if (build.Recipe()) {
 			const auto ext = Tools::AssetSourceExtension(build.Recipe()->source);
 			if (type == "scene") {
@@ -435,7 +473,7 @@ namespace Catalpa::Editor {
 				(void)InstallAuthorScene(*fixed.Get(), path);
 				return;
 			}
-			if (type == "prefab" || type == "script" || type == "behavior_graph" || type == "material_definition" ||
+			if (type == "prefab" || type == "behavior_graph" || type == "material_definition" ||
 			    ext == ".matgraph") {
 				if (OpenAuthor(build.Recipe()->source)) {
 					if (auto* doc = dynamic_cast<AssetDocument*>(m_Documents.Active()); doc && type != "scene") {
@@ -970,7 +1008,8 @@ namespace Catalpa::Editor {
 		ImGui::End();
 	}
 
-	void WorkspaceEditing::Draw(const PanelText& text, BuildPanel* build, uint32_t centerDockId) {
+	void WorkspaceEditing::Draw(const PanelText& text, BuildPanel* build, uint32_t centerDockId,
+	    const std::filesystem::path& selectedFile) {
 		UpdateDocuments();
 		m_Documents.CloseStaleScenes();
 		auto* scene = ActiveScene();
@@ -1014,7 +1053,9 @@ namespace Catalpa::Editor {
 		if (auto* asset = dynamic_cast<AssetDocument*>(m_Documents.Find(m_OpenAsset))) {
 			bool open = true;
 			bool discard = false;
-			if (ImGui::Begin(text("panel.asset_editor", "Asset Editor", "Catalpa.AssetEditor").c_str(), &open)) {
+			const auto title = text("panel.asset_editor", "Asset Editor", "Catalpa.AssetEditor");
+			PrepareDocumentPanel(title.c_str(), centerDockId);
+			if (ImGui::Begin(title.c_str(), &open)) {
 				if (ImGui::IsWindowFocused() && m_Documents.Active() != asset)
 					ActivateAsset(*asset);
 				ImGui::AlignTextToFramePadding();
@@ -1065,23 +1106,26 @@ namespace Catalpa::Editor {
 						    : text("material.pbr_empty", "Create blank PBR material", "CreateEmptyPbr");
 						if (ImGui::Button(button.c_str())) {
 							CreatePbrDraft(copy ? material.get() : nullptr);
-							if (auto* next = dynamic_cast<AssetDocument*>(m_Documents.Find(m_OpenAsset)))
+							if (auto* next = dynamic_cast<AssetDocument*>(m_Documents.Find(m_OpenAsset));
+							    next && next != asset) {
+								if (const auto binding = m_MaterialTargets.find(asset->Id());
+								    binding != m_MaterialTargets.end())
+									m_MaterialTargets[next->Id()] = binding->second;
 								asset = next;
+							}
 						}
 						ImGui::SetItemTooltip("%s",
 						    copy
-						        ? UiText("material.pbr_copy_hint",
-						              "The new draft inherits base color and face culling. The original material and object bindings are preserved.")
+						        ? UiText("material.pbr_copy_hint", "Copy base color and face culling into a PBR draft.")
 						        : UiText("material.pbr_empty_hint",
-						              "Create a separate standard PBR draft. Parameters, textures and bindings remain with the original material."));
+						              "Create a standard PBR draft with default parameters."));
 						ImGui::EndDisabled();
 					}
-					if (!m_Project)
-						ImGui::TextWrapped("%s",
-						    UiText("material.session_draft",
-						        "Temporary session. To save a material, open an author project before creating it."));
 				}
-				m_AssetEditors.Draw(m_App, *asset, text, m_Error);
+				m_AssetEditors.Draw(m_App, *asset, text, m_Error,
+				    [&](const MaterialParameter& p, AssetHandle<ImageAsset>& value) {
+					    return DrawTexturePicker(*asset, p, value, selectedFile);
+				    });
 				DrawImportSettings(*asset, build, text, m_Error);
 				if (m_AskDiscard) {
 					if (ImGui::Button(UiLabel("ui.save_and_close", "Save and close").c_str()) && SaveDocument(*asset))
@@ -1096,12 +1140,24 @@ namespace Catalpa::Editor {
 			}
 			ImGui::End();
 			if (!open || discard) {
-				if (asset->History().Dirty() && !discard)
+				if ((asset->History().Dirty() ||
+				        (m_AssetActions.action == AuthorAssetAction::BindTexture &&
+				            m_AssetActions.document == asset->Id())) &&
+				    !discard)
 					m_AskDiscard = true;
 				else {
+					std::optional<MaterialTarget> origin;
+					if (const auto it = m_MaterialTargets.find(asset->Id());
+					    it != m_MaterialTargets.end() && !it->second.empty())
+						origin = it->second.front();
 					CloseDocument(m_OpenAsset);
 					const auto remaining = m_Documents.Assets();
-					if (!remaining.empty()) {
+					if (origin && scene && scene->Id() == origin->document) {
+						m_Documents.Activate(scene->Id());
+						if (!m_Selection.Resolve(*scene).HasValue())
+							m_Selection.Select(*scene, scene->Resolve()->Resolve(origin->entity));
+						ImGui::SetWindowFocus("###Catalpa.Viewport");
+					} else if (!remaining.empty()) {
 						m_OpenAsset = remaining.front()->Id();
 						ActivateAsset(*remaining.front());
 					}
@@ -1110,7 +1166,9 @@ namespace Catalpa::Editor {
 			}
 		}
 		if (!m_Error.empty()) {
-			if (ImGui::Begin(text("edit.diagnostic", "Edit diagnostic", "Catalpa.EditDiagnostic").c_str())) {
+			const auto title = text("edit.diagnostic", "Edit diagnostic", "Catalpa.EditDiagnostic");
+			PrepareDocumentPanel(title.c_str(), centerDockId);
+			if (ImGui::Begin(title.c_str())) {
 				ImGui::TextWrapped("%s", m_Error.c_str());
 				if (ImGui::Button(text("edit.dismiss", "Dismiss", "Dismiss").c_str()))
 					m_Error.clear();

@@ -3,6 +3,13 @@
 #include "Assets/AssetTestFixture.h"
 #include "Assets/BuiltinAssets.h"
 #include "Assets/BuiltinAssetIds.h"
+#include "Assets/PackageReader.h"
+#include "Commands/PrefabCommands.h"
+#include "Commands/SceneCommands.h"
+#include "Packager/PackageBuilder.h"
+#include "Physics/CollisionAssetLoader.h"
+#include "Scene/SceneAssetLoader.h"
+#include "Scene/SceneSerializer.h"
 #include "Geometry/GeometryAssetLoader.h"
 #include "Geometry/PrimitiveMesh.h"
 #include "Images/ImageAssetLoader.h"
@@ -13,6 +20,176 @@
 
 namespace Catalpa::Tests {
 	namespace {
+		/** @brief 六种基础几何通过真实编辑命令保存，并从仅含场景的游戏包中恢复内置网格和材质。 */
+		void CheckBuiltinSceneObjects(TestContext& t, AssetManager& assets) {
+			using namespace BuiltinAssetIds;
+			constexpr std::array meshes{CubeMesh, SphereMesh, CapsuleMesh, CylinderMesh, PlaneMesh, QuadMesh};
+			constexpr std::array materials{DefaultPbrInstance, DefaultPbrInstance, DefaultPbrInstance,
+			    DefaultPbrInstance, CheckerGround, DefaultPbrInstance};
+			const std::array<Math::Vec3, 6> halfExtents{Math::Vec3{.5f}, Math::Vec3{.5f}, Math::Vec3{.5f, 1, .5f},
+			    Math::Vec3{.5f, 1, .5f}, Math::Vec3{5, 0, 5}, Math::Vec3{.5f, .5f, 0}};
+			std::string error;
+			SceneManager scenes;
+			SceneHandle handle;
+			if (!RegisterPhysicsAssetLoaders(assets, error) || !RegisterBuiltinSceneAssets(assets, error) ||
+			    !scenes.CreateScene("3D Objects", handle).IsSuccess()) {
+				t.Check(false, "Initialize builtin scene objects: " + error);
+				return;
+			}
+			Editor::SceneDocument doc(StableId::FromWords(881, 1), scenes, handle);
+			auto& scene = *doc.Resolve();
+			std::array<PersistentEntityId, meshes.size()> ids{};
+			for (size_t i = 0; i < meshes.size(); ++i) {
+				if (!Editor::CreatePrimitiveEntity(doc, assets, meshes[i], "Object", ids.front(), ids[i], error)) {
+					t.Check(false, "Create builtin object: " + error);
+					return;
+				}
+				MeshRendererComponent mesh;
+				if (!scene.GetWorld().Get(scene.Resolve(ids[i]), mesh).IsSuccess() || !mesh.mesh) {
+					t.Check(false, "Created object must expose immutable geometry");
+					return;
+				}
+				const auto& data = mesh.mesh->GetData();
+				if (data.indexType != MeshIndexType::UInt32 || data.vertexStride != 48 ||
+				    data.GetIndexCount() % 3 != 0) {
+					t.Check(false, "Builtin PBR primitive uses the triangle and tangent layout");
+					return;
+				}
+				const auto vertex = [&](size_t index, size_t offset) {
+					uint32_t ordinal;
+					std::memcpy(&ordinal, data.indexData.data() + index * sizeof(ordinal), sizeof(ordinal));
+					std::array<float, 3> xyz;
+					std::memcpy(xyz.data(), data.vertexData.data() + ordinal * data.vertexStride + offset, sizeof(xyz));
+					return Math::Vec3{xyz[0], xyz[1], xyz[2]};
+				};
+				bool outward = true;
+				for (size_t j = 0; j < data.GetIndexCount(); j += 3) {
+					const auto origin = vertex(j, 0);
+					const auto normal = glm::cross(vertex(j + 1, 0) - origin, vertex(j + 2, 0) - origin);
+					outward = outward && glm::dot(normal, vertex(j, 12)) > 0;
+				}
+				t.Check(mesh.meshVersion.GetId() == meshes[i] && mesh.materials.size() == 1 &&
+				        mesh.materials.front().GetId() == materials[i] && outward && data.GetIndexCount() >= 6 &&
+				        data.attributes.back().semantic == VertexSemantic::Tangent &&
+				        data.localBounds.minimum == -halfExtents[i] && data.localBounds.maximum == halfExtents[i],
+				    "Primitive owns the expected geometry, tangent frame, dimensions and default material");
+			}
+			t.Check(doc.History().Undo(doc, error) && !scene.Resolve(ids.back()).HasValue() &&
+			        doc.History().Redo(doc, error) && scene.Resolve(ids.back()).HasValue(),
+			    "Undo and redo restore the same primitive identity");
+			std::string json;
+			SceneAsset saved;
+			SceneHandle reopened;
+			if (!doc.Serialize(json, error) || !SceneSerializer::Read(json, saved, error) ||
+			    !SceneSerializer::Instantiate(saved, scenes, &assets, reopened, error)) {
+				t.Check(false, "Reopen a scene with builtin references: " + error);
+				return;
+			}
+			for (size_t i = 0; i < ids.size(); ++i) {
+				auto& restored = *scenes.GetScene(reopened);
+				MeshRendererComponent mesh;
+				t.Check(restored.GetWorld().Get(restored.Resolve(ids[i]), mesh).IsSuccess() &&
+				        mesh.meshVersion.GetId() == meshes[i] && mesh.materials.size() == 1 &&
+				        mesh.materials.front().GetId() == materials[i],
+				    "Scene round trip retains each primitive and its assigned material");
+			}
+			/* 重开后修改一个槽；包中只包含场景，内嵌材质必须从参数和真实依赖恢复。 */
+			MeshRendererComponent renderer;
+			const auto localId = AssetTest::Id(982);
+			const MaterialParameterOverride color{"base_color", std::array<float, 4>{.25f, .5f, .75f, 1.f}};
+			std::shared_ptr<const MaterialInstance> edited;
+			if (!scene.GetWorld().Get(scene.Resolve(ids.front()), renderer).IsSuccess() ||
+			    !UpdateMaterialInstance(*renderer.materials.front().Get(), std::span{&color, 1}, {}, edited, error)) {
+				t.Check(false, "Create scene material override: " + error);
+				return;
+			}
+			auto local = std::make_shared<MaterialInstance>(*edited);
+			local->sceneLocal = true;
+			if (!AssetVersionRef<MaterialInstance>::TryCreate(localId, local->revision, local, renderer.materials.front(), error) ||
+			    !Editor::SetAuthorMesh(doc, ids.front(), renderer, error) ||
+			    !doc.Serialize(json, error) || !SceneSerializer::Read(json, saved, error)) {
+				t.Check(false, "Persist a material edited on a scene slot: " + error);
+				return;
+			}
+			const auto dependencies = SceneSerializer::Dependencies(saved);
+			t.Check(std::ranges::find(dependencies, localId) == dependencies.end() &&
+			        std::ranges::find(dependencies, DefaultPbrDefinition) != dependencies.end(),
+			    "Local material depends on its definition instead of a nonexistent standalone instance");
+			/* 同包保存一个改色棋盘格，确保它的宿主定义和贴图都能从包中解析。 */
+			const auto plane = ids[4];
+			if (!scene.GetWorld().Get(scene.Resolve(plane), renderer).IsSuccess() ||
+			    !UpdateMaterialInstance(*renderer.materials.front().Get(), std::span{&color, 1}, {}, edited, error)) {
+				t.Check(false, "Prepare a local checkerboard material: " + error);
+				return;
+			}
+			local = std::make_shared<MaterialInstance>(*edited);
+			local->sceneLocal = true;
+			if (!AssetVersionRef<MaterialInstance>::TryCreate(AssetTest::Id(983), local->revision, local,
+			        renderer.materials.front(), error) ||
+			    !Editor::SetAuthorMesh(doc, plane, renderer, error) ||
+			    !doc.Serialize(json, error) || !SceneSerializer::Read(json, saved, error)) {
+				t.Check(false, "Persist a local checkerboard material: " + error);
+				return;
+			}
+			std::erase_if(saved.entities, [&](const auto& entity) { return entity.id != ids.front() && entity.id != plane; });
+			AssetTest::Fixture fixture;
+			AssetContainer source;
+			source.id = AssetTest::Id(981);
+			source.version = 1;
+			if (!fixture.Create(error) || !AssetType::TryParse("scene", source.type) ||
+			    !SceneSerializer::Write(saved, json, error)) {
+				t.Check(false, error);
+				return;
+			}
+			const auto bytes = std::as_bytes(std::span(json));
+			source.payload.assign(bytes.begin(), bytes.end());
+			AssetRecord record;
+			AssetRegistry registry;
+			VirtualFileSystem files;
+			const auto path = fixture.root / "primitive.catpkg";
+			fixture.files.push_back(path);
+			std::shared_ptr<const PackageReader> package;
+			if (!fixture.Save(source, record, error) || !fixture.Mount(files, error) ||
+			    !registry.Replace({record}, error) ||
+			    !Tools::PackageBuilder::Build(registry, files, record.id, path, {}, error) ||
+			    !PackageReader::Open(path, package, error) || !RegisterSceneAssetLoader(assets, error) ||
+			    !assets.InstallPackage(package, error)) {
+				t.Check(false, "Open game package containing builtin references: " + error);
+				return;
+			}
+			AssetVersionRef<SceneAsset> cooked;
+			bool fallback = false;
+			const bool loaded = assets.Request(record.id, error) && AssetTest::Await(assets, record.id) &&
+			    assets.Acquire(record.id, cooked, fallback, error) && !fallback;
+			t.Check(loaded && cooked.Get()->entities.size() == 2,
+			    "Package decode pins builtin geometry without cooked mesh files: " + assets.GetDiagnostic(record.id));
+			if (loaded) {
+				for (const auto& entity : cooked.Get()->entities) {
+					const auto* pinned = entity.mesh && entity.mesh->pinned ? &*entity.mesh->pinned : nullptr;
+					if (!pinned || pinned->materials.size() != 1 || !pinned->materials.front().HasValue()) {
+						t.Check(false, "Cooked primitive must retain its material slot");
+						continue;
+					}
+					const auto& material = pinned->materials.front();
+					const auto* restoredColor = FindMaterialParameter(*material.Get(), "base_color");
+					t.Check(material.Get()->sceneLocal && restoredColor && *restoredColor == color.value,
+					    "A cooked scene restores the exact local slot color");
+					if (entity.id == plane) {
+						t.Check(pinned->meshVersion.GetId() == PlaneMesh &&
+						        material.Get()->definition.GetId() == CheckerGroundDefinition &&
+						        material.Get()->textureVersions[0].GetId() == CheckerGroundImage,
+						    "Edited plane retains its checkerboard definition and image in a package");
+					} else {
+						t.Check(entity.id == ids.front() && pinned->meshVersion.GetId() == CubeMesh &&
+						        material.GetId() == localId,
+						    "Cooked cube restores the original local slot identity");
+					}
+				}
+			}
+			cooked = {};
+			t.Check(assets.UninstallPackage(error), "Release primitive package");
+		}
+
 		/**
 		 * @brief 验证各领域的资源编码器和解码预算约束。
 		 *
@@ -271,6 +448,7 @@ namespace Catalpa::Tests {
 		context.Check(builtins.Request(unlit, error) && Await(builtins, unlit) && builtins.Request(pbr, error) &&
 		        Await(builtins, pbr) && RegisterBuiltinAssets(builtins, error),
 		    "Runtime builtin CPU assets publish after both fixed surface shader dependencies are ready");
+		CheckBuiltinSceneObjects(context, builtins);
 		AssetVersionRef<ImageAsset> errorImage;
 		AssetVersionRef<MaterialInstance> errorMaterial;
 		context.Check(builtins.Acquire(Id(900), errorImage, fallback, error) && fallback &&

@@ -4,6 +4,8 @@
 #include "Panels/FormLayout.h"
 #include "Viewport/ToolbarButton.h"
 #include "ImGuizmo.h"
+#include <cstdio>
+#include <span>
 
 namespace Catalpa::Editor {
 	Math::MathStatus SnapGizmoScale(const Math::Vec3& startLocal, const Math::Mat4& startWorld,
@@ -55,20 +57,30 @@ namespace Catalpa::Editor {
 		ImGui::SetNextWindowSize(
 		    {std::min(ImGui::GetFontSize() * 18.f, ImGui::GetWindowViewport()->WorkSize.x), 0}, ImGuiCond_Appearing);
 		if (ImGui::BeginPopup("SnapOptions")) {
-			const auto field = [](const std::string& label, const char* id, float& value, float minimum,
-			                       float maximum) {
+			const auto field = [](const std::string& label, const char* id, float& value,
+			                       std::span<const float> steps) {
 				PlaceFormLabel(label);
-				float edited = value;
-				if (ImGui::InputFloat(id, &edited, 0.f, 0.f, "%.6g") && std::isfinite(edited))
-					value = std::clamp(edited, minimum, maximum);
+				const auto upper = std::lower_bound(steps.begin(), steps.end(), value);
+				int index = std::min(int(upper - steps.begin()), int(steps.size()) - 1);
+				if (index > 0 && value - steps[index - 1] < steps[index] - value)
+					--index;
+				/* 旧工作区可能使用自定义步长；只有实际拖动才切换到刻度值。 */
+				char displayed[32];
+				std::snprintf(displayed, sizeof(displayed), "%.6g", value);
+				if (ImGui::SliderInt(id, &index, 0, int(steps.size()) - 1, displayed, ImGuiSliderFlags_NoInput))
+					value = steps[index];
 			};
+			static constexpr float moves[]{ViewportSettings::MinTranslationStep, .001f, .01f, .05f, .1f, .25f, .5f, 1,
+			    2, 5, 10, 25, 50, 100, 1000, 10000, 100000, ViewportSettings::MaxTranslationStep};
+			static constexpr float angles[]{ViewportSettings::MinRotationStep, .1f, .5f, 1, 2, 5, 10, 15, 22.5f, 30, 45,
+			    60, 90, ViewportSettings::MaxRotationStep};
+			static constexpr float scales[]{ViewportSettings::MinScaleStepPercent, .25f, .5f, 1, 2, 5, 10, 20, 25, 50,
+			    75, ViewportSettings::MaxScaleStepPercent};
 			field(text("gizmo.translation_step", "Move (m)", nullptr), "##TranslationStep", settings.translationStep,
-			    ViewportSettings::MinTranslationStep, ViewportSettings::MaxTranslationStep);
-			field(text("gizmo.rotation_step", "Rotate (°)", nullptr), "##RotationStep", settings.rotationStep,
-			    ViewportSettings::MinRotationStep, ViewportSettings::MaxRotationStep);
-			field(text("gizmo.scale_step_percent", "Scale (% of starting size)", nullptr), "##ScaleStepPercent",
-			    settings.scaleStepPercent, ViewportSettings::MinScaleStepPercent,
-			    ViewportSettings::MaxScaleStepPercent);
+			    moves);
+			field(text("gizmo.rotation_step", "Rotate (°)", nullptr), "##RotationStep", settings.rotationStep, angles);
+			field(text("gizmo.scale_step_percent", "Scale increment (%)", nullptr), "##ScaleStepPercent",
+			    settings.scaleStepPercent, scales);
 			ImGui::EndPopup();
 		}
 	}

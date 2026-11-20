@@ -2,10 +2,19 @@
 
 #include "Scripting/ScriptAsset.h"
 #include "Core/Serialization/AuthorJson.h"
+#include "Core/Serialization/BinaryArchive.h"
 #include "Assets/AssetManager.h"
 
 namespace Catalpa {
 	namespace {
+		constexpr uint32_t ManagedScriptMagic = 0x314C4943; /* CIL1，小端序。 */
+		constexpr size_t MaxAssemblyBytes = 4 * 1024 * 1024;
+
+		bool IsManagedImage(std::span<const std::byte> image) {
+			return image.size() >= 64 && image.size() <= MaxAssemblyBytes &&
+			    image[0] == std::byte{'M'} && image[1] == std::byte{'Z'};
+		}
+
 		template <class Map> size_t ModuleMapHeap(const Map& values) {
 			size_t bytes = 4 * sizeof(void*);
 			for (const auto& [name, value] : values)
@@ -16,9 +25,24 @@ namespace Catalpa {
 		size_t ScriptResidentBytes(const ScriptAsset& value) {
 			/* 只计本版本的源码与两张模块表；被固定引用的模块资产由其自己的版本额度保活。 */
 			return sizeof(value) + value.source.capacity() + 1 + ModuleMapHeap(value.modules) +
-			    ModuleMapHeap(value.moduleVersions) + value.sourceLabel.capacity() + 1;
+			    ModuleMapHeap(value.moduleVersions) + value.sourceLabel.capacity() + 1 + value.assembly.capacity();
 		}
 	} /* 命名空间 */
+	bool EncodeManagedScript(std::string_view label, std::span<const std::byte> assembly,
+	    std::vector<std::byte>& output, std::string& error) {
+		if (label.empty() || label.size() > 4096 || !IsManagedImage(assembly)) {
+			error = "Invalid C# script assembly or source label";
+			return false;
+		}
+		BinaryWriter writer(MaxAssemblyBytes + 4104);
+		if (!writer.U32(ManagedScriptMagic) || !writer.String(label) || !writer.Bytes(assembly)) {
+			error = writer.Error();
+			return false;
+		}
+		output = writer.Data();
+		return true;
+	}
+
 	bool ReadScriptAsset(std::string_view text, ScriptAsset& output, std::string& error) try {
 		using namespace AuthorJson;
 		const auto v = Parse(text, 4 * 1024 * 1024);
@@ -49,6 +73,10 @@ namespace Catalpa {
 	}
 
 	bool WriteScriptAsset(const ScriptAsset& asset, std::string& output, std::string& error) {
+		if (asset.language != ScriptLanguage::Lua) {
+			error = "Edit C# scripts in their .cs source files";
+			return false;
+		}
 		AuthorJson::Json modules = AuthorJson::Json::object();
 		for (const auto& [key, id] : asset.modules)
 			modules[key] = id.ToString();
@@ -85,7 +113,18 @@ namespace Catalpa {
 				return false;
 			}
 			auto asset = std::make_shared<ScriptAsset>();
-			if (!ReadScriptAsset(
+			BinaryReader reader(c.payload);
+			uint32_t magic = 0;
+			if (reader.U32(magic) && magic == ManagedScriptMagic) {
+				std::span<const std::byte> assembly;
+				if (!reader.String(asset->sourceLabel, 4096) || asset->sourceLabel.empty() ||
+				    !reader.Bytes(reader.Remaining(), assembly) || !IsManagedImage(assembly)) {
+					error = "Invalid cooked C# script";
+					return false;
+				}
+				asset->language = ScriptLanguage::CSharp;
+				asset->assembly.assign(assembly.begin(), assembly.end());
+			} else if (!ReadScriptAsset(
 			        std::string_view(reinterpret_cast<const char*>(c.payload.data()), c.payload.size()), *asset, error))
 				return false;
 			for (const auto& [name, id] : asset->modules) {

@@ -121,19 +121,16 @@ namespace Catalpa::Tests {
 		}
 		std::shared_ptr<const MaterialDefinition> unlit;
 		if (CreateBuiltinMaterialDefinition(BuiltinMaterialKind::Unlit, AssetId::FromWords(2, 1), unlit, error)) {
-			auto definition = *unlit;
-			MaterialParameter texture;
-			texture.id = "baseColor_texture";
-			texture.type = MaterialParameterType::Texture2D;
-			texture.textureSemantic = MaterialTextureSemantic::BaseColor;
 			const auto textureId = AssetId::FromWords(2, 2);
-			texture.defaultValue = AssetHandle<ImageAsset>{textureId};
-			definition.parameters.push_back(texture);
 			AssetVersionRef<MaterialDefinition> fixedDefinition;
 			const bool fixed = AssetVersionRef<MaterialDefinition>::TryCreate(AssetId::FromWords(2, 3), 1,
-			    std::make_shared<const MaterialDefinition>(std::move(definition)), fixedDefinition, error);
+			    unlit, fixedDefinition, error);
 			std::shared_ptr<const MaterialInstance> draft;
-			if (fixed && CreateMaterialInstance(fixedDefinition, {}, {}, 1, draft, error)) {
+			const MaterialParameterOverride baseMap{"baseColor_texture", AssetHandle<ImageAsset>{textureId}};
+			const bool created =
+			    fixed && CreateMaterialInstance(fixedDefinition, std::span{&baseMap, 1}, {}, 1, draft, error);
+			test.Check(created, "A builtin unlit instance accepts its base color map");
+			if (created) {
 				MaterialInstance resolved = *draft;
 				auto image = std::make_shared<const ImageAsset>(ConstantEnvironment());
 				const bool bound =

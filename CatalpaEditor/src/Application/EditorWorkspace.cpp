@@ -16,6 +16,8 @@
 #include "Panels/NetworkDiagnosticsPanel.h"
 #include "Panels/AudioMixerPanel.h"
 #include "Platform/WorkspaceFiles.h"
+#include "Platform/AuthorFileDialogs.h"
+#include "AssetPipeline/AssetImportRegistry.h"
 #include "Core/Application.h"
 #include "Log/Log.h"
 #include "imgui.h"
@@ -236,7 +238,7 @@ namespace Catalpa::Editor {
 		}
 		if (m_SettingsPath.empty())
 			m_SettingsPath = m_ExecutableDirectory / "Saved" / "Workspace.json";
-		m_BrowseDirectory = m_ExecutableDirectory / "Resources";
+		m_Editing->SetSessionAssetFile(m_SettingsPath.parent_path() / "SessionAssets" / "SessionAssets.catalpaproj");
 		m_Build = std::make_unique<BuildPanel>(app.GetJobs(), app.GetAssets(), app.GetScenes());
 		m_Content = std::make_unique<ContentBrowserPanel>();
 		m_Console = std::make_unique<ConsolePanel>();
@@ -251,7 +253,6 @@ namespace Catalpa::Editor {
 				return;
 			}
 			const auto& session = *project->GetSession();
-			m_BrowseDirectory = m_ExecutableDirectory / "Resources";
 			CAT_INFO("Project opened: {0} ({1}), {2} registered assets.", session.config.name,
 			    session.config.id.ToString(), session.assets.GetRecords().size());
 			for (const auto& diagnostic : session.diagnostics)
@@ -260,6 +261,7 @@ namespace Catalpa::Editor {
 		}
 		const auto result = LoadWorkspaceSettings(m_SettingsPath, m_Settings, error);
 		m_Editing->ViewportPreferences() = m_Settings.viewport;
+		m_Editing->SetScriptEditor(m_Settings.scriptEditor);
 		RememberProject();
 		LoadLanguage();
 		ApplyWorkspaceFontSize(m_Settings.editorFontSize);
@@ -272,7 +274,9 @@ namespace Catalpa::Editor {
 			Report("status.ready", "Workspace ready");
 		}
 		Application::Get().GetWindow().SetVSync(m_Settings.vsync);
-		m_AssetBrowser->Reset();
+		if (!m_Project)
+			m_Editing->EnsureSessionAssets(false);
+		ResetAssetBrowser(false);
 		if (m_Project && m_Editing) {
 			m_Editing->SetProject(&m_Project->GetSession()->config);
 			const auto& session = *m_Project->GetSession();
@@ -320,6 +324,7 @@ namespace Catalpa::Editor {
 		}
 		m_Settings = std::move(loaded);
 		m_Editing->ViewportPreferences() = m_Settings.viewport;
+		m_Editing->SetScriptEditor(m_Settings.scriptEditor);
 		ImGui::ClearIniSettings();
 		if (!m_Settings.layout.empty())
 			ImGui::LoadIniSettingsFromMemory(m_Settings.layout.data(), m_Settings.layout.size());
@@ -372,11 +377,9 @@ namespace Catalpa::Editor {
 				m_ProjectSettings.Reset();
 				m_ProjectFile = m_Project->GetSession()->config.projectFile;
 				RememberProject();
-				m_BrowseDirectory = m_ExecutableDirectory / "Resources";
-				m_SelectedFile.clear();
+				ResetAssetBrowser(false);
 				if (m_Content)
 					m_Content->Reset();
-				m_AssetBrowser->Reset();
 				m_Editing->SetProject(&m_Project->GetSession()->config);
 				const auto& session = *m_Project->GetSession();
 				if (session.config.startupScene) {
@@ -398,11 +401,10 @@ namespace Catalpa::Editor {
 				m_Project.reset();
 				m_ProjectSettings.Reset();
 				m_ProjectFile.clear();
-				m_SelectedFile.clear();
+				m_Editing->EnsureSessionAssets(false);
+				ResetAssetBrowser(false);
 				if (m_Content)
 					m_Content->Reset();
-				m_BrowseDirectory = m_ExecutableDirectory / "Resources";
-				m_AssetBrowser->Reset();
 				Report("status.project_closed", "Project closed");
 			}
 		} else if (action == Action::Reload)
@@ -661,7 +663,7 @@ namespace Catalpa::Editor {
 					std::string name = DisplayPath(doc->AuthorPath().filename());
 					if (name.empty()) {
 						const auto* scene = dynamic_cast<const SceneDocument*>(doc);
-						name = scene && scene->Resolve() ? scene->Resolve()->GetName()
+						name = scene && scene->Resolve() ? m_Editing->SceneTitle(*scene->Resolve())
 						                                 : Text("document.untitled", "Untitled");
 					}
 					ImGui::TextUnformatted(name.c_str());
@@ -694,7 +696,7 @@ namespace Catalpa::Editor {
 			}
 			ImGui::Separator();
 			if (const auto* scene = Application::Get().GetScenes().GetActive())
-				ImGui::TextWrapped("%s", scene->GetName().c_str());
+				ImGui::TextWrapped("%s", m_Editing ? m_Editing->SceneTitle(*scene) : scene->GetName().c_str());
 			if (m_Editing) {
 				const PanelText text = [this](const char* key, const char* fallback, const char* id) {
 					return id ? Label(key, fallback, id) : std::string(Text(key, fallback));
@@ -709,21 +711,54 @@ namespace Catalpa::Editor {
 		ImGui::End();
 	}
 
+	void EditorWorkspace::ResetAssetBrowser(bool engineAssets) {
+		m_BrowseEngineAssets = engineAssets;
+		m_BrowseDirectory.clear();
+		m_SelectedFile.clear();
+		m_AssetBrowser->Reset();
+	}
+
 	void EditorWorkspace::DrawAssets() {
+		if (m_Editing && m_Editing->TakeTextureBrowserRequest()) {
+			m_Settings.showAssets = true;
+			ImGui::SetNextWindowFocus();
+		}
 		if (!m_Settings.showAssets)
 			return;
 		if (ImGui::Begin(Label("panel.assets", "Assets", "Catalpa.Assets").c_str(), &m_Settings.showAssets)) {
-			const auto root = m_ExecutableDirectory / "Resources";
+			const auto* project = m_Editing ? m_Editing->AssetProject() : nullptr;
+			const auto* engineLabel = Text("assets.engine_resources", "Built-in resources");
+			if (project) {
+				const auto projectLabel = m_Project ? std::string(Text("assets.project", "Project")) + " · " + project->name
+				                                    : std::string(Text("assets.session_resources", "Session resources"));
+				ImGui::SetNextItemWidth(-1.f);
+				if (ImGui::BeginCombo("##AssetBrowserRoot", m_BrowseEngineAssets ? engineLabel : projectLabel.c_str())) {
+					if (ImGui::Selectable((projectLabel + "###ProjectAssetRoot").c_str(), !m_BrowseEngineAssets) &&
+					    m_BrowseEngineAssets)
+						ResetAssetBrowser(false);
+					if (ImGui::Selectable((std::string(engineLabel) + "###EngineAssetRoot").c_str(), m_BrowseEngineAssets) &&
+					    !m_BrowseEngineAssets)
+						ResetAssetBrowser(true);
+					ImGui::EndCombo();
+				}
+			}
+			const bool projectAssets = project && !m_BrowseEngineAssets;
+			const auto root = projectAssets ? project->contentRoot : m_ExecutableDirectory / "Resources";
+			const auto rootName = projectAssets ? DisplayPath(root.filename()) : std::string(engineLabel);
 			const PanelText text = [this](const char* key, const char* fallback, const char* id) {
 				return id ? Label(key, fallback, id) : std::string(Text(key, fallback));
 			};
-			const auto rootName = Text("panel.assets", "Assets");
 			if (m_AssetBrowser->Draw(root, rootName, m_BrowseDirectory, m_SelectedFile, 0, text) &&
 			    !m_SelectedFile.empty()) {
 				if (m_Editing)
 					m_Editing->ClearSceneSelection();
 				m_Settings.showInspector = true;
 				m_Dirty = true;
+			}
+			if (auto file = m_AssetBrowser->TakeOpened(); m_Editing && !file.empty()) {
+				const auto ext = Tools::AssetSourceExtension(file);
+				if (ext == ".cs" || ext == ".lua" || ext == ".script" || (projectAssets && ext == ".behavior"))
+					m_Editing->OpenSourceAsset(file);
 			}
 		}
 		ImGui::End();
@@ -757,17 +792,7 @@ namespace Catalpa::Editor {
 				ImGui::Text("%u x %u", width, height);
 				ImGui::TextUnformatted(Text("inspector.framerate", "UI frame rate"));
 				ImGui::Text("%.1f FPS", ImGui::GetIO().Framerate);
-			} else {
-				ImGui::TextWrapped("%s", DisplayPath(m_SelectedFile).c_str());
-				std::error_code error;
-				if (std::filesystem::is_regular_file(m_SelectedFile, error)) {
-					const auto bytes = std::filesystem::file_size(m_SelectedFile, error);
-					if (!error)
-						ImGui::Text(UiFormat("ui.bytes", "%llu bytes"), static_cast<unsigned long long>(bytes));
-				}
-				if (error)
-					ImGui::TextWrapped("%s", error.message().c_str());
-				ImGui::Separator();
+			} else if (!m_Project) {
 				ImGui::TextWrapped("%s",
 				    Text("inspector.file_scope",
 				        "Open an author project and use Content Browser to import supported source files."));
@@ -795,6 +820,32 @@ namespace Catalpa::Editor {
 				m_Settings.language = language ? "zh-CN" : "en-US";
 				if (LoadLanguage())
 					m_Dirty = true;
+			}
+			ImGui::TextUnformatted(Text("setting.script_editor", "External script editor"));
+			const char* autoName = Text("setting.auto_ide", "Detect automatically");
+			const std::string& current = m_Settings.scriptEditor;
+			const char* preview = current == "auto" ? autoName : current == "vscode" ? "Visual Studio Code"
+			    : current == "visual-studio" ? "Visual Studio" : current.c_str();
+			ImGui::SetNextItemWidth(-FLT_MIN);
+			if (ImGui::BeginCombo("##ExternalScriptEditor", preview)) {
+				std::string chosen;
+				for (const auto& [value, name] : {std::pair{"auto", autoName}, {"visual-studio", "Visual Studio"},
+				         {"vscode", "Visual Studio Code"}}) {
+					if (ImGui::Selectable(name, current == value))
+						chosen = value;
+				}
+				if (ImGui::Selectable(Text("setting.browse_ide", "Choose application..."))) {
+					std::filesystem::path file;
+					bool cancelled = false;
+					if (SelectAuthorFile(false, {}, file, cancelled, m_StatusError, "exe") && !cancelled)
+						chosen = DisplayPath(file);
+				}
+				if (!chosen.empty() && chosen != current) {
+					m_Settings.scriptEditor = std::move(chosen);
+					m_Editing->SetScriptEditor(m_Settings.scriptEditor);
+					m_Dirty = true;
+				}
+				ImGui::EndCombo();
 			}
 			ImGui::TextUnformatted(Text("setting.font_size", "Interface font size"));
 			ImGui::SetNextItemWidth(-FLT_MIN);
@@ -847,6 +898,11 @@ namespace Catalpa::Editor {
 		EditorTextScope language(m_Catalog);
 		if (m_Editing)
 			m_Editing->SetProject(m_Project ? &m_Project->GetSession()->config : nullptr);
+		if (m_Editing && m_Editing->TakeAssetFilesChanged()) {
+			m_AssetBrowser->Reset();
+			if (m_Content)
+				m_Content->RefreshFiles();
+		}
 		DrawMenu();
 		const auto discardPopup = Label("document.unsaved", "Discard unsaved edits?", "Catalpa.DiscardEdits");
 		if (m_DiscardAction != Action::None || m_DiscardExit)
@@ -931,7 +987,7 @@ namespace Catalpa::Editor {
 			if (auto path = m_Content->TakeOpened(); !path.empty())
 				m_Editing->OpenSourceAsset(path);
 			if (auto type = m_Content->TakeCreate(); !type.empty())
-				m_Editing->CreateAssetDraft(type);
+				m_Editing->CreateAssetDraft(type, m_Content->Directory());
 		}
 		if (m_Build)
 			m_Build->Draw(m_Settings.showBuild, text);
@@ -945,7 +1001,7 @@ namespace Catalpa::Editor {
 			}
 			const auto dockId = ImHashStr(DockspaceName);
 			const auto* center = ImGui::DockBuilderGetCentralNode(dockId);
-			m_Editing->Draw(text, m_Build.get(), center ? center->ID : dockId);
+			m_Editing->Draw(text, m_Build.get(), center ? center->ID : dockId, m_SelectedFile);
 			/* 拖动时实时预览；松手或结束数值输入后再写工作区，避免逐帧写磁盘。 */
 			if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle) && !ImGui::IsAnyItemActive())
 				m_Dirty |= m_Editing->ViewportPreferences() != m_Settings.viewport;

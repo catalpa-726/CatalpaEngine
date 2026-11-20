@@ -2,6 +2,7 @@
 
 #include "Scripting/ScriptRuntime.h"
 
+#include "Scripting/Backends/CSharp/CSharpScriptBackend.h"
 #include "Scripting/Backends/Lua/LuaScriptBackend.h"
 #include "Assets/AssetManager.h"
 #include "Core/PlatformServices.h"
@@ -397,10 +398,7 @@ namespace Catalpa {
 					m_Diagnostics.push_back("Script instance generation exhausted");
 					continue;
 				}
-				auto backend = std::make_unique<LuaScriptBackend>(m_Memory);
-				std::map<std::string, std::shared_ptr<const ScriptAsset>, std::less<>> modules;
-				std::set<AssetId> chain{entry.second.script};
-				std::set<const ScriptAsset*> expanded{source.Get()};
+				std::unique_ptr<IScriptBackend> backend;
 				ScriptApi api = MakeApi(scene, entry.first, instance.backend != nullptr);
 				uint32_t previousSchema = 1;
 				ScriptValues previousState;
@@ -411,12 +409,21 @@ namespace Catalpa {
 					m_Diagnostics.push_back(id.ToString() + ": state export failed: " + error);
 					continue;
 				}
-				if (!ResolveModules(assets, *source.Get(), modules, chain, expanded, error)) {
-					m_Diagnostics.push_back(id.ToString() + ": " + error);
-					continue;
+				if (source.Get()->language == ScriptLanguage::CSharp) {
+					backend = std::make_unique<CSharpScriptBackend>();
+				} else {
+					auto legacy = std::make_unique<LuaScriptBackend>(m_Memory);
+					std::map<std::string, std::shared_ptr<const ScriptAsset>, std::less<>> modules;
+					std::set<AssetId> chain{entry.second.script};
+					std::set<const ScriptAsset*> expanded{source.Get()};
+					if (!ResolveModules(assets, *source.Get(), modules, chain, expanded, error) ||
+					    !legacy->SetModules(std::move(modules), error)) {
+						m_Diagnostics.push_back(id.ToString() + ": " + error);
+						continue;
+					}
+					backend = std::move(legacy);
 				}
-				if (!backend->SetModules(std::move(modules), error) ||
-				    !backend->Start(*source.Get(), entry.second.properties, api, error) ||
+				if (!backend->Start(*source.Get(), entry.second.properties, api, error) ||
 				    (instance.backend &&
 				        (!backend->ImportState(previousSchema, previousState, api, error) ||
 				            !backend->Call("reload", 0, api, error))) ||
